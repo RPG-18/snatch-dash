@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(flutter --version)",
+      "Bash(flutter pub *)",
+      "Bash(xargs -I{} sh -c 'echo \"=== {} ===\"; cat {}')",
+      "Bash(xargs -I{} echo {})",
+      "Bash(./gradlew :opendash_dash_engine:compileDebugKotlin -q)",
+      "Bash(JAVA_HOME=\"/Applications/Android Studio.app/Contents/jbr/Contents/Home\" ./gradlew :opendash_dash_engine:compileDebugKotlin -q)",
+      "Read(//Users/dmitry/Library/Android/sdk/platform-tools/**)",
+      "Bash(flutter doctor *)"
+    ]
+  }
+}

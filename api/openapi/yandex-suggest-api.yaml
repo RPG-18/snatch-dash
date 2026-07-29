@@ -1,0 +1,378 @@
+openapi: 3.0.3
+info:
+  title: Yandex Maps Suggest API (Геосаджест API)
+  description: |
+    Спецификация Yandex Geosuggest API — сервиса подсказок по геообъектам и
+    организациям для поисковой строки. По мере ввода пользователем текста
+    сервис возвращает список наиболее релевантных географических объектов
+    и организаций.
+
+    Официальная документация:
+    https://yandex.ru/maps-api/docs/suggest-api/index.html
+
+    Ключ API выдаётся в Кабинете Разработчика и активируется в течение
+    15 минут после создания.
+  version: "1.0"
+  license:
+    name: Yandex Maps API Terms of Use
+    url: https://yandex.ru/legal/maps_api/
+externalDocs:
+  description: Официальная документация Geosuggest API
+  url: https://yandex.ru/maps-api/docs/suggest-api/index.html
+servers:
+  - url: https://suggest-maps.yandex.ru/v1
+    description: Продакшн-сервер Geosuggest API
+
+paths:
+  /suggest:
+    get:
+      operationId: getSuggest
+      summary: Получить подсказки по геообъектам и организациям
+      description: |
+        Возвращает список подсказок (организации, адреса, топонимы и пр.),
+        соответствующих введённому пользователем префиксу текста, с учётом
+        опционального региона/окна поиска.
+      parameters:
+        - name: apikey
+          in: query
+          required: true
+          description: Ключ, полученный в Кабинете Разработчика.
+          schema:
+            type: string
+        - name: text
+          in: query
+          required: true
+          description: Текст запроса пользователя (непустая строка в UTF-8).
+          schema:
+            type: string
+            minLength: 1
+        - name: lang
+          in: query
+          required: false
+          description: >
+            Язык ответа (названия географических объектов) в формате ISO 639-1,
+            например `ru`, `en`, `tr`.
+          schema:
+            type: string
+        - name: results
+          in: query
+          required: false
+          description: Максимальное количество возвращаемых подсказок.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 10
+            default: 7
+        - name: highlight
+          in: query
+          required: false
+          description: >
+            Включает (1, по умолчанию) или отключает (0) подсветку
+            совпадений части текста с пользовательским запросом в полях
+            `title`/`subtitle` (массив `hl`).
+          schema:
+            type: integer
+            enum: [0, 1]
+            default: 1
+        - name: ll
+          in: query
+          required: false
+          description: >
+            Долгота и широта центра окна поиска в формате `{lon},{lat}`.
+            Используется совместно с `spn`.
+          schema:
+            type: string
+            pattern: '^-?\d+(\.\d+)?,-?\d+(\.\d+)?$'
+          example: "55.29,25.23"
+        - name: spn
+          in: query
+          required: false
+          description: >
+            Ширина и высота окна поиска в градусах, в формате
+            `{width},{height}`. Используется совместно с `ll`.
+          schema:
+            type: string
+            default: "0.1,0.1"
+          example: "0.5,0.3"
+        - name: bbox
+          in: query
+          required: false
+          description: >
+            Ограничивающий прямоугольник окна поиска, заданный двумя
+            противоположными углами. Координаты разделяются запятой,
+            углы — символом `~`: `{lon1},{lat1}~{lon2},{lat2}`.
+          schema:
+            type: string
+          example: "28.8,41~28.9,42"
+        - name: ull
+          in: query
+          required: false
+          description: >
+            Координаты пользователя (`{lon},{lat}`) для расчёта расстояния
+            до найденных объектов (поле `distance`). Если не задано,
+            используется центр окна поиска.
+          schema:
+            type: string
+            pattern: '^-?\d+(\.\d+)?,-?\d+(\.\d+)?$'
+        - name: strict_bounds
+          in: query
+          required: false
+          description: >
+            Если равно 1, результаты строго ограничиваются окном поиска
+            (`ll`+`spn` или `bbox`).
+          schema:
+            type: integer
+            enum: [0, 1]
+        - name: countries
+          in: query
+          required: false
+          description: >
+            Список стран, к которым ограничивается поиск, в виде
+            ISO 3166-1 alpha-2 кодов через запятую.
+          schema:
+            type: string
+          example: "ru,uz,kz"
+        - name: types
+          in: query
+          required: false
+          description: >
+            Список типов объектов через запятую, к которым ограничивается
+            выдача.
+          schema:
+            type: string
+          example: "biz,metro"
+        - name: print_address
+          in: query
+          required: false
+          description: >
+            Если равно 1, в ответе дополнительно возвращается адрес,
+            разбитый по компонентам (поле `address`).
+          schema:
+            type: integer
+            enum: [0, 1]
+        - name: org_address_kind
+          in: query
+          required: false
+          description: >
+            Значение `house` включает в выдачу организации с адресом,
+            привязанным к дому (без отдельного адреса организации).
+          schema:
+            type: string
+            enum: [house]
+        - name: attrs
+          in: query
+          required: false
+          description: >
+            Значение `uri` добавляет в ответ поле `uri`, которое можно
+            использовать в запросах к Geocoder API.
+          schema:
+            type: string
+            enum: [uri]
+      responses:
+        "200":
+          description: Успешный ответ со списком подсказок.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuggestResponse"
+              example:
+                results:
+                  - title:
+                      text: "Бурдж-Халифа"
+                      hl:
+                        - begin: 0
+                          end: 5
+                    subtitle:
+                      text: "Дубай, ОАЭ"
+                    tags:
+                      - business
+                    distance:
+                      text: "1.2 км"
+                      value: 1200
+                    address:
+                      formatted_address: "Дубай, 1 Sheikh Mohammed bin Rashid Blvd"
+                      component:
+                        - name: "ОАЭ"
+                          kind: ["COUNTRY"]
+                        - name: "Дубай"
+                          kind: ["LOCALITY"]
+                    uri: "ymapsbm1://org?oid=12345"
+        "400":
+          description: >
+            Некорректный запрос — не передан обязательный параметр или
+            параметр имеет неверный формат/значение.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: >
+            Ключ API недействителен, не активирован, заблокирован или
+            превышен лимит запросов.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "5XX":
+          description: Внутренняя ошибка сервиса.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: query
+      name: apikey
+      description: Ключ, полученный в Кабинете Разработчика Yandex Maps API.
+
+  schemas:
+    HighlightRange:
+      type: object
+      description: Диапазон символов, совпавших с текстом запроса пользователя.
+      properties:
+        begin:
+          type: integer
+          description: Индекс начала совпадения (включительно).
+        end:
+          type: integer
+          description: Индекс конца совпадения (не включая).
+      required:
+        - begin
+        - end
+
+    TitledText:
+      type: object
+      description: Название/подзаголовок объекта с разметкой подсветки.
+      properties:
+        text:
+          type: string
+          description: Текст названия.
+        hl:
+          type: array
+          description: Диапазоны, подсвечивающие совпадение с запросом пользователя.
+          items:
+            $ref: "#/components/schemas/HighlightRange"
+      required:
+        - text
+
+    Distance:
+      type: object
+      description: Расстояние от точки пользователя (`ull`) до объекта.
+      properties:
+        text:
+          type: string
+          description: Расстояние в человекочитаемом виде, локализованное по `lang`.
+        value:
+          type: number
+          description: Расстояние в метрах.
+      required:
+        - text
+        - value
+
+    AddressComponent:
+      type: object
+      description: Компонент адреса (страна, регион, город, улица, дом и т.д.).
+      properties:
+        name:
+          type: string
+          description: Название компонента адреса.
+        kind:
+          type: array
+          description: Типы компонента адреса.
+          items:
+            type: string
+            enum:
+              - COUNTRY
+              - PROVINCE
+              - AREA
+              - LOCALITY
+              - DISTRICT
+              - STREET
+              - HOUSE
+              - ENTRANCE
+              - METRO_STATION
+              - RAILWAY_STATION
+              - VEGETATION
+              - HYDRO
+              - AIRPORT
+              - OTHER
+      required:
+        - name
+        - kind
+
+    Address:
+      type: object
+      description: >
+        Адрес объекта, возвращается при передаче параметра `print_address=1`.
+      properties:
+        formatted_address:
+          type: string
+          description: Адрес в виде единой строки.
+        component:
+          type: array
+          description: Адрес, разбитый по компонентам.
+          items:
+            $ref: "#/components/schemas/AddressComponent"
+
+    SuggestItem:
+      type: object
+      description: Одна подсказка из списка результатов.
+      properties:
+        title:
+          $ref: "#/components/schemas/TitledText"
+        subtitle:
+          $ref: "#/components/schemas/TitledText"
+        tags:
+          type: array
+          description: >
+            Теги, описывающие категорию объекта (например, `business`,
+            `house`, `street`, `district`, `locality`, `area`, `province`,
+            `country`, `metro`, `geo`).
+          items:
+            type: string
+        distance:
+          $ref: "#/components/schemas/Distance"
+        address:
+          $ref: "#/components/schemas/Address"
+        uri:
+          type: string
+          description: >
+            Идентификатор объекта, который можно использовать в запросах
+            к Geocoder API. Возвращается при `attrs=uri`.
+      required:
+        - title
+        - tags
+
+    SuggestResponse:
+      type: object
+      description: Тело ответа Geosuggest API.
+      properties:
+        results:
+          type: array
+          description: Список подсказок, отсортированных по релевантности.
+          items:
+            $ref: "#/components/schemas/SuggestItem"
+      required:
+        - results
+
+    ErrorResponse:
+      type: object
+      description: Тело ответа при ошибке.
+      properties:
+        message:
+          type: string
+          description: Человекочитаемое описание ошибки.
+        statusCode:
+          type: integer
+          description: HTTP-код ошибки.
+        error:
+          type: string
+          description: Краткий идентификатор/тип ошибки.
+      required:
+        - message
+
+security:
+  - ApiKeyAuth: []

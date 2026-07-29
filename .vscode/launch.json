@@ -1,0 +1,53 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "snatch-dash",
+      "request": "launch",
+      "type": "dart",
+      "program": "lib/main.dart",
+      "toolArgs": ["--dart-define-from-file=android/dart_defines.local.properties"]
+    },
+    {
+      "name": "snatch-dash (emulator)",
+      "request": "launch",
+      "type": "dart",
+      "program": "lib/main.dart",
+      "deviceId": "emulator-5554",
+      "toolArgs": ["--dart-define-from-file=android/dart_defines.local.properties"]
+    },
+    {
+      "name": "snatch-dash (Android device)",
+      "request": "launch",
+      "type": "dart",
+      "program": "lib/main.dart",
+      "deviceId": "2FK0224A22003381",
+      "toolArgs": ["--dart-define-from-file=android/dart_defines.local.properties"]
+    },
+    {
+      "name": "snatch-dash (Android device, release)",
+      "request": "launch",
+      "type": "dart",
+      "flutterMode": "release",
+      "program": "lib/main.dart",
+      "deviceId": "2FK0224A22003381",
+      "toolArgs": ["--dart-define-from-file=android/dart_defines.local.properties"]
+    },
+    {
+      "name": "snatch-dash (profile)",
+      "request": "launch",
+      "type": "dart",
+      "flutterMode": "profile",
+      "program": "lib/main.dart",
+      "toolArgs": ["--dart-define-from-file=android/dart_defines.local.properties"]
+    },
+    {
+      "name": "snatch-dash (release)",
+      "request": "launch",
+      "type": "dart",
+      "flutterMode": "release",
+      "program": "lib/main.dart",
+      "toolArgs": ["--dart-define-from-file=android/dart_defines.local.properties"]
+    }
+  ]
+}

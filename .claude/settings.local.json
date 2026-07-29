@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(flutter gen-l10n *)",
+      "Bash(ADB=/Users/dmitry/Library/Android/sdk/platform-tools/adb *)",
+      "Bash(flutter pub *)",
+      "Bash(find /Users/dmitry/.pub-cache/hosted/pub.dev/yandex_maps_mapkit-4.41.0 -iname example* -maxdepth 1)",
+      "Bash(find / -type d -iname \"yandex_maps_mapkit_full-*\")"
+    ],
+    "additionalDirectories": [
+      "/tmp"
+    ]
+  }
+}

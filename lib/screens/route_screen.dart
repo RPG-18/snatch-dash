@@ -3,11 +3,13 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../l10n/app_localizations.dart';
+import '../map/opendash_map.dart';
 import '../models/route_preview_args.dart';
 import '../nav/geo_point.dart';
 import '../nav/place.dart';
 import '../nav/suggest_result.dart';
 import '../state/route_search_controller.dart';
+import '../state/saved_destinations_controller.dart';
 
 /// Destination search screen. Live suggestions via the Yandex Geosuggest
 /// HTTP API (`SuggestApi`), from 3 characters. The suggest endpoint returns
@@ -25,6 +27,11 @@ class RouteScreen extends ConsumerStatefulWidget {
 
 class _RouteScreenState extends ConsumerState<RouteScreen> {
   final _controller = TextEditingController();
+
+  // Non-null switches the body from the search state to the destination
+  // preview state — a stack transition kept as local widget state rather
+  // than a pushed route, per the screen's spec.
+  PlaceResult? _preview;
 
   @override
   void dispose() {
@@ -46,14 +53,40 @@ class _RouteScreenState extends ConsumerState<RouteScreen> {
     final chosen = candidates.length == 1 ? candidates.first : await _pickCandidate(candidates, l10n);
     if (chosen == null || !mounted) return; // dismissed the picker without choosing
 
+    setState(() {
+      _preview = PlaceResult(
+        name: chosen.name.isEmpty ? item.title : chosen.name,
+        address: chosen.address,
+        point: chosen.point,
+        distanceMeters: chosen.distanceMeters,
+      );
+    });
+  }
+
+  void _closePreview() => setState(() => _preview = null);
+
+  void _goToRoutePreview(GeoPoint? origin) {
+    final preview = _preview;
+    if (preview == null) return;
     context.push(
       '/home/route-preview',
       extra: RoutePreviewArgs(
-        destinationName: chosen.name.isEmpty ? item.title : chosen.name,
-        destination: chosen.point,
+        destinationName: preview.name,
+        destination: preview.point,
         origin: origin,
       ),
     );
+  }
+
+  Future<void> _saveDestination() async {
+    final preview = _preview;
+    if (preview == null) return;
+    final l10n = AppLocalizations.of(context)!;
+    await ref
+        .read(savedDestinationsControllerProvider.notifier)
+        .save(preview.name, preview.point.lat, preview.point.lng);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(l10n.routeDestinationSaved)));
   }
 
   Future<PlaceResult?> _pickCandidate(List<PlaceResult> candidates, AppLocalizations l10n) {
@@ -94,33 +127,94 @@ class _RouteScreenState extends ConsumerState<RouteScreen> {
     final state = ref.watch(routeSearchControllerProvider);
     final notifier = ref.read(routeSearchControllerProvider.notifier);
     final l10n = AppLocalizations.of(context)!;
+    final preview = _preview;
 
     return Scaffold(
       appBar: AppBar(title: Text(l10n.routeTitle)),
-      body: Column(
-        children: [
-          Padding(
+      body: preview != null
+          ? _buildPreview(l10n, preview, state.origin)
+          : Column(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: TextField(
+                    controller: _controller,
+                    autofocus: true,
+                    decoration: InputDecoration(
+                      hintText: l10n.routeSearchHint,
+                      prefixIcon: const Icon(Icons.search),
+                      border: const OutlineInputBorder(),
+                    ),
+                    onChanged: notifier.setQuery,
+                  ),
+                ),
+                if (state.searching || state.resolving) const LinearProgressIndicator(),
+                Expanded(
+                  child: AbsorbPointer(
+                    absorbing: state.resolving,
+                    child: _buildBody(context, l10n, state),
+                  ),
+                ),
+              ],
+            ),
+    );
+  }
+
+  Widget _buildPreview(AppLocalizations l10n, PlaceResult preview, GeoPoint? origin) {
+    return Stack(
+      children: [
+        Positioned.fill(child: OpenDashMap(dest: preview.point)),
+        Align(
+          alignment: Alignment.bottomCenter,
+          child: Padding(
             padding: const EdgeInsets.all(16),
-            child: TextField(
-              controller: _controller,
-              autofocus: true,
-              decoration: InputDecoration(
-                hintText: l10n.routeSearchHint,
-                prefixIcon: const Icon(Icons.search),
-                border: const OutlineInputBorder(),
+            child: Card(
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(preview.name, style: const TextStyle(fontWeight: FontWeight.bold)),
+                              if (preview.address.isNotEmpty) Text(preview.address),
+                            ],
+                          ),
+                        ),
+                        IconButton(
+                          tooltip: l10n.routeDestinationCloseTooltip,
+                          icon: const Icon(Icons.close),
+                          onPressed: _closePreview,
+                        ),
+                      ],
+                    ),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: FilledButton(
+                            onPressed: () => _goToRoutePreview(origin),
+                            child: Text(l10n.routeDestinationGo),
+                          ),
+                        ),
+                        IconButton(
+                          tooltip: l10n.routeSaveDestinationTooltip,
+                          icon: const Icon(Icons.bookmark_border),
+                          onPressed: _saveDestination,
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
               ),
-              onChanged: notifier.setQuery,
             ),
           ),
-          if (state.searching || state.resolving) const LinearProgressIndicator(),
-          Expanded(
-            child: AbsorbPointer(
-              absorbing: state.resolving,
-              child: _buildBody(context, l10n, state),
-            ),
-          ),
-        ],
-      ),
+        ),
+      ],
     );
   }
 

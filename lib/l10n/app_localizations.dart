@@ -356,6 +356,24 @@ abstract class AppLocalizations {
   /// **'Save this destination'**
   String get routeSaveDestinationTooltip;
 
+  /// No description provided for @routeDestinationCloseTooltip.
+  ///
+  /// In en, this message translates to:
+  /// **'Close'**
+  String get routeDestinationCloseTooltip;
+
+  /// No description provided for @routeDestinationGo.
+  ///
+  /// In en, this message translates to:
+  /// **'Route'**
+  String get routeDestinationGo;
+
+  /// No description provided for @routeDestinationSaved.
+  ///
+  /// In en, this message translates to:
+  /// **'Destination saved'**
+  String get routeDestinationSaved;
+
   /// No description provided for @routeShareLinkHint.
   ///
   /// In en, this message translates to:

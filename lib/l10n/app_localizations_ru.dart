@@ -166,6 +166,15 @@ class AppLocalizationsRu extends AppLocalizations {
   String get routeSaveDestinationTooltip => 'Сохранить это место';
 
   @override
+  String get routeDestinationCloseTooltip => 'Закрыть';
+
+  @override
+  String get routeDestinationGo => 'Маршрут';
+
+  @override
+  String get routeDestinationSaved => 'Место сохранено';
+
+  @override
   String get routeShareLinkHint =>
       'Вставьте ссылку Google Maps или geo:широта,долгота';
 

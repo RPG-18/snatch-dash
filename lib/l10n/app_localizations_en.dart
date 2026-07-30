@@ -163,6 +163,15 @@ class AppLocalizationsEn extends AppLocalizations {
   String get routeSaveDestinationTooltip => 'Save this destination';
 
   @override
+  String get routeDestinationCloseTooltip => 'Close';
+
+  @override
+  String get routeDestinationGo => 'Route';
+
+  @override
+  String get routeDestinationSaved => 'Destination saved';
+
+  @override
   String get routeShareLinkHint =>
       'Paste a Google Maps share link, or geo:lat,lng';
 

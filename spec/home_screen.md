@@ -1,7 +1,7 @@
 # Home Screen (Главная)
 
 **Файл:** [`lib/screens/home_screen.dart`](../lib/screens/home_screen.dart)
-**Виджет:** `HomeScreen` (`ConsumerWidget`)
+**Виджет:** `HomeScreen` (`ConsumerStatefulWidget`)
 **Route:** `/home` — начальный маршрут, вкладка «Главная» в нижней панели
 (первая ветка `StatefulShellRoute` в
 [`lib/router/app_router.dart`](../lib/router/app_router.dart)). Также
@@ -20,7 +20,6 @@
 | `savedDestinationsControllerProvider` | `state/saved_destinations_controller.dart` | Список сохранённых мест |
 | `ridesControllerProvider` | `state/rides_controller.dart` | Количество поездок + суммарный пробег для сводки |
 | `vehicleStoreProvider` | `state/vehicle_store.dart` | `title` активной техники — показывается чипом на карточке статуса |
-| `routeControllerProvider.notifier` | `state/route_controller.dart` | `selectSaved(location)` при тапе на сохранённое место |
 
 ## Разметка / действия
 
@@ -35,10 +34,7 @@
    - «Начать навигацию» → `context.push('/home/route')`
    - «Экран dash» (если `connected`) / «Подключиться к dash» (иначе) →
      `context.push('/home/dash')`
-3. **Сохранённые места** — текст-заглушка при пустом списке, либо карточка
-   с тапаемыми элементами (название + координаты). Тап вызывает
-   `routeControllerProvider.notifier.selectSaved(...)` и переход на
-   `/home/route`.
+3. **Сохранённые места** — Если нет сохраненных мест в базе то выводит текст "Нет сохраненных мест", если есть, то выводит горизонтальный список. Элемент списка состоит из двух вертикальных частей:  название объекта, дистанция(метры, километры). По тапу по выбранному элемегту происходит переход в [Preview Routes Screen](./route_preview_screen.md)
 4. **Сводка по поездкам** — заглушка при пустом списке, либо один элемент с
    `l10n.homeRidesSummary(count, totalKm)` (ICU-plural — см. ключ
    `homeRidesSummary` в `lib/l10n/app_ru.arb`), переход на `/home/rides`.
@@ -51,3 +47,7 @@
 - На этом экране нет FAB.
 - Полностью локализован (RU/EN) через `AppLocalizations` — см. ключи с
   префиксом `home*` в [`lib/l10n/app_en.arb`](../lib/l10n/app_en.arb).
+- Дистанция до сохранённого места считается как прямое расстояние
+  (`GeoPoint.distMeters`) от одноразового GPS-фикса, полученного в
+  `initState` (`currentPosition()`), а не от MapKit-роутинга. Пока фикс не
+  получен, дистанция под названием места не показывается.

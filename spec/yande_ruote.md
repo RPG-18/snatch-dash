@@ -8,7 +8,7 @@
   `OpenDashMap`, один активный маршрут (экран [Dash](dash_screen.md)).
 - [`lib/map/route_options_map.dart`](../lib/map/route_options_map.dart) —
   `RouteOptionsMap`, несколько маршрутов-альтернатив (экран
-  [Маршруты](reoute_preview_screen.md)).
+  [Маршруты](route_preview_screen.md)).
 
 Оба виджета имеративно работают с `window.map.mapObjects`
 (`RootMapObjectCollection`) через `yandex_maps_mapkit` — на каждый
@@ -69,7 +69,7 @@
 
 - [Dash](dash_screen.md) — `OpenDashMap` красит по пробкам весь активный
   маршрут (это единственный маршрут на карте).
-- [Маршруты](reoute_preview_screen.md) — `RouteOptionsMap` красит по
+- [Маршруты](route_preview_screen.md) — `RouteOptionsMap` красит по
   пробкам только выбранный маршрут; невыбранные остаются сплошными
   фиолетовыми (пробки на них не показываем, чтобы не перегружать карту
   сразу несколькими раскрасками).

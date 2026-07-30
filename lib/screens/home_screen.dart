@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 
 import '../l10n/app_localizations.dart';
 import '../models/route_preview_args.dart';
+import '../models/shared_location.dart';
 import '../nav/geo_point.dart';
 import '../state/dash_engine_state.dart';
 import '../state/rides_controller.dart';
@@ -13,11 +14,36 @@ import '../util/current_position.dart';
 
 /// Landing tab: connect status, saved destinations, recent rides. Ports
 /// `HomeScreen.kt`.
-class HomeScreen extends ConsumerWidget {
+class HomeScreen extends ConsumerStatefulWidget {
   const HomeScreen({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<HomeScreen> createState() => _HomeScreenState();
+}
+
+class _HomeScreenState extends ConsumerState<HomeScreen> {
+  GeoPoint? _origin;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadOrigin();
+  }
+
+  Future<void> _loadOrigin() async {
+    final origin = await currentPosition();
+    if (!mounted) return;
+    setState(() => _origin = origin);
+  }
+
+  String _formatDistance(AppLocalizations l10n, double meters) {
+    return meters >= 1000
+        ? l10n.unitKm((meters / 1000).toStringAsFixed(1))
+        : l10n.unitM(meters.round().toString());
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final engine = ref.watch(dashEngineStateProvider);
     final saved = ref.watch(savedDestinationsControllerProvider);
     final rides = ref.watch(ridesControllerProvider);
@@ -95,25 +121,24 @@ class HomeScreen extends ConsumerWidget {
               ),
             )
           else
-            Card(
-              child: Column(
+            SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: Row(
                 children: [
                   for (var i = 0; i < saved.length; i++) ...[
-                    if (i > 0) const Divider(height: 1),
-                    ListTile(
-                      leading: const Icon(Icons.location_on_outlined),
-                      title: Text(saved[i].name),
-                      subtitle: Text('${saved[i].lat.toStringAsFixed(4)}, ${saved[i].lng.toStringAsFixed(4)}'),
-                      trailing: const Icon(Icons.chevron_right),
-                      onTap: () async {
-                        final origin = await currentPosition();
-                        if (!context.mounted) return;
+                    if (i > 0) const SizedBox(width: 12),
+                    _SavedPlaceCard(
+                      location: saved[i],
+                      distanceLabel: _origin == null
+                          ? null
+                          : _formatDistance(l10n, GeoPoint.distMeters(_origin!, GeoPoint(saved[i].lat, saved[i].lng))),
+                      onTap: () {
                         context.push(
                           '/home/route-preview',
                           extra: RoutePreviewArgs(
                             destinationName: saved[i].name,
                             destination: GeoPoint(saved[i].lat, saved[i].lng),
-                            origin: origin,
+                            origin: _origin,
                           ),
                         );
                       },
@@ -145,6 +170,48 @@ class HomeScreen extends ConsumerWidget {
                   ]),
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _SavedPlaceCard extends StatelessWidget {
+  const _SavedPlaceCard({required this.location, required this.distanceLabel, required this.onTap});
+
+  final SavedLocation location;
+
+  /// Formatted distance from the rider's current position, or null while no
+  /// GPS fix is available yet.
+  final String? distanceLabel;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(12),
+      child: Container(
+        width: 140,
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: theme.colorScheme.outlineVariant, width: 2),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              location.name,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 4),
+            if (distanceLabel != null) Text(distanceLabel!, style: theme.textTheme.bodyMedium),
+          ],
+        ),
       ),
     );
   }

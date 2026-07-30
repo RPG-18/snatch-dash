@@ -257,7 +257,7 @@ abstract class AppLocalizations {
   /// No description provided for @homeNoSavedDestinations.
   ///
   /// In en, this message translates to:
-  /// **'No saved destinations yet. Paste a Google Maps link on the Route tab, then tap \"Save this destination\".'**
+  /// **'No saved destinations yet. Search for a place on the Route tab and tap the bookmark icon to save it.'**
   String get homeNoSavedDestinations;
 
   /// No description provided for @homeRidesLabel.

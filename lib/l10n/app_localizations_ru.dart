@@ -100,7 +100,7 @@ class AppLocalizationsRu extends AppLocalizations {
 
   @override
   String get homeNoSavedDestinations =>
-      'Пока нет сохранённых мест. Вставьте ссылку Google Maps на вкладке «Маршрут», затем нажмите «Сохранить это место».';
+      'Пока нет сохранённых мест. Найдите место на вкладке «Маршрут» и нажмите на значок закладки, чтобы сохранить его.';
 
   @override
   String get homeRidesLabel => 'Поездки';

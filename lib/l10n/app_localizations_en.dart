@@ -99,7 +99,7 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get homeNoSavedDestinations =>
-      'No saved destinations yet. Paste a Google Maps link on the Route tab, then tap \"Save this destination\".';
+      'No saved destinations yet. Search for a place on the Route tab and tap the bookmark icon to save it.';
 
   @override
   String get homeRidesLabel => 'Rides';

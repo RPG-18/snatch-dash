@@ -142,6 +142,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                           ),
                         );
                       },
+                      onDelete: () => ref.read(savedDestinationsControllerProvider.notifier).remove(saved[i]),
                     ),
                   ],
                 ],
@@ -176,7 +177,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
 }
 
 class _SavedPlaceCard extends StatelessWidget {
-  const _SavedPlaceCard({required this.location, required this.distanceLabel, required this.onTap});
+  const _SavedPlaceCard({
+    required this.location,
+    required this.distanceLabel,
+    required this.onTap,
+    required this.onDelete,
+  });
 
   final SavedLocation location;
 
@@ -184,16 +190,18 @@ class _SavedPlaceCard extends StatelessWidget {
   /// GPS fix is available yet.
   final String? distanceLabel;
   final VoidCallback onTap;
+  final VoidCallback onDelete;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final l10n = AppLocalizations.of(context)!;
     return InkWell(
       onTap: onTap,
       borderRadius: BorderRadius.circular(12),
       child: Container(
-        width: 140,
-        padding: const EdgeInsets.all(12),
+        width: 160,
+        padding: const EdgeInsets.fromLTRB(12, 4, 4, 12),
         decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(12),
           border: Border.all(color: theme.colorScheme.outlineVariant, width: 2),
@@ -202,14 +210,34 @@ class _SavedPlaceCard extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           mainAxisSize: MainAxisSize.min,
           children: [
-            Text(
-              location.name,
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
-              style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.bold),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(
+                  child: Padding(
+                    padding: const EdgeInsets.only(top: 8),
+                    child: Text(
+                      location.name,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.bold),
+                    ),
+                  ),
+                ),
+                IconButton(
+                  tooltip: l10n.actionDelete,
+                  icon: const Icon(Icons.delete_outline, size: 20),
+                  visualDensity: VisualDensity.compact,
+                  onPressed: onDelete,
+                ),
+              ],
             ),
             const SizedBox(height: 4),
-            if (distanceLabel != null) Text(distanceLabel!, style: theme.textTheme.bodyMedium),
+            if (distanceLabel != null)
+              Padding(
+                padding: const EdgeInsets.only(left: 8),
+                child: Text(distanceLabel!, style: theme.textTheme.bodyMedium),
+              ),
           ],
         ),
       ),

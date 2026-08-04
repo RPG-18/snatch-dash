@@ -61,13 +61,14 @@ Maps). It uses its own pluggable raster tile source instead (see
   image/GIF flow has no single-call equivalent that also offers video.
 - No in-app wallpaper crop-bias editor yet (wallpapers default to centered
   crop); the store's `updateCurrentOptions` API already supports it.
-- No in-app shortcut to the notification-listener permission screen for the
-  media/call bridge (open it manually: Settings → Apps → Special access →
-  Notification access).
 - Route maneuver glyphs: only `CONTINUE` is ever sent to the dash (unchanged
   from the original — the Yandex driving router used here doesn't expose
   per-step maneuvers either, and the original's OSRM-derived glyph codes were
   never verified against the dash beyond `CONTINUE`).
+- No adaptive fps/bitrate switching for the dash video stream — the original
+  drops from 4 fps/200 kbps to 2 fps/100 kbps on long straights far from a
+  maneuver; this port always encodes at the "High" preset (see
+  [`spec/video.md`](spec/video.md)).
 
 ## 🛠️ Build From Source
 

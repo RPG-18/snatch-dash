@@ -1,3 +1,5 @@
+import java.util.Properties
+
 group = "com.opendash.opendash_dash_engine"
 version = "1.0-SNAPSHOT"
 
@@ -25,6 +27,24 @@ plugins {
     id("com.android.library")
 }
 
+// Read from the app's android/maptiler.local.properties (gitignored; see
+// android/maptiler.defaults.properties for the bring-your-own-key template).
+// This module is pulled in as a subproject of the app's root Gradle build
+// (Flutter's plugin loader does `settings.include` + sets projectDir, not a
+// separate composite build), so rootProject here IS android/ — same place
+// local.properties already lives. Falls back to empty so a fresh checkout
+// still builds; TileProvider's fetches just fail until a key is added.
+// Explicit `import java.util.Properties` above + unqualified `Properties()`
+// here — some plugin in this build registers a Project extension named
+// "java", which shadows the `java.*` package root, so `java.util.Properties`
+// doesn't resolve.
+val maptilerKey: String = run {
+    val props = Properties()
+    val file = rootProject.file("maptiler.local.properties")
+    if (file.exists()) file.inputStream().use { props.load(it) }
+    props.getProperty("MAPTILER_API_KEY", "")
+}
+
 android {
     namespace = "com.opendash.opendash_dash_engine"
 
@@ -46,6 +66,7 @@ android {
 
     defaultConfig {
         minSdk = 24
+        buildConfigField("String", "MAPTILER_API_KEY", "\"$maptilerKey\"")
     }
 
     buildFeatures {

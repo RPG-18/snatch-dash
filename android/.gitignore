@@ -5,6 +5,7 @@ gradle-wrapper.jar
 /gradlew.bat
 /local.properties
 /dart_defines.local.properties
+/maptiler.local.properties
 GeneratedPluginRegistrant.java
 .cxx/
 

@@ -7,6 +7,7 @@ import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.util.LruCache
+import com.opendash.opendash_dash_engine.BuildConfig
 import com.opendash.opendash_dash_engine.util.DebugLog
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -33,15 +34,19 @@ import java.util.concurrent.ConcurrentHashMap
 class TileProvider(context: Context, private val scope: CoroutineScope) {
     companion object {
         private const val TAG = "TileProvider"
-        // TODO(phase1-verify): OpenStreetMap's standard tile server, for development
-        // only — it has a strict usage policy (low volume, no bulk/offline redistribution
-        // without permission: https://operations.osmfoundation.org/policies/tiles/).
-        // Before any wider distribution, replace with a self-hosted or properly licensed
-        // raster source. This is deliberately NOT the in-app Yandex MapKit map — see the
-        // map-renderer finding in the project's migration plan for why the two can't share
-        // a tile source.
-        private const val URL_TEMPLATE =
-            "https://tile.openstreetmap.org/%d/%d/%d.png"
+        // Licensed raster source (MapTiler), keyed via BuildConfig.MAPTILER_API_KEY —
+        // see android/maptiler.defaults.properties for the bring-your-own-key template.
+        // This used to hit tile.openstreetmap.org directly, OSM's own dev-only tile
+        // server; that stopped working once OSM added anti-hotlink protection (requires
+        // a rotating TOTP token minted by JS on openstreetmap.org, so any direct request
+        // — this one included — gets rejected with HTTP 400). Tiles come back at 512px
+        // here vs. the old 256px; that's fine, MapRenderer draws each into a fixed
+        // Mercator.TILE_SIZE-sized dst Rect so Canvas.drawBitmap scales it regardless.
+        // Deliberately NOT the in-app Yandex MapKit map — see the map-renderer finding
+        // in the project's migration plan for why the two can't share a tile source.
+        // Not `const` — BuildConfig.MAPTILER_API_KEY isn't a Kotlin compile-time constant.
+        private val URL_TEMPLATE =
+            "https://api.maptiler.com/maps/streets-v2/%d/%d/%d.png?key=${BuildConfig.MAPTILER_API_KEY}"
         private const val USER_AGENT =
             "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Mobile Safari/537.36"
         private const val MAX_PREFETCH_TILES = 600

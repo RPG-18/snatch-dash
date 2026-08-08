@@ -34,6 +34,7 @@ import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import java.io.File
 import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.exp
@@ -326,6 +327,11 @@ class DashEngineController(
         wallpaperBiasX = biasX
         wallpaperBiasY = biasY
         wallpaperRevision++
+        // DashIdleRenderer fails silent on a bad path (blank/near-black idle frame,
+        // no exception) — log what actually landed here so that failure mode shows
+        // up somewhere instead of only being inferrable from tiny H.264 keyframes.
+        val exists = path?.let { File(it).exists() }
+        DebugLog.i(TAG) { "setWallpaper: path=$path kind=$wallpaperKind fit=$wallpaperFit exists=$exists" }
     }
 
     /** Turn-guidance chime for [VoiceMode.CHIME] — `ToneGenerator` has no Dart/Flutter

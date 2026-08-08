@@ -7,6 +7,7 @@ import 'package:yandex_maps_mapkit/mapkit_factory.dart' show mapkit;
 
 import 'l10n/app_localizations.dart';
 import 'router/app_router.dart';
+import 'state/dash_wallpaper_store.dart';
 import 'theme/app_theme.dart';
 import 'util/app_logger.dart';
 
@@ -54,11 +55,18 @@ class _MapkitLifecycleObserver extends WidgetsBindingObserver {
   }
 }
 
-class OpenDashApp extends StatelessWidget {
+class OpenDashApp extends ConsumerWidget {
   const OpenDashApp({super.key});
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    // Eagerly build dashWallpaperStoreProvider here — it's otherwise only
+    // watched by the Settings screen's wallpaper gallery, so if a session
+    // never visits Settings before connecting to the dash, the Notifier's
+    // build() (which pushes the saved wallpaper to the native engine via
+    // DashEngine.setWallpaper) never runs and the dash idle screen stays
+    // blank/black despite wallpaper slots being configured.
+    ref.watch(dashWallpaperStoreProvider);
     return MaterialApp.router(
       title: 'SnatchDash',
       debugShowCheckedModeBanner: false,

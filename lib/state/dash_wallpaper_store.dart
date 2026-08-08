@@ -10,6 +10,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../dash/dash_constants.dart';
 import '../models/dash_wallpaper.dart';
+import '../util/app_logger.dart' show talker;
 
 const _maxSlots = 5;
 const _directory = 'dash_wallpaper';
@@ -258,6 +259,13 @@ class DashWallpaperStore extends Notifier<List<DashWallpaperInfo>> {
 
   Future<void> _pushCurrentToEngine(SharedPreferences prefs) async {
     final c = current;
+    // This provider is only ever watched by the Settings screen's wallpaper
+    // gallery, so this is the only signal that a session actually pushed the
+    // saved wallpaper to the native engine before a dash connect — without
+    // it, a silent "provider never built" regression (see main.dart's eager
+    // ref.watch) shows up on the dash as a wallpaper-shaped black screen with
+    // nothing in the log to explain it.
+    talker.info('[DashWallpaperStore] pushing slot=${c?.slot} path=${c?.path} kind=${c?.kind.name}');
     await DashEngine.instance.setWallpaper(
       path: c?.path,
       kind: c?.kind.name.toUpperCase(),

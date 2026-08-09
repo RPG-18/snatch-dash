@@ -174,7 +174,7 @@ class RouteController extends Notifier<RouteState> {
 
     _navLoop?.stop();
     if (route != null) {
-      _navLoop = NavLoop(route)..start();
+      _navLoop = NavLoop(route, onRerouted: (r) => state = state.copyWith(route: r))..start();
     }
   }
 

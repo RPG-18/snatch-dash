@@ -1,0 +1,143 @@
+name: Nightly build
+
+# Ночная сборка Android APK из main. Запускается по расписанию (UTC!) и
+# вручную. Требует секретов репозитория:
+#   YANDEX_API_KEY   — см. android/dart_defines.defaults.properties
+#   MAPTILER_API_KEY — см. android/maptiler.defaults.properties
+# Без них сборка всё равно пройдёт (обе properties-заготовки принимают
+# пустое значение по умолчанию), но карта в приложении будет пустой.
+
+on:
+  schedule:
+    # 01:00 UTC == 04:00 MSK. Пропускается автоматически, если в main не
+    # было новых коммитов с прошлого успешного nightly (см. шаг "Check for
+    # new commits").
+    - cron: '0 1 * * *'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: 'Собрать, даже если новых коммитов нет'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write # нужно, чтобы публиковать nightly-релиз и двигать тег
+
+concurrency:
+  group: nightly-build
+  cancel-in-progress: true
+
+env:
+  FLUTTER_VERSION: '3.44.0' # см. README.md: "built against Flutter 3.44 / Dart 3.12"
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      should_build: ${{ steps.check.outputs.should_build }}
+      date: ${{ steps.vars.outputs.date }}
+      short_sha: ${{ steps.vars.outputs.short_sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # нужна полная история + теги для сравнения с nightly
+
+      - name: Check for new commits since last nightly
+        id: check
+        run: |
+          if [ "${{ inputs.force }}" = "true" ]; then
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          LAST=$(git rev-list -n 1 nightly 2>/dev/null || echo "none")
+          CURR=$(git rev-parse HEAD)
+          if [ "$LAST" = "$CURR" ]; then
+            echo "Нет новых коммитов с прошлого nightly ($CURR), пропускаю."
+            echo "should_build=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Compute build vars
+        id: vars
+        run: |
+          echo "date=$(date -u +%Y%m%d)" >> "$GITHUB_OUTPUT"
+          echo "short_sha=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: check
+    if: needs.check.outputs.should_build == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17' # см. android/app/build.gradle.kts: JavaVersion.VERSION_17
+
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('android/**/*.gradle*', 'android/gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: gradle-${{ runner.os }}-
+
+      - name: Accept Android SDK licenses
+        run: yes | "$ANDROID_HOME"/cmdline-tools/latest/bin/sdkmanager --licenses > /dev/null || true
+
+      - name: Write API key secrets
+        env:
+          YANDEX_API_KEY: ${{ secrets.YANDEX_API_KEY }}
+          MAPTILER_API_KEY: ${{ secrets.MAPTILER_API_KEY }}
+        run: |
+          echo "YANDEX_API_KEY=${YANDEX_API_KEY}" > android/dart_defines.local.properties
+          echo "MAPTILER_API_KEY=${MAPTILER_API_KEY}" > android/maptiler.local.properties
+
+      - run: flutter pub get
+
+      - name: Analyze
+        run: flutter analyze
+
+      - name: Test
+        run: flutter test
+
+      - name: Build release APK
+        run: |
+          flutter build apk --release \
+            --dart-define-from-file=android/dart_defines.local.properties \
+            --build-number=${{ github.run_number }}
+
+      - name: Rename APK
+        id: apk
+        run: |
+          NAME="snatch-dash-nightly-${{ needs.check.outputs.date }}-${{ needs.check.outputs.short_sha }}.apk"
+          mv build/app/outputs/flutter-apk/app-release.apk "build/app/outputs/flutter-apk/$NAME"
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.apk.outputs.name }}
+          path: build/app/outputs/flutter-apk/${{ steps.apk.outputs.name }}
+          retention-days: 14
+
+      - name: Publish nightly pre-release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: nightly-${{ needs.check.outputs.date }}
+          name: 'Nightly ${{ needs.check.outputs.date }} (${{ needs.check.outputs.short_sha }})'
+          prerelease: true
+          files: build/app/outputs/flutter-apk/${{ steps.apk.outputs.name }}
+
+      - name: Move moving "nightly" tag
+        run: |
+          git tag -f nightly
+          git push origin nightly --force

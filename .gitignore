@@ -44,8 +44,10 @@ app.*.map.json
 /android/app/profile
 /android/app/release
 
-# Secrets (bring-your-own-key, see android/dart_defines.defaults.properties)
+# Secrets (bring-your-own-key, see android/dart_defines.defaults.properties
+# and android/maptiler.defaults.properties)
 /android/dart_defines.local.properties
+/android/maptiler.local.properties
 
 # Decompiled reference app (not part of this project's source)
 /re_app/

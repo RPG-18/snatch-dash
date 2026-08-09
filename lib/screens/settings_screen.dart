@@ -6,6 +6,7 @@ import 'package:go_router/go_router.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:opendash_dash_engine/opendash_dash_engine.dart';
 import 'package:share_plus/share_plus.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../l10n/app_localizations.dart';
 import '../state/currency_settings.dart';
@@ -171,10 +172,32 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> with WidgetsBin
           ),
           const SizedBox(height: 16),
           Card(
-            child: ListTile(
-              leading: const Icon(Icons.info_outline),
-              title: Text(l10n.settingsAboutTitle),
-              subtitle: Text(l10n.settingsAboutSubtitle),
+            child: Column(
+              children: [
+                ListTile(
+                  leading: const Icon(Icons.info_outline),
+                  title: Text(l10n.settingsAboutTitle),
+                  subtitle: Text(l10n.settingsAboutSubtitle),
+                ),
+                ListTile(
+                  dense: true,
+                  // Empty leading matches the Icon above's footprint, so this
+                  // title lines up with the title/subtitle text instead of
+                  // starting flush with the card edge.
+                  leading: const SizedBox(width: 24, height: 24),
+                  title: Text(
+                    l10n.settingsAboutYandexTermsLink,
+                    style: TextStyle(
+                      color: Theme.of(context).colorScheme.primary,
+                      decoration: TextDecoration.underline,
+                    ),
+                  ),
+                  onTap: () => launchUrl(
+                    Uri.parse('https://yandex.ru/legal/maps_api'),
+                    mode: LaunchMode.externalApplication,
+                  ),
+                ),
+              ],
             ),
           ),
         ],

@@ -458,6 +458,9 @@ class AppLocalizationsEn extends AppLocalizations {
       'Flutter port · maps/nav via Yandex MapKit';
 
   @override
+  String get settingsAboutYandexTermsLink => 'Yandex Maps terms of use';
+
+  @override
   String get settingsSsidDialogTitle => 'Dash SSID';
 
   @override

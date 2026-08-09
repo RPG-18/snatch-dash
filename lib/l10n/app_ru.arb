@@ -143,6 +143,7 @@
   "settingsMediaAccessNotGranted": "Доступ не предоставлен — нажмите, чтобы открыть настройки",
   "settingsAboutTitle": "SnatchDash",
   "settingsAboutSubtitle": "Порт на Flutter · карты и навигация через Yandex MapKit",
+  "settingsAboutYandexTermsLink": "Условия использования Яндекс Карт",
   "settingsSsidDialogTitle": "SSID dash",
   "settingsExactSsidLabel": "Точный SSID",
   "settingsWifiPasswordDialogTitle": "Пароль WiFi",

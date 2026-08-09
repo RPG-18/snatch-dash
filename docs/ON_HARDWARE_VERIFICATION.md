@@ -20,7 +20,7 @@ found a regression (note it under **Findings** at the bottom).
 
 ## 1. Pairing / auth handshake
 
-- [ ] Prefix discovery (`RE_*`) finds the dash and the system Wi-Fi dialog
+- [x] Prefix discovery (`RE_*`) finds the dash and the system Wi-Fi dialog
       appears (`DashWifiManager.connect` with `prefixMatch=true`).
 - [ ] Exact-SSID reconnect works after the SSID is learned once
       (`DashConfig.ssid` persisted, `SettingsScreen` → "Set exact dash SSID"
@@ -35,7 +35,7 @@ found a regression (note it under **Findings** at the bottom).
 
 ## 2. Streaming / video pipeline
 
-- [ ] Dash decoder accepts the stream (map or wallpaper appears on the round
+- [x] Dash decoder accepts the stream (map or wallpaper appears on the round
       display, not stuck on the loading spinner) — confirms SPS normalization
       (`NalProcessor.normalizeSpsForDash`) still matches fw 11.63's whitelist.
 - [ ] IDR bundling (SPS+PPS+IDR with Annex-B start codes) still satisfies the

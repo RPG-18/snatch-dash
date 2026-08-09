@@ -896,6 +896,12 @@ abstract class AppLocalizations {
   /// **'Flutter port · maps/nav via Yandex MapKit'**
   String get settingsAboutSubtitle;
 
+  /// No description provided for @settingsAboutYandexTermsLink.
+  ///
+  /// In en, this message translates to:
+  /// **'Yandex Maps terms of use'**
+  String get settingsAboutYandexTermsLink;
+
   /// No description provided for @settingsSsidDialogTitle.
   ///
   /// In en, this message translates to:

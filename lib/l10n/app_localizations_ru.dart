@@ -462,6 +462,10 @@ class AppLocalizationsRu extends AppLocalizations {
       'Порт на Flutter · карты и навигация через Yandex MapKit';
 
   @override
+  String get settingsAboutYandexTermsLink =>
+      'Условия использования Яндекс Карт';
+
+  @override
   String get settingsSsidDialogTitle => 'SSID dash';
 
   @override

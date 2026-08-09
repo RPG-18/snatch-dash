@@ -159,6 +159,7 @@
   "settingsMediaAccessNotGranted": "Access not granted — tap to open settings",
   "settingsAboutTitle": "SnatchDash",
   "settingsAboutSubtitle": "Flutter port · maps/nav via Yandex MapKit",
+  "settingsAboutYandexTermsLink": "Yandex Maps terms of use",
   "settingsSsidDialogTitle": "Dash SSID",
   "settingsExactSsidLabel": "Exact SSID",
   "settingsWifiPasswordDialogTitle": "WiFi password",

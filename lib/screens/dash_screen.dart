@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 import 'package:opendash_dash_engine/opendash_dash_engine.dart';
 
 import '../l10n/app_localizations.dart';
@@ -123,7 +124,10 @@ class DashScreen extends ConsumerWidget {
               child: FloatingActionButton.small(
                 heroTag: 'exitNav',
                 tooltip: l10n.dashExitNavigationTooltip,
-                onPressed: () => ref.read(routeControllerProvider.notifier).exitNavigation(),
+                onPressed: () {
+                  ref.read(routeControllerProvider.notifier).exitNavigation();
+                  context.go('/home');
+                },
                 child: const Icon(Icons.close),
               ),
             ),

@@ -3,7 +3,7 @@
 **Файл:** [`lib/screens/dash_screen.dart`](../lib/screens/dash_screen.dart)
 **Виджет:** `DashScreen` (`ConsumerWidget`)
 **Route:** `/home/dash` — открывается с тайла «Подключиться к dash»/«Экран
-dash» на Главной, либо с кнопки «Отправить на Dash» на экране Маршрута.
+dash» на Главной, либо с кнопки "Поехали" на экране [Маршруты](./route_preview_screen.md).
 
 ## Назначение
 

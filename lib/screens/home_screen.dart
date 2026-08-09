@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:opendash_dash_engine/opendash_dash_engine.dart';
 
 import '../l10n/app_localizations.dart';
 import '../models/route_preview_args.dart';
@@ -11,6 +12,7 @@ import '../state/rides_controller.dart';
 import '../state/saved_destinations_controller.dart';
 import '../state/vehicle_store.dart';
 import '../util/current_position.dart';
+import '../util/location_permission.dart';
 
 /// Landing tab: connect status, saved destinations, recent rides. Ports
 /// `HomeScreen.kt`.
@@ -42,6 +44,24 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         : l10n.unitM(meters.round().toString());
   }
 
+  /// Tapping the status card connects to the dash (a no-op while already
+  /// connecting/connected). The native engine streams the configured idle
+  /// wallpaper as a static image as soon as the link comes up, before any
+  /// nav data is available — see `DashWallpaperStore`.
+  Future<void> _connect(BuildContext context, DashStage stage) async {
+    if (stage != DashStage.idle && stage != DashStage.error) return;
+    if (!await ensureLocationPermission()) {
+      if (context.mounted) {
+        final l10n = AppLocalizations.of(context)!;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(l10n.dashGpsPermissionRequired)),
+        );
+      }
+      return;
+    }
+    DashEngine.instance.connect();
+  }
+
   @override
   Widget build(BuildContext context) {
     final engine = ref.watch(dashEngineStateProvider);
@@ -65,28 +85,32 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         padding: const EdgeInsets.all(16),
         children: [
           Card(
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Row(
-                children: [
-                  CircleAvatar(radius: 28, backgroundColor: statusColor.withValues(alpha: 0.15), child: Icon(Icons.two_wheeler, color: statusColor)),
-                  const SizedBox(width: 16),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Row(children: [
-                          Icon(Icons.circle, size: 10, color: statusColor),
-                          const SizedBox(width: 6),
-                          Text(statusLabel, style: theme.textTheme.titleMedium),
-                        ]),
-                        Text(statusSub, style: theme.textTheme.bodySmall),
-                        const SizedBox(height: 6),
-                        Chip(label: Text(vehicle.title), avatar: const Icon(Icons.two_wheeler, size: 16)),
-                      ],
+            child: InkWell(
+              borderRadius: BorderRadius.circular(12),
+              onTap: () => _connect(context, engine.stage),
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Row(
+                  children: [
+                    CircleAvatar(radius: 28, backgroundColor: statusColor.withValues(alpha: 0.15), child: Icon(Icons.two_wheeler, color: statusColor)),
+                    const SizedBox(width: 16),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(children: [
+                            Icon(Icons.circle, size: 10, color: statusColor),
+                            const SizedBox(width: 6),
+                            Text(statusLabel, style: theme.textTheme.titleMedium),
+                          ]),
+                          Text(statusSub, style: theme.textTheme.bodySmall),
+                          const SizedBox(height: 6),
+                          Chip(label: Text(vehicle.title), avatar: const Icon(Icons.two_wheeler, size: 16)),
+                        ],
+                      ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
             ),
           ),

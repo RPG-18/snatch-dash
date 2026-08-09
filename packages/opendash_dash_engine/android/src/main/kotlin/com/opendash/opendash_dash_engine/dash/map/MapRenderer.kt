@@ -34,6 +34,10 @@ class MapRenderer(private val tiles: TileProvider) {
         val destLng: Double? = null,
         val destName: String? = null,
         val route: List<GeoPoint> = emptyList(),
+        // Traffic-level code per route segment (index i = route[i]..route[i+1]),
+        // 0=unknown..5=veryHard — see jamColors below. Empty/mismatched length
+        // (no traffic data for this route) falls back to a solid [routeBlue] line.
+        val routeJam: List<Int> = emptyList(),
         val maneuverText: String? = null,  // e.g. "Turn left · 400 m"
         val remainingText: String? = null, // e.g. "186 km"
         val tilt3d: Boolean = false,       // perspective 3D view (nav heading-up only)
@@ -44,8 +48,19 @@ class MapRenderer(private val tiles: TileProvider) {
     )
 
     private val bgColor   = Color.rgb(229, 227, 223) // Google Maps land colour, behind missing tiles
-    private val routeBlue = Color.rgb(66, 133, 244)  // Google Maps directions blue (#4285F4)
+    private val routeBlue = Color.rgb(66, 133, 244)  // Google Maps directions blue (#4285F4) — fallback when no jam data
     private val googleRed = Color.rgb(234, 67, 53)   // Google destination pin red (#EA4335)
+
+    // Traffic palette, indexed by the jam-level codes in [Frame.routeJam] — mirrors
+    // the app-side `JamLevel`/`jamColors` table 1:1, see spec/yande_ruote.md.
+    private val jamColors = intArrayOf(
+        Color.rgb(0x90, 0x90, 0x90), // 0 unknown
+        Color.rgb(0x00, 0x00, 0x00), // 1 blocked
+        Color.rgb(0x00, 0xFF, 0x00), // 2 free
+        Color.rgb(0xFF, 0xFF, 0x00), // 3 light
+        Color.rgb(0xFF, 0x00, 0x00), // 4 hard
+        Color.rgb(0xA0, 0x00, 0x00), // 5 veryHard
+    )
 
     private val tilePaint  = Paint(Paint.FILTER_BITMAP_FLAG).apply {
         // Gentle saturation nudge to help against the dash TFT's daylight wash-out. No
@@ -59,6 +74,10 @@ class MapRenderer(private val tiles: TileProvider) {
     private val routePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = routeBlue; style = Paint.Style.STROKE
         strokeWidth = 6f; strokeCap = Paint.Cap.ROUND; strokeJoin = Paint.Join.ROUND
+    }
+    private val riderCasing = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.WHITE; style = Paint.Style.STROKE
+        strokeWidth = 3f; strokeJoin = Paint.Join.ROUND
     }
     private val dotPaint     = Paint(Paint.ANTI_ALIAS_FLAG)
     private val textPaint    = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE; textSize = 22f; isFakeBoldText = true }
@@ -144,13 +163,30 @@ class MapRenderer(private val tiles: TileProvider) {
             canvas.drawBitmap(bmp, null, tmpRect, tilePaint)
         }
 
-        // ── Road route polyline ──
+        // ── Road route polyline (casing, then traffic-coloured fill) ──
         if (f.route.size >= 2) {
             routePath.reset()
             routePath.moveTo(sx(f.route[0].lng), sy(f.route[0].lat))
             for (i in 1 until f.route.size) routePath.lineTo(sx(f.route[i].lng), sy(f.route[i].lat))
             canvas.drawPath(routePath, routeCasing)
-            canvas.drawPath(routePath, routePaint)
+
+            val segCount = f.route.size - 1
+            if (f.routeJam.size == segCount) {
+                // Traffic data available for every segment — colour each one, same
+                // per-segment approach as the in-app map's `applyJamColors`.
+                for (i in 0 until segCount) {
+                    routePaint.color = jamColors.getOrElse(f.routeJam[i]) { routeBlue }
+                    canvas.drawLine(
+                        sx(f.route[i].lng), sy(f.route[i].lat),
+                        sx(f.route[i + 1].lng), sy(f.route[i + 1].lat),
+                        routePaint,
+                    )
+                }
+            } else {
+                // No/partial traffic data for this route — solid fallback.
+                routePaint.color = routeBlue
+                canvas.drawPath(routePath, routePaint)
+            }
         }
 
         // ── Destination pin ──
@@ -162,7 +198,13 @@ class MapRenderer(private val tiles: TileProvider) {
             dotPaint.color = Color.WHITE; canvas.drawCircle(dx, dy, 3.5f, dotPaint)
         }
 
-        // ── Rider marker (Google blue) ──
+        // ── Rider marker: navigation arrow, oriented to travel heading ──
+        // Same kite/dart silhouette as the app's `Icons.navigation_outlined` (Home
+        // screen's "Начать навигацию" tile) instead of a plain dot. Always drawn
+        // "pointing up" then rotated by [f.heading]: in heading-up mode that
+        // rotation cancels the map's own -heading rotation above, so the arrow
+        // stays pointing at the top of the screen ("forward"); in north-up mode
+        // there's no outer rotation, so it directly shows the true compass bearing.
         if (f.riderLat != null && f.riderLng != null) {
             val rx = sx(f.riderLng); val ry = sy(f.riderLat)
             val markerColor = when {
@@ -177,21 +219,17 @@ class MapRenderer(private val tiles: TileProvider) {
                 Color.blue(markerColor),
             )
             canvas.drawCircle(rx, ry, 17f, dotPaint)
-            if (rotate) {
-                // Heading-up: blue chevron pointing up (travel direction)
-                riderPath.reset()
-                riderPath.moveTo(rx, ry - 11f)
-                riderPath.lineTo(rx - 7f, ry + 7f)
-                riderPath.lineTo(rx + 7f, ry + 7f)
-                riderPath.close()
-                canvas.save(); canvas.rotate(f.heading, rx, ry)
-                dotPaint.color = Color.WHITE; canvas.drawCircle(rx, ry, 9f, dotPaint)
-                dotPaint.color = markerColor; canvas.drawPath(riderPath, dotPaint)
-                canvas.restore()
-            } else {
-                dotPaint.color = Color.WHITE; canvas.drawCircle(rx, ry, 8f, dotPaint)
-                dotPaint.color = markerColor; canvas.drawCircle(rx, ry, 5.5f, dotPaint)
-            }
+
+            canvas.save(); canvas.rotate(f.heading, rx, ry)
+            riderPath.reset()
+            riderPath.moveTo(rx, ry - 13f)      // tip (front)
+            riderPath.lineTo(rx + 9f, ry + 9f)  // right wing
+            riderPath.lineTo(rx, ry + 3f)       // back notch (concave)
+            riderPath.lineTo(rx - 9f, ry + 9f)  // left wing
+            riderPath.close()
+            canvas.drawPath(riderPath, riderCasing)
+            dotPaint.color = markerColor; canvas.drawPath(riderPath, dotPaint)
+            canvas.restore()
         }
 
         if (rotate) canvas.restore()

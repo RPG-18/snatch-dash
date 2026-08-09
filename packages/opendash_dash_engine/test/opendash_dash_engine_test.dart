@@ -36,6 +36,7 @@ class MockOpendashDashEnginePlatform
     String? etaHHMM,
     bool offRoute = false,
     List<List<double>> points = const [],
+    List<int> jamSegments = const [],
   }) async {}
 
   @override

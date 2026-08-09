@@ -40,6 +40,11 @@ abstract class OpendashDashEnginePlatform extends PlatformInterface {
       throw UnimplementedError();
   Future<void> clearDestination() => throw UnimplementedError();
 
+  /// [jamSegments] is one traffic-level code per geometry segment (length
+  /// `points.length - 1`), so index `i` covers `points[i]` to `points[i+1]`
+  /// — same convention as `nav.Route.jamSegments`/`JamLevel.index` on the
+  /// Dart app side. Only meaningful when [points] is non-empty; ignored
+  /// (native side falls back to a solid line) if its length doesn't match.
   Future<void> setNavState({
     double? remainingMeters,
     double? nextTurnMeters,
@@ -47,6 +52,7 @@ abstract class OpendashDashEnginePlatform extends PlatformInterface {
     String? etaHHMM,
     bool offRoute = false,
     List<List<double>> points = const [],
+    List<int> jamSegments = const [],
   }) =>
       throw UnimplementedError();
 

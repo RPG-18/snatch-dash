@@ -1,8 +1,10 @@
 # Параметры рисования маршрута (Yandex MapKit)
 
 Фиксирует визуальные параметры, которыми маршруты рисуются на карте в
-приложении (не путать с рендером на физическом дэше — там свой нативный
-движок). Два места рисования:
+приложении, и (отдельным разделом внизу) ту же раскраску по пробкам на
+физическом дэше — у него свой нативный движок рисования (`Canvas`/`Paint`,
+не Yandex MapKit), но палитра и правило фолбэка одинаковые. Два места
+рисования в приложении:
 
 - [`lib/map/opendash_map.dart`](../lib/map/opendash_map.dart) —
   `OpenDashMap`, один активный маршрут (экран [Dash](dash_screen.md)).
@@ -103,3 +105,42 @@
 | `light` | `0xFFFFFF00` (жёлтый) |
 | `hard` | `0xFFFF0000` (красный) |
 | `veryHard` | `0xFFA00000` (тёмно-красный) |
+
+## Раскраска по пробкам на физическом дэше
+
+До этого раздела всё — про `yandex_mapkit`-карты внутри приложения.
+Отдельно от них есть нативный рендер, который реально стримится на дэш
+([FSM](fsm.md), состояние `navigating`) — свой `Canvas`/`Paint` в
+[`MapRenderer.kt`](../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/map/MapRenderer.kt),
+без зависимости от Yandex MapKit (см. `TileProvider.kt`'s doc comment на
+эту тему). Линия маршрута там раньше красилась одним сплошным синим
+(`routeBlue`, тот же `0xFF4285F4`, что и фолбэк `OpenDashMap` выше) —
+теперь красится по той же самой палитре, что и в таблице выше.
+
+Путь данных:
+
+1. [`lib/nav/nav_loop.dart`](../lib/nav/nav_loop.dart) — при первом
+   `start()` и при каждом успешном
+   [пересчёте маршрута](route_restructuring.md) шлёт
+   `route.jamSegments.map((j) => j.index)` вместе с геометрией через
+   `DashEngine.setNavState(points: ..., jamSegments: ...)`. На обычных
+   1 Hz тиках (`points: const []`) `jamSegments` не пересылается — как и
+   геометрия, трафик считается частью маршрута, а не живых обновлений.
+2. Метод-канал (`OpendashDashEnginePlugin.kt`) декодирует `jamSegments` как
+   `List<Int>` — те же индексы `JamLevel.index` (0=`unknown`…5=`veryHard`),
+   что и `jam_paint.dart` использует для `setStrokeColors` в
+   `RouteOptionsMap`.
+3. `DashEngineController.setNavState` хранит их в `routeJam` **только**
+   если `jamSegments.size == points.size - 1` — иначе (нет данных о
+   пробках для этого маршрута/рассинхрон) `routeJam` очищается, тот же
+   фолбэк-принцип, что и `applyJamColors()` в приложении.
+4. `MapRenderer.draw()`: если `routeJam.size` совпадает с числом сегментов
+   геометрии — каждый сегмент красится своим `canvas.drawLine(...)` по
+   палитре `jamColors` (Kotlin `IntArray`, 1:1 с таблицей выше); иначе —
+   один сплошной `routePaint` цвета `routeBlue` поверх белой окантовки
+   (`routeCasing`), как раньше.
+
+Палитра и правило фолбэка дублируются в Kotlin (`MapRenderer.jamColors`) и
+в Dart (`jam_paint.dart`'s `jamColors`) намеренно — общий тип между модулем
+плагина и приложением здесь не заводили, те же соображения, что и у
+`dash/map/GeoPoint.kt` (см. его doc comment).

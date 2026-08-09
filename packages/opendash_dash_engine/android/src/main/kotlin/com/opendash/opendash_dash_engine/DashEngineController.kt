@@ -97,6 +97,10 @@ class DashEngineController(
     @Volatile private var destLng: Double? = null
     @Volatile private var navigating = false
     @Volatile private var routePoints: List<GeoPoint> = emptyList()
+    // Traffic-level code per geometry segment (index i covers routePoints[i]..[i+1]),
+    // same encoding as Dart's `JamLevel.index` — see setNavState's doc. Empty means
+    // "no traffic data for this route", MapRenderer then falls back to a solid line.
+    @Volatile private var routeJam: List<Int> = emptyList()
     @Volatile private var remainingM: Double? = null
     @Volatile private var offRoute = false
 
@@ -240,7 +244,7 @@ class DashEngineController(
 
     fun clearDestination() {
         destName = null; destLat = null; destLng = null
-        navigating = false; routePoints = emptyList()
+        navigating = false; routePoints = emptyList(); routeJam = emptyList()
         session.updateRouteCard("OpenDash")
     }
 
@@ -249,6 +253,8 @@ class DashEngineController(
      * is the route geometry; Dart only needs to send it once when the route
      * is (re)computed — an empty list here means "keep the geometry already
      * held", so the 1 Hz progress tick doesn't have to resend it every call.
+     * [jamSegments] rides along with [points] under the same rule (only
+     * applied when [points] is non-empty) — see [routeJam]'s doc.
      */
     fun setNavState(
         remainingMeters: Double?,
@@ -257,11 +263,15 @@ class DashEngineController(
         etaHHMM: String?,
         isOffRoute: Boolean,
         points: List<GeoPoint>,
+        jamSegments: List<Int> = emptyList(),
     ) {
         remainingM = remainingMeters
         offRoute = isOffRoute
         if (points.isNotEmpty()) {
             routePoints = points
+            // Mismatched length means stale/missing traffic data for this route —
+            // MapRenderer's solid-line fallback then kicks in (spec/yande_ruote.md).
+            routeJam = if (jamSegments.size == points.size - 1) jamSegments else emptyList()
             tileProvider.prefetchRoute(points)
         }
         if (remainingMeters != null && nextTurnMeters != null) {
@@ -537,6 +547,7 @@ class DashEngineController(
             destLng = destLng,
             destName = destName,
             route = routePoints,
+            routeJam = routeJam,
             gpsWeak = gpsWeak,
             gpsLost = gpsLost,
         )

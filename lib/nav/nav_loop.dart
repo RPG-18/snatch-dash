@@ -56,6 +56,7 @@ class NavLoop {
       nextTurnMeters: _route.totalMeters,
       offRoute: false,
       points: _route.geometry.map((p) => [p.lat, p.lng]).toList(),
+      jamSegments: _route.jamSegments.map((j) => j.index).toList(),
     );
     _sub = DashEngine.instance.stateStream.listen(_onEngineEvent);
     _timer = Timer.periodic(const Duration(seconds: 1), (_) => _tick());
@@ -151,6 +152,7 @@ class NavLoop {
         nextTurnMeters: newRoute.totalMeters,
         offRoute: false,
         points: newRoute.geometry.map((p) => [p.lat, p.lng]).toList(),
+        jamSegments: newRoute.jamSegments.map((j) => j.index).toList(),
       );
     } finally {
       _rerouting = false;

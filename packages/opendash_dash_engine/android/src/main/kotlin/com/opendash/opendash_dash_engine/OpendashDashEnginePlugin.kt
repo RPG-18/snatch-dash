@@ -99,6 +99,7 @@ class OpendashDashEnginePlugin : FlutterPlugin, MethodCallHandler, EventChannel.
 
             "setNavState" -> {
                 val rawPoints = call.argument<List<List<Double>>>("points").orEmpty()
+                val rawJam = call.argument<List<Int>>("jamSegments").orEmpty()
                 c.setNavState(
                     remainingMeters = call.argument<Double>("remainingMeters"),
                     nextTurnMeters = call.argument<Double>("nextTurnMeters"),
@@ -106,6 +107,7 @@ class OpendashDashEnginePlugin : FlutterPlugin, MethodCallHandler, EventChannel.
                     etaHHMM = call.argument<String>("etaHHMM"),
                     isOffRoute = call.argument<Boolean>("offRoute") ?: false,
                     points = rawPoints.map { GeoPoint(it[0], it[1]) },
+                    jamSegments = rawJam,
                 )
                 result.success(null)
             }

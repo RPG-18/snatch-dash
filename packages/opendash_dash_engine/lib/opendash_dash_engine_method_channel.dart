@@ -61,6 +61,7 @@ class MethodChannelOpendashDashEngine extends OpendashDashEnginePlatform {
     String? etaHHMM,
     bool offRoute = false,
     List<List<double>> points = const [],
+    List<int> jamSegments = const [],
   }) =>
       methodChannel.invokeMethod('setNavState', {
         'remainingMeters': remainingMeters,
@@ -69,6 +70,7 @@ class MethodChannelOpendashDashEngine extends OpendashDashEnginePlatform {
         'etaHHMM': etaHHMM,
         'offRoute': offRoute,
         'points': points,
+        'jamSegments': jamSegments,
       });
 
   @override

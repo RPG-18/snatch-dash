@@ -84,7 +84,17 @@ jobs:
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17' # см. android/app/build.gradle.kts: JavaVersion.VERSION_17
+          # This is the JDK that *runs* javac, not the app's own bytecode
+          # target (that's android/app/build.gradle.kts's sourceCompatibility/
+          # targetCompatibility = VERSION_17, unrelated and unaffected by this).
+          # yandex_maps_mapkit's prebuilt .aar ships class files compiled by
+          # Java 21 (class file version 65) — a JDK 17 javac can't even read
+          # those off the classpath ("bad class file ... wrong version 65.0,
+          # should be 61.0"), regardless of target. Must stay >= whatever JDK
+          # that dependency was built with; 21 matches Android Studio's
+          # bundled JBR, which is what local builds use (`flutter config`'s
+          # JDK auto-detection finds it first, ahead of JAVA_HOME).
+          java-version: '21'
 
       - name: Cache Gradle
         uses: actions/cache@v4

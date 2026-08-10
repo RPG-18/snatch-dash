@@ -28,7 +28,11 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  FLUTTER_VERSION: '3.44.0' # см. README.md: "built against Flutter 3.44 / Dart 3.12"
+  # Must ship a Dart SDK satisfying pubspec.yaml's `sdk: ^3.12.2` — Flutter
+  # 3.44.0 bundles Dart 3.12.0 and fails `flutter pub get` on this constraint;
+  # 3.44.6 bundles 3.12.2 (matches local dev + .metadata's pinned revision).
+  # Bump only alongside pubspec.yaml's sdk constraint, not independently.
+  FLUTTER_VERSION: '3.44.6'
 
 jobs:
   check:

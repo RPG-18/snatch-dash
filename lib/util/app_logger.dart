@@ -15,7 +15,7 @@ final talker = TalkerFlutter.init();
 PersistentLogWriter? _persistentLog;
 
 /// Wires up on-disk persistence (see [PersistentLogWriter]) so the log
-/// survives app restarts, capped at 2 MB total. Call once from `main()`,
+/// survives app restarts, capped at 20 MB total. Call once from `main()`,
 /// before anything else logs, so nothing is missed.
 Future<void> attachPersistentLog() async {
   final writer = await PersistentLogWriter.create();

@@ -9,6 +9,7 @@ import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.Rect
 import android.graphics.RectF
+import kotlin.math.cos
 
 /**
  * Draws the navigation frame for the Tripper Dash (526 × 300).
@@ -106,6 +107,40 @@ class MapRenderer(private val tiles: TileProvider) {
     private val tiltSrc = FloatArray(8)
     private val tiltDst = FloatArray(8)
 
+    /**
+     * Nearest point on the route polyline to (lat, lng), as (segment index,
+     * projected point on that segment). Local equirectangular approximation
+     * referenced to the route's first point — fine at road/city scale, same
+     * idea as Dart's `GeoPoint.projectOnSegment` (nav_engine.dart), just not
+     * shared code since the route geometry crosses the platform channel as
+     * plain coordinate pairs (see [GeoPoint]'s doc). Null for <2 points.
+     */
+    private fun nearestOnRoute(route: List<GeoPoint>, lat: Double, lng: Double): Pair<Int, GeoPoint>? {
+        if (route.size < 2) return null
+        val cosRef = cos(Math.toRadians(route[0].lat))
+        fun x(g: GeoPoint) = Math.toRadians(g.lng) * cosRef
+        fun y(g: GeoPoint) = Math.toRadians(g.lat)
+        val px = x(GeoPoint(lat, lng)); val py = y(GeoPoint(lat, lng))
+
+        var bestIdx = 0
+        var bestT = 0.0
+        var bestDist2 = Double.MAX_VALUE
+        for (i in 0 until route.size - 1) {
+            val a = route[i]; val b = route[i + 1]
+            val ax = x(a); val ay = y(a); val bx = x(b); val by = y(b)
+            val dx = bx - ax; val dy = by - ay
+            val len2 = dx * dx + dy * dy
+            val t = if (len2 == 0.0) 0.0
+                else (((px - ax) * dx + (py - ay) * dy) / len2).coerceIn(0.0, 1.0)
+            val ddx = px - (ax + dx * t); val ddy = py - (ay + dy * t)
+            val dist2 = ddx * ddx + ddy * ddy
+            if (dist2 < bestDist2) { bestDist2 = dist2; bestIdx = i; bestT = t }
+        }
+        val a = route[bestIdx]; val b = route[bestIdx + 1]
+        val proj = GeoPoint(a.lat + (b.lat - a.lat) * bestT, a.lng + (b.lng - a.lng) * bestT)
+        return bestIdx to proj
+    }
+
     fun draw(canvas: Canvas, f: Frame) {
         val w = canvas.width
         val h = canvas.height
@@ -164,21 +199,36 @@ class MapRenderer(private val tiles: TileProvider) {
         }
 
         // ── Road route polyline (casing, then traffic-coloured fill) ──
-        if (f.route.size >= 2) {
+        // Trimmed to the road AHEAD: find the segment nearest the rider and start
+        // the line at the projected point on it, dropping everything behind — so
+        // the travelled part disappears from under the arrow as it advances,
+        // instead of leaving the whole route drawn start-to-finish.
+        val (drawRoute, drawJam) = run {
+            val rLat = f.riderLat; val rLng = f.riderLng
+            val near = if (rLat != null && rLng != null) nearestOnRoute(f.route, rLat, rLng) else null
+            if (near == null) return@run f.route to f.routeJam
+            val (segIdx, proj) = near
+            val trimmed = listOf(proj) + f.route.subList(segIdx + 1, f.route.size)
+            val trimmedJam =
+                if (f.routeJam.size == f.route.size - 1) f.routeJam.subList(segIdx, f.routeJam.size)
+                else f.routeJam
+            trimmed to trimmedJam
+        }
+        if (drawRoute.size >= 2) {
             routePath.reset()
-            routePath.moveTo(sx(f.route[0].lng), sy(f.route[0].lat))
-            for (i in 1 until f.route.size) routePath.lineTo(sx(f.route[i].lng), sy(f.route[i].lat))
+            routePath.moveTo(sx(drawRoute[0].lng), sy(drawRoute[0].lat))
+            for (i in 1 until drawRoute.size) routePath.lineTo(sx(drawRoute[i].lng), sy(drawRoute[i].lat))
             canvas.drawPath(routePath, routeCasing)
 
-            val segCount = f.route.size - 1
-            if (f.routeJam.size == segCount) {
+            val segCount = drawRoute.size - 1
+            if (drawJam.size == segCount) {
                 // Traffic data available for every segment — colour each one, same
                 // per-segment approach as the in-app map's `applyJamColors`.
                 for (i in 0 until segCount) {
-                    routePaint.color = jamColors.getOrElse(f.routeJam[i]) { routeBlue }
+                    routePaint.color = jamColors.getOrElse(drawJam[i]) { routeBlue }
                     canvas.drawLine(
-                        sx(f.route[i].lng), sy(f.route[i].lat),
-                        sx(f.route[i + 1].lng), sy(f.route[i + 1].lat),
+                        sx(drawRoute[i].lng), sy(drawRoute[i].lat),
+                        sx(drawRoute[i + 1].lng), sy(drawRoute[i + 1].lat),
                         routePaint,
                     )
                 }

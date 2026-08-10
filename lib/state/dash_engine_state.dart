@@ -31,7 +31,7 @@ class DashEngineState {
     this.gpsWeak = false,
     this.errorMessage,
     this.followMode = true,
-    this.headingUp = false,
+    this.headingUp = true,
     this.nowPlayingTitle,
     this.incomingCaller,
   });
@@ -69,7 +69,7 @@ class DashEngineState {
         gpsWeak: map['gpsWeak'] as bool? ?? false,
         errorMessage: map['errorMessage'] as String?,
         followMode: map['followMode'] as bool? ?? true,
-        headingUp: map['headingUp'] as bool? ?? false,
+        headingUp: map['headingUp'] as bool? ?? true,
         nowPlayingTitle: map['nowPlayingTitle'] as String?,
         incomingCaller: map['incomingCaller'] as String?,
       );

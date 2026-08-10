@@ -9,13 +9,14 @@ import 'package:talker/talker.dart';
 /// and can be pulled off the device without the app running (phone screen is
 /// usually off mid-ride, so the in-app log screen isn't reachable then).
 ///
-/// Two rotating files capped at 1 MB each (2 MB total): once the active file
-/// would exceed 1 MB, it becomes the backup and a fresh one starts. Writes
-/// are chained through [_queue] so concurrent log calls never interleave.
+/// Two rotating files capped at 10 MB each (20 MB total): once the active
+/// file would exceed 10 MB, it becomes the backup and a fresh one starts.
+/// Writes are chained through [_queue] so concurrent log calls never
+/// interleave.
 class PersistentLogWriter extends TalkerObserver {
   PersistentLogWriter._(this.currentFile, this.previousFile);
 
-  static const _maxFileBytes = 1 * 1024 * 1024;
+  static const _maxFileBytes = 10 * 1024 * 1024;
 
   final File currentFile;
   final File previousFile;

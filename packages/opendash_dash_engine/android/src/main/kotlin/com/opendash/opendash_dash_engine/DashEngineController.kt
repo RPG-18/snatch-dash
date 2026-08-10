@@ -126,7 +126,7 @@ class DashEngineController(
     @Volatile private var zoom = 17
     @Volatile private var panX = 0f
     @Volatile private var panY = 0f
-    @Volatile private var headingUp = false
+    @Volatile private var headingUp = true
     @Volatile private var followMode = true
     @Volatile private var lastManualPanAt = 0L
     private var camLat = 0.0

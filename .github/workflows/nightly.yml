@@ -124,23 +124,31 @@ jobs:
       - name: Test
         run: flutter test
 
-      - name: Build release APK
+      - name: Build release APKs
         run: |
-          flutter build apk --release \
+          # --split-per-abi: one APK per ABI instead of a single ~160MB fat
+          # APK bundling all three (yandex_maps_mapkit's native lib alone is
+          # 30-40MB per ABI). x86_64 dropped — real phones don't use it, only
+          # emulators do; --target-platform intentionally omits it.
+          flutter build apk --release --split-per-abi \
+            --target-platform android-arm,android-arm64 \
             --dart-define-from-file=android/dart_defines.local.properties \
             --build-number=${{ github.run_number }}
 
-      - name: Rename APK
+      - name: Rename APKs
         id: apk
         run: |
-          NAME="snatch-dash-nightly-${{ needs.check.outputs.date }}-${{ needs.check.outputs.short_sha }}.apk"
-          mv build/app/outputs/flutter-apk/app-release.apk "build/app/outputs/flutter-apk/$NAME"
-          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+          BASENAME="snatch-dash-nightly-${{ needs.check.outputs.date }}-${{ needs.check.outputs.short_sha }}"
+          for f in build/app/outputs/flutter-apk/app-*-release.apk; do
+            abi="$(basename "$f" | sed -E 's/^app-(.*)-release\.apk$/\1/')"
+            mv "$f" "build/app/outputs/flutter-apk/${BASENAME}-${abi}.apk"
+          done
+          echo "basename=$BASENAME" >> "$GITHUB_OUTPUT"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: ${{ steps.apk.outputs.name }}
-          path: build/app/outputs/flutter-apk/${{ steps.apk.outputs.name }}
+          name: ${{ steps.apk.outputs.basename }}
+          path: build/app/outputs/flutter-apk/${{ steps.apk.outputs.basename }}-*.apk
           retention-days: 14
 
       - name: Publish nightly pre-release
@@ -149,7 +157,7 @@ jobs:
           tag_name: nightly-${{ needs.check.outputs.date }}
           name: 'Nightly ${{ needs.check.outputs.date }} (${{ needs.check.outputs.short_sha }})'
           prerelease: true
-          files: build/app/outputs/flutter-apk/${{ steps.apk.outputs.name }}
+          files: build/app/outputs/flutter-apk/${{ steps.apk.outputs.basename }}-*.apk
 
       - name: Move moving "nightly" tag
         run: |

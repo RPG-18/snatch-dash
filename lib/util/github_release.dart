@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:ffi' show Abi;
 
 import 'package:http/http.dart' as http;
 
@@ -30,22 +31,43 @@ class AppRelease {
 
   static AppRelease? fromJson(Map<String, dynamic> json) {
     final assets = (json['assets'] as List?)?.cast<Map<String, dynamic>>() ?? const [];
-    final apk = assets.cast<Map<String, dynamic>?>().firstWhere(
-          (a) => (a?['name'] as String?)?.toLowerCase().endsWith('.apk') ?? false,
-          orElse: () => null,
-        );
-    if (apk == null) return null; // release with no APK asset attached — nothing to offer
+    final apkAssets = assets.where((a) => (a['name'] as String?)?.toLowerCase().endsWith('.apk') ?? false).toList();
+    if (apkAssets.isEmpty) return null; // release with no APK asset attached — nothing to offer
+    // CI publishes one split APK per ABI (see android/app/build.gradle.kts's
+    // `splits { abi { ... } }`), filenames tagged e.g. `-arm64-v8a-`. Pick
+    // the one matching this device; on an ABI CI doesn't publish for
+    // (x86/x86_64 emulators) there's nothing installable to offer.
+    final abiTag = _currentAbiTag();
+    final apk = abiTag == null
+        ? null
+        : apkAssets.cast<Map<String, dynamic>?>().firstWhere(
+            (a) => (a?['name'] as String).contains(abiTag),
+            orElse: () => null,
+          );
+    // Falls back to a lone asset (e.g. a hand-published release with a
+    // single universal APK) so that path still works.
+    final chosen = apk ?? (apkAssets.length == 1 ? apkAssets.first : null);
+    if (chosen == null) return null;
     return AppRelease(
       tag: json['tag_name'] as String,
       name: json['name'] as String? ?? json['tag_name'] as String,
       htmlUrl: json['html_url'] as String,
-      apkUrl: apk['browser_download_url'] as String,
-      apkName: apk['name'] as String,
+      apkUrl: chosen['browser_download_url'] as String,
+      apkName: chosen['name'] as String,
       body: json['body'] as String?,
       publishedAt: DateTime.tryParse(json['published_at'] as String? ?? ''),
     );
   }
 }
+
+/// This device's ABI as the tag it appears under in split-APK filenames
+/// (`android/app/build.gradle.kts`'s `splits { abi { include(...) } }`), or
+/// null for ABIs CI doesn't publish an APK for (x86/x86_64 — emulators only).
+String? _currentAbiTag() => switch (Abi.current()) {
+      Abi.androidArm64 => 'arm64-v8a',
+      Abi.androidArm => 'armeabi-v7a',
+      _ => null,
+    };
 
 /// Reads the update-relevant bits of GitHub's Releases API for
 /// `RPG-18/snatch-dash`. Unauthenticated (public repo) — GitHub's

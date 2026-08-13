@@ -7,9 +7,11 @@ name: Release build
 # перед релизом не обязательно.
 #
 # in-app update-checker (lib/util/github_release.dart, GET /releases/latest)
-# ожидает ровно это: единственный не-prerelease релиз с тегом vX.Y.Z и .apk
-# ассетом, версия установленного APK (PackageInfo.version) совпадает с
-# частью тега после "v".
+# ожидает ровно это: единственный не-prerelease релиз с тегом vX.Y.Z и одним
+# .apk-ассетом на каждый собираемый ABI (имя содержит тег ABI, например
+# "-arm64-v8a-") — GitHubReleases сам подбирает ассет под ABI устройства.
+# Версия установленного APK (PackageInfo.version) совпадает с частью тега
+# после "v".
 #
 # Требует секретов репозитория — см. nightly.yml.
 
@@ -73,19 +75,25 @@ jobs:
       - name: Test
         run: flutter test
 
-      - name: Build release APK
+      - name: Build release APKs
         run: |
-          flutter build apk --release \
+          # --split-per-abi: one APK per ABI instead of a single ~160MB fat
+          # APK bundling all three (yandex_maps_mapkit's native lib alone is
+          # 30-40MB per ABI). x86_64 dropped — real phones don't use it, only
+          # emulators do; --target-platform intentionally omits it.
+          flutter build apk --release --split-per-abi \
+            --target-platform android-arm,android-arm64 \
             --dart-define-from-file=android/dart_defines.local.properties \
             --build-name=${{ steps.version.outputs.version }} \
             --build-number=${{ github.run_number }}
 
-      - name: Rename APK
-        id: apk
+      - name: Rename APKs
         run: |
-          NAME="snatch-dash-${{ steps.version.outputs.version }}.apk"
-          mv build/app/outputs/flutter-apk/app-release.apk "build/app/outputs/flutter-apk/$NAME"
-          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+          VERSION="${{ steps.version.outputs.version }}"
+          for f in build/app/outputs/flutter-apk/app-*-release.apk; do
+            abi="$(basename "$f" | sed -E 's/^app-(.*)-release\.apk$/\1/')"
+            mv "$f" "build/app/outputs/flutter-apk/snatch-dash-${VERSION}-${abi}.apk"
+          done
 
       - name: Publish release
         uses: softprops/action-gh-release@v2
@@ -93,4 +101,4 @@ jobs:
           name: 'v${{ steps.version.outputs.version }}'
           prerelease: false
           generate_release_notes: true
-          files: build/app/outputs/flutter-apk/${{ steps.apk.outputs.name }}
+          files: build/app/outputs/flutter-apk/snatch-dash-${{ steps.version.outputs.version }}-*.apk

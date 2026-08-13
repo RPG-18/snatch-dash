@@ -14,6 +14,7 @@ import '../state/auto_update_settings.dart';
 import '../state/currency_settings.dart';
 import '../state/dash_engine_state.dart';
 import '../state/dash_wallpaper_store.dart';
+import '../state/map_tile_cache.dart';
 import '../state/update_channel_settings.dart';
 import '../util/app_logger.dart';
 import '../util/github_release.dart';
@@ -49,6 +50,11 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> with WidgetsBin
     WidgetsBinding.instance.addObserver(this);
     _loadConfig();
     _loadNotificationAccess();
+    // Deferred a tick: refresh() writes Riverpod state synchronously before
+    // its first await, and doing that straight from initState() (still part
+    // of this frame's widget-tree build) trips Riverpod's "modified a
+    // provider while the widget tree was building" guard.
+    Future.microtask(() => ref.read(mapTileCacheProvider.notifier).refresh());
   }
 
   @override
@@ -182,6 +188,8 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> with WidgetsBin
               ),
             ),
           ),
+          const SizedBox(height: 16),
+          const _MapCacheCard(),
           const SizedBox(height: 16),
           Text(l10n.settingsUpdatesTitle, style: Theme.of(context).textTheme.labelLarge),
           const SizedBox(height: 8),
@@ -356,6 +364,53 @@ class _WallpaperGallery extends ConsumerWidget {
     final files = await ImagePicker().pickMultiImage(limit: 5);
     if (files.isNotEmpty) await notifier.saveManyFromXFiles(files);
   }
+}
+
+/// Size + manual clear for Yandex MapKit's own on-disk tile cache
+/// (`mapkit.storageManager`, wrapped by `mapTileCacheProvider`) — see
+/// spec/settings_screen.md's "Кеш карты" card. The screen kicks off the
+/// first `refresh()` from `initState`; this widget only renders whatever
+/// state that (and `clear()`) produce.
+class _MapCacheCard extends ConsumerWidget {
+  const _MapCacheCard();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final l10n = AppLocalizations.of(context)!;
+    final cache = ref.watch(mapTileCacheProvider);
+    final notifier = ref.read(mapTileCacheProvider.notifier);
+    final busy = cache.status == MapTileCacheStatus.computing || cache.status == MapTileCacheStatus.clearing;
+    final canClear = cache.status == MapTileCacheStatus.idle && (cache.sizeBytes ?? 0) > 0;
+
+    return Card(
+      child: ListTile(
+        leading: const Icon(Icons.layers_clear_outlined),
+        title: Text(l10n.settingsMapCacheTitle),
+        subtitle: cache.status == MapTileCacheStatus.error
+            ? Text(l10n.settingsMapCacheUnknown)
+            : cache.sizeBytes != null
+                ? Text(l10n.settingsMapCacheSize(_formatCacheSize(l10n, cache.sizeBytes!)))
+                : null,
+        trailing: busy
+            ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))
+            : TextButton(
+                onPressed: canClear ? notifier.clear : null,
+                child: Text(l10n.settingsMapCacheClearButton),
+              ),
+      ),
+    );
+  }
+}
+
+const _cacheKb = 1024;
+const _cacheMb = _cacheKb * 1024;
+const _cacheGb = _cacheMb * 1024;
+
+String _formatCacheSize(AppLocalizations l10n, int bytes) {
+  if (bytes >= _cacheGb) return '${(bytes / _cacheGb).toStringAsFixed(1)} ${l10n.settingsMapCacheUnitGb}';
+  if (bytes >= _cacheMb) return '${(bytes / _cacheMb).toStringAsFixed(1)} ${l10n.settingsMapCacheUnitMb}';
+  if (bytes >= _cacheKb) return '${(bytes / _cacheKb).toStringAsFixed(0)} ${l10n.settingsMapCacheUnitKb}';
+  return '$bytes ${l10n.settingsMapCacheUnitBytes}';
 }
 
 /// Self-update card: current version, stable/nightly channel toggle, and the

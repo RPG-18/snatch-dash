@@ -451,6 +451,32 @@ class AppLocalizationsEn extends AppLocalizations {
       'Access not granted — tap to open settings';
 
   @override
+  String get settingsMapCacheTitle => 'Map cache';
+
+  @override
+  String settingsMapCacheSize(String size) {
+    return '$size on disk';
+  }
+
+  @override
+  String get settingsMapCacheUnknown => 'Unable to determine size';
+
+  @override
+  String get settingsMapCacheClearButton => 'Clear';
+
+  @override
+  String get settingsMapCacheUnitBytes => 'B';
+
+  @override
+  String get settingsMapCacheUnitKb => 'KB';
+
+  @override
+  String get settingsMapCacheUnitMb => 'MB';
+
+  @override
+  String get settingsMapCacheUnitGb => 'GB';
+
+  @override
   String get settingsAboutTitle => 'SnatchDash';
 
   @override

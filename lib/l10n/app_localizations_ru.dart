@@ -455,6 +455,32 @@ class AppLocalizationsRu extends AppLocalizations {
       'Доступ не предоставлен — нажмите, чтобы открыть настройки';
 
   @override
+  String get settingsMapCacheTitle => 'Кеш карты';
+
+  @override
+  String settingsMapCacheSize(String size) {
+    return '$size на диске';
+  }
+
+  @override
+  String get settingsMapCacheUnknown => 'Не удалось определить размер';
+
+  @override
+  String get settingsMapCacheClearButton => 'Очистить';
+
+  @override
+  String get settingsMapCacheUnitBytes => 'Б';
+
+  @override
+  String get settingsMapCacheUnitKb => 'КБ';
+
+  @override
+  String get settingsMapCacheUnitMb => 'МБ';
+
+  @override
+  String get settingsMapCacheUnitGb => 'ГБ';
+
+  @override
   String get settingsAboutTitle => 'SnatchDash';
 
   @override

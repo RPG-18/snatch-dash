@@ -884,6 +884,54 @@ abstract class AppLocalizations {
   /// **'Access not granted — tap to open settings'**
   String get settingsMediaAccessNotGranted;
 
+  /// No description provided for @settingsMapCacheTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Map cache'**
+  String get settingsMapCacheTitle;
+
+  /// No description provided for @settingsMapCacheSize.
+  ///
+  /// In en, this message translates to:
+  /// **'{size} on disk'**
+  String settingsMapCacheSize(String size);
+
+  /// No description provided for @settingsMapCacheUnknown.
+  ///
+  /// In en, this message translates to:
+  /// **'Unable to determine size'**
+  String get settingsMapCacheUnknown;
+
+  /// No description provided for @settingsMapCacheClearButton.
+  ///
+  /// In en, this message translates to:
+  /// **'Clear'**
+  String get settingsMapCacheClearButton;
+
+  /// No description provided for @settingsMapCacheUnitBytes.
+  ///
+  /// In en, this message translates to:
+  /// **'B'**
+  String get settingsMapCacheUnitBytes;
+
+  /// No description provided for @settingsMapCacheUnitKb.
+  ///
+  /// In en, this message translates to:
+  /// **'KB'**
+  String get settingsMapCacheUnitKb;
+
+  /// No description provided for @settingsMapCacheUnitMb.
+  ///
+  /// In en, this message translates to:
+  /// **'MB'**
+  String get settingsMapCacheUnitMb;
+
+  /// No description provided for @settingsMapCacheUnitGb.
+  ///
+  /// In en, this message translates to:
+  /// **'GB'**
+  String get settingsMapCacheUnitGb;
+
   /// No description provided for @settingsAboutTitle.
   ///
   /// In en, this message translates to:

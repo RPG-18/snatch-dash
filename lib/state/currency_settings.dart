@@ -4,6 +4,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../l10n/app_localizations.dart';
 
 enum OpenDashCurrency {
+  rub('RUB', '₽'),
   inr('INR', '₹'),
   usd('USD', '\$'),
   eur('EUR', '€'),
@@ -11,8 +12,7 @@ enum OpenDashCurrency {
   aud('AUD', 'A\$'),
   cad('CAD', 'C\$'),
   sgd('SGD', 'S\$'),
-  aed('AED', 'AED'),
-  rub('RUB', '₽');
+  aed('AED', 'AED');
 
   const OpenDashCurrency(this.code, this.symbol);
   final String code;
@@ -61,7 +61,7 @@ class CurrencySettingsController extends Notifier<OpenDashCurrency> {
   @override
   OpenDashCurrency build() {
     _load(_generation);
-    return OpenDashCurrency.inr;
+    return OpenDashCurrency.rub;
   }
 
   Future<void> _load(int generation) async {
@@ -73,7 +73,7 @@ class CurrencySettingsController extends Notifier<OpenDashCurrency> {
     if (generation != _generation) return; // the rider already picked a currency
     state = OpenDashCurrency.values.firstWhere(
       (c) => c.code == saved,
-      orElse: () => OpenDashCurrency.inr,
+      orElse: () => OpenDashCurrency.rub,
     );
   }
 

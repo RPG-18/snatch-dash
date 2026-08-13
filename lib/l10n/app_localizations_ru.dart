@@ -466,6 +466,75 @@ class AppLocalizationsRu extends AppLocalizations {
       'Условия использования Яндекс Карт';
 
   @override
+  String get settingsUpdatesTitle => 'Обновления';
+
+  @override
+  String settingsUpdatesCurrentVersion(String version) {
+    return 'Текущая версия: $version';
+  }
+
+  @override
+  String get settingsUpdatesAutoUpdate => 'Автоматическое обновление';
+
+  @override
+  String get settingsUpdatesChannelNightly => 'Ночные сборки (nightly)';
+
+  @override
+  String get settingsUpdatesChannelNightlySub =>
+      'Ежедневные сборки из main — менее стабильны, могут содержать баги';
+
+  @override
+  String get settingsUpdatesCheckButton => 'Проверить обновления';
+
+  @override
+  String get settingsUpdatesStatusChecking => 'Проверка…';
+
+  @override
+  String get settingsUpdatesStatusUpToDate => 'У вас последняя версия';
+
+  @override
+  String settingsUpdatesStatusAvailable(String version) {
+    return 'Доступна версия $version';
+  }
+
+  @override
+  String settingsUpdatesStatusError(String message) {
+    return 'Ошибка проверки: $message';
+  }
+
+  @override
+  String get settingsUpdatesDownloadButton => 'Скачать и установить';
+
+  @override
+  String settingsUpdatesDownloading(String percent) {
+    return 'Загрузка… $percent%';
+  }
+
+  @override
+  String get settingsUpdatesDownloadingIndeterminate => 'Загрузка…';
+
+  @override
+  String get settingsUpdatesNeedsPermission =>
+      'Разрешите установку приложений из этого источника, чтобы продолжить';
+
+  @override
+  String get settingsUpdatesGrantPermissionButton => 'Разрешить установку';
+
+  @override
+  String updateAvailableTitle(String version) {
+    return 'Доступно обновление: $version';
+  }
+
+  @override
+  String get updateAvailableBody => 'Новая версия готова к загрузке.';
+
+  @override
+  String get updateLater => 'Позже';
+
+  @override
+  String get updateDownload => 'Скачать';
+
+  @override
   String get settingsSsidDialogTitle => 'SSID dash';
 
   @override

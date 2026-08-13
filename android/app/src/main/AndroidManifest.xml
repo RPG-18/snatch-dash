@@ -22,6 +22,12 @@
         tools:targetApi="34" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.ANSWER_PHONE_CALLS" />
+    <!-- Self-update: installing the downloaded APK via the system package
+         installer (see MainActivity's "app_updater" channel / settings_screen.dart's
+         update card). Android still shows its own "install unknown apps" consent
+         screen per source app the first time — this permission only lets us trigger
+         that flow instead of being silently blocked. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <application
         android:label="@string/app_name"

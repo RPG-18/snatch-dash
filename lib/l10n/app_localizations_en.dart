@@ -461,6 +461,75 @@ class AppLocalizationsEn extends AppLocalizations {
   String get settingsAboutYandexTermsLink => 'Yandex Maps terms of use';
 
   @override
+  String get settingsUpdatesTitle => 'Updates';
+
+  @override
+  String settingsUpdatesCurrentVersion(String version) {
+    return 'Current version: $version';
+  }
+
+  @override
+  String get settingsUpdatesAutoUpdate => 'Automatic updates';
+
+  @override
+  String get settingsUpdatesChannelNightly => 'Nightly builds';
+
+  @override
+  String get settingsUpdatesChannelNightlySub =>
+      'Daily builds from main — less stable, may break';
+
+  @override
+  String get settingsUpdatesCheckButton => 'Check for updates';
+
+  @override
+  String get settingsUpdatesStatusChecking => 'Checking…';
+
+  @override
+  String get settingsUpdatesStatusUpToDate => 'You\'re on the latest version';
+
+  @override
+  String settingsUpdatesStatusAvailable(String version) {
+    return 'Version $version available';
+  }
+
+  @override
+  String settingsUpdatesStatusError(String message) {
+    return 'Check failed: $message';
+  }
+
+  @override
+  String get settingsUpdatesDownloadButton => 'Download & install';
+
+  @override
+  String settingsUpdatesDownloading(String percent) {
+    return 'Downloading… $percent%';
+  }
+
+  @override
+  String get settingsUpdatesDownloadingIndeterminate => 'Downloading…';
+
+  @override
+  String get settingsUpdatesNeedsPermission =>
+      'Allow installing apps from this source to continue';
+
+  @override
+  String get settingsUpdatesGrantPermissionButton => 'Grant permission';
+
+  @override
+  String updateAvailableTitle(String version) {
+    return 'Update available: $version';
+  }
+
+  @override
+  String get updateAvailableBody => 'A new version is ready to download.';
+
+  @override
+  String get updateLater => 'Later';
+
+  @override
+  String get updateDownload => 'Download';
+
+  @override
   String get settingsSsidDialogTitle => 'Dash SSID';
 
   @override

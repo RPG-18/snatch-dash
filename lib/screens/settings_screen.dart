@@ -9,10 +9,14 @@ import 'package:share_plus/share_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../l10n/app_localizations.dart';
+import '../state/app_update_controller.dart';
+import '../state/auto_update_settings.dart';
 import '../state/currency_settings.dart';
 import '../state/dash_engine_state.dart';
 import '../state/dash_wallpaper_store.dart';
+import '../state/update_channel_settings.dart';
 import '../util/app_logger.dart';
+import '../util/github_release.dart';
 
 /// "More" tab: dash connection/pairing, idle wallpaper, and currency. Ports
 /// `SettingsScreen.kt`'s connection section (`DashConfig` via the native
@@ -57,7 +61,15 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> with WidgetsBin
   void didChangeAppLifecycleState(AppLifecycleState state) {
     // The user grants notification access in system settings, outside the
     // app; re-check when they come back so the status stays current.
-    if (state == AppLifecycleState.resumed) _loadNotificationAccess();
+    if (state == AppLifecycleState.resumed) {
+      _loadNotificationAccess();
+      // Same story for "install unknown apps": granted in system settings,
+      // outside the app. There's no install-time callback, so re-drive the
+      // flow on return — it'll just re-check and proceed if now granted.
+      if (ref.read(appUpdateControllerProvider).status == AppUpdateStatus.needsInstallPermission) {
+        ref.read(appUpdateControllerProvider.notifier).downloadAndInstall();
+      }
+    }
   }
 
   Future<void> _loadConfig() async {
@@ -170,6 +182,10 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> with WidgetsBin
               ),
             ),
           ),
+          const SizedBox(height: 16),
+          Text(l10n.settingsUpdatesTitle, style: Theme.of(context).textTheme.labelLarge),
+          const SizedBox(height: 8),
+          const _UpdatesCard(),
           const SizedBox(height: 16),
           Card(
             child: Column(
@@ -339,5 +355,141 @@ class _WallpaperGallery extends ConsumerWidget {
   Future<void> _pick(DashWallpaperStore notifier) async {
     final files = await ImagePicker().pickMultiImage(limit: 5);
     if (files.isNotEmpty) await notifier.saveManyFromXFiles(files);
+  }
+}
+
+/// Self-update card: current version, stable/nightly channel toggle, and the
+/// check → download → install flow driven by `AppUpdateController`. See
+/// `github_release.dart` (what "newer" means per channel) and
+/// `apk_installer.dart`/`MainActivity.kt` (how the downloaded APK actually
+/// gets installed) for the rest of the pieces.
+class _UpdatesCard extends ConsumerWidget {
+  const _UpdatesCard();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final l10n = AppLocalizations.of(context)!;
+    final packageInfo = ref.watch(packageInfoProvider);
+    final autoUpdate = ref.watch(autoUpdateSettingsProvider);
+    final channel = ref.watch(updateChannelSettingsProvider);
+    final update = ref.watch(appUpdateControllerProvider);
+    final notifier = ref.read(appUpdateControllerProvider.notifier);
+
+    return Card(
+      child: Column(
+        children: [
+          ListTile(
+            leading: const Icon(Icons.system_update_outlined),
+            title: packageInfo.when(
+              data: (info) => Text(l10n.settingsUpdatesCurrentVersion(info.version)),
+              loading: () => null,
+              error: (_, _) => null,
+            ),
+          ),
+          ListTile(
+            // Empty leading matches the Icon above's footprint (same trick as
+            // the About card below), so the button's left edge lines up with
+            // "Текущая версия" instead of starting flush with the card edge.
+            leading: const SizedBox(width: 24, height: 24),
+            title: Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton(
+                // Strip the button's own padding/min-size so its label text
+                // starts exactly where the title text above it does, rather
+                // than a button-sized indent further in.
+                style: TextButton.styleFrom(padding: EdgeInsets.zero, minimumSize: Size.zero, tapTargetSize: MaterialTapTargetSize.shrinkWrap),
+                onPressed: update.status == AppUpdateStatus.checking ? null : notifier.checkForUpdate,
+                child: Text(l10n.settingsUpdatesCheckButton),
+              ),
+            ),
+            trailing: update.status == AppUpdateStatus.checking
+                ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))
+                : null,
+          ),
+          const Divider(height: 1),
+          SwitchListTile(
+            secondary: const Icon(Icons.autorenew),
+            title: Text(l10n.settingsUpdatesAutoUpdate),
+            value: autoUpdate,
+            onChanged: (enabled) => ref.read(autoUpdateSettingsProvider.notifier).setEnabled(enabled),
+          ),
+          // Channel switch + check status only matter once auto-update is on —
+          // collapsed (and their state along with them) while it's off.
+          AnimatedSize(
+            duration: const Duration(milliseconds: 200),
+            child: !autoUpdate
+                ? const SizedBox(width: double.infinity)
+                : Column(
+                    children: [
+                      const Divider(height: 1),
+                      SwitchListTile(
+                        secondary: const Icon(Icons.science_outlined),
+                        title: Text(l10n.settingsUpdatesChannelNightly),
+                        subtitle: Text(l10n.settingsUpdatesChannelNightlySub),
+                        value: channel == UpdateChannel.nightly,
+                        onChanged: (nightly) {
+                          ref.read(updateChannelSettingsProvider.notifier).select(nightly ? UpdateChannel.nightly : UpdateChannel.stable);
+                          // Old status/release referred to the previous channel — drop it
+                          // rather than show it against the new one.
+                          ref.invalidate(appUpdateControllerProvider);
+                        },
+                      ),
+                      if (update.status != AppUpdateStatus.idle && update.status != AppUpdateStatus.checking) ...[
+                        const Divider(height: 1),
+                        _UpdateStatusTile(update: update, onDownload: notifier.downloadAndInstall, onGrantPermission: notifier.openInstallPermissionSettings),
+                      ],
+                    ],
+                  ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _UpdateStatusTile extends StatelessWidget {
+  const _UpdateStatusTile({required this.update, required this.onDownload, required this.onGrantPermission});
+
+  final AppUpdateState update;
+  final VoidCallback onDownload;
+  final VoidCallback onGrantPermission;
+
+  @override
+  Widget build(BuildContext context) {
+    final l10n = AppLocalizations.of(context)!;
+    return switch (update.status) {
+      AppUpdateStatus.upToDate => ListTile(
+          leading: const Icon(Icons.check_circle_outline),
+          title: Text(l10n.settingsUpdatesStatusUpToDate),
+        ),
+      AppUpdateStatus.available => ListTile(
+          leading: const Icon(Icons.new_releases_outlined),
+          title: Text(l10n.settingsUpdatesStatusAvailable(update.release!.name)),
+          trailing: FilledButton(onPressed: onDownload, child: Text(l10n.settingsUpdatesDownloadButton)),
+        ),
+      AppUpdateStatus.downloading => ListTile(
+          leading: const SizedBox(
+            width: 24,
+            height: 24,
+            child: CircularProgressIndicator(strokeWidth: 2),
+          ),
+          title: LinearProgressIndicator(value: update.downloadProgress),
+          subtitle: Text(
+            update.downloadProgress != null
+                ? l10n.settingsUpdatesDownloading((update.downloadProgress! * 100).toStringAsFixed(0))
+                : l10n.settingsUpdatesDownloadingIndeterminate,
+          ),
+        ),
+      AppUpdateStatus.needsInstallPermission => ListTile(
+          leading: const Icon(Icons.lock_outline),
+          title: Text(l10n.settingsUpdatesNeedsPermission),
+          trailing: FilledButton(onPressed: onGrantPermission, child: Text(l10n.settingsUpdatesGrantPermissionButton)),
+        ),
+      AppUpdateStatus.error => ListTile(
+          leading: Icon(Icons.error_outline, color: Theme.of(context).colorScheme.error),
+          title: Text(l10n.settingsUpdatesStatusError(update.errorMessage ?? '')),
+        ),
+      AppUpdateStatus.idle || AppUpdateStatus.checking => const SizedBox.shrink(),
+    };
   }
 }

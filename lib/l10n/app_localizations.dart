@@ -902,6 +902,120 @@ abstract class AppLocalizations {
   /// **'Yandex Maps terms of use'**
   String get settingsAboutYandexTermsLink;
 
+  /// No description provided for @settingsUpdatesTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Updates'**
+  String get settingsUpdatesTitle;
+
+  /// No description provided for @settingsUpdatesCurrentVersion.
+  ///
+  /// In en, this message translates to:
+  /// **'Current version: {version}'**
+  String settingsUpdatesCurrentVersion(String version);
+
+  /// No description provided for @settingsUpdatesAutoUpdate.
+  ///
+  /// In en, this message translates to:
+  /// **'Automatic updates'**
+  String get settingsUpdatesAutoUpdate;
+
+  /// No description provided for @settingsUpdatesChannelNightly.
+  ///
+  /// In en, this message translates to:
+  /// **'Nightly builds'**
+  String get settingsUpdatesChannelNightly;
+
+  /// No description provided for @settingsUpdatesChannelNightlySub.
+  ///
+  /// In en, this message translates to:
+  /// **'Daily builds from main — less stable, may break'**
+  String get settingsUpdatesChannelNightlySub;
+
+  /// No description provided for @settingsUpdatesCheckButton.
+  ///
+  /// In en, this message translates to:
+  /// **'Check for updates'**
+  String get settingsUpdatesCheckButton;
+
+  /// No description provided for @settingsUpdatesStatusChecking.
+  ///
+  /// In en, this message translates to:
+  /// **'Checking…'**
+  String get settingsUpdatesStatusChecking;
+
+  /// No description provided for @settingsUpdatesStatusUpToDate.
+  ///
+  /// In en, this message translates to:
+  /// **'You\'re on the latest version'**
+  String get settingsUpdatesStatusUpToDate;
+
+  /// No description provided for @settingsUpdatesStatusAvailable.
+  ///
+  /// In en, this message translates to:
+  /// **'Version {version} available'**
+  String settingsUpdatesStatusAvailable(String version);
+
+  /// No description provided for @settingsUpdatesStatusError.
+  ///
+  /// In en, this message translates to:
+  /// **'Check failed: {message}'**
+  String settingsUpdatesStatusError(String message);
+
+  /// No description provided for @settingsUpdatesDownloadButton.
+  ///
+  /// In en, this message translates to:
+  /// **'Download & install'**
+  String get settingsUpdatesDownloadButton;
+
+  /// No description provided for @settingsUpdatesDownloading.
+  ///
+  /// In en, this message translates to:
+  /// **'Downloading… {percent}%'**
+  String settingsUpdatesDownloading(String percent);
+
+  /// No description provided for @settingsUpdatesDownloadingIndeterminate.
+  ///
+  /// In en, this message translates to:
+  /// **'Downloading…'**
+  String get settingsUpdatesDownloadingIndeterminate;
+
+  /// No description provided for @settingsUpdatesNeedsPermission.
+  ///
+  /// In en, this message translates to:
+  /// **'Allow installing apps from this source to continue'**
+  String get settingsUpdatesNeedsPermission;
+
+  /// No description provided for @settingsUpdatesGrantPermissionButton.
+  ///
+  /// In en, this message translates to:
+  /// **'Grant permission'**
+  String get settingsUpdatesGrantPermissionButton;
+
+  /// No description provided for @updateAvailableTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Update available: {version}'**
+  String updateAvailableTitle(String version);
+
+  /// No description provided for @updateAvailableBody.
+  ///
+  /// In en, this message translates to:
+  /// **'A new version is ready to download.'**
+  String get updateAvailableBody;
+
+  /// No description provided for @updateLater.
+  ///
+  /// In en, this message translates to:
+  /// **'Later'**
+  String get updateLater;
+
+  /// No description provided for @updateDownload.
+  ///
+  /// In en, this message translates to:
+  /// **'Download'**
+  String get updateDownload;
+
   /// No description provided for @settingsSsidDialogTitle.
   ///
   /// In en, this message translates to:

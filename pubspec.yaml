@@ -58,6 +58,7 @@ dependencies:
   talker_flutter: ^5.1.19
   talker_riverpod_logger: ^5.1.19
   url_launcher: ^6.3.2
+  package_info_plus: ^10.2.1
 
 dev_dependencies:
   flutter_test:

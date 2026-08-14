@@ -115,6 +115,12 @@ class DashEngineController(
     // ── Media/call info forwarded to the dash (and surfaced to Dart) ──
     @Volatile private var nowPlayingTitle: String? = null
     @Volatile private var incomingCaller: String? = null
+    // True for ANY call (ringing or already answered/outgoing) — unlike
+    // [incomingCaller], which only ever carries ringing calls. Dart's button
+    // dispatcher needs this to let the dash's reject/hangup button end an
+    // already-answered call too, same as the original DashViewModel.onButton
+    // (`call != null`, vs `call.incoming == true` for the answer button).
+    @Volatile private var hasActiveCall: Boolean = false
 
     // ── Camera state ──
     // The first six are written by the MethodChannel handlers on the main
@@ -220,8 +226,13 @@ class DashEngineController(
         callForwardJob?.cancel()
         callForwardJob = scope.launch {
             CallInfoProvider.incomingCall.collect { call ->
-                session.updateCall(call?.takeIf { it.incoming }?.caller)
-                incomingCaller = call?.caller
+                // Filtered to ringing calls only, same as the line above — an
+                // active/outgoing call has nothing to "answer", so surfacing it
+                // here would show a nonsensical answer button in the dash UI.
+                val incoming = call?.takeIf { it.incoming }
+                session.updateCall(incoming?.caller)
+                incomingCaller = incoming?.caller
+                hasActiveCall = call != null
                 publishState()
             }
         }
@@ -240,12 +251,18 @@ class DashEngineController(
         navigating = lat != null && lng != null
         session.updateRouteCard(name ?: "OpenDash")
         if (lat != null && lng != null) tileProvider.prefetch(lat, lng)
+        // Dart's button dispatcher (idle-wallpaper vs nav-mode button mapping)
+        // reads [navigating] off the state stream — push immediately instead of
+        // waiting for the next frame-loop tick() so a button press right after
+        // "Send to Dash" sees the right mode.
+        publishState()
     }
 
     fun clearDestination() {
         destName = null; destLat = null; destLng = null
         navigating = false; routePoints = emptyList(); routeJam = emptyList()
         session.updateRouteCard("OpenDash")
+        publishState()
     }
 
     /**
@@ -584,6 +601,10 @@ class DashEngineController(
                 "wifiStatus" to wifiManager.state.value.status.name,
                 "wifiSsid" to wifiManager.state.value.ssid,
                 "wifiError" to wifiManager.state.value.error,
+                // Idle-wallpaper vs active-navigation, per [setDestination]/[clearDestination] —
+                // the same source of truth the frame loop's tick()/tickIdle() branch on. Dart's
+                // button dispatcher needs this to replicate DashViewModel.isIdleWallpaperMode().
+                "navigating" to navigating,
                 "hasGps" to hasGps,
                 "riderLat" to riderLat,
                 "riderLng" to riderLng,
@@ -598,6 +619,7 @@ class DashEngineController(
                 "zoom" to zoom,
                 "nowPlayingTitle" to nowPlayingTitle,
                 "incomingCaller" to incomingCaller,
+                "hasActiveCall" to hasActiveCall,
             )
         )
     }

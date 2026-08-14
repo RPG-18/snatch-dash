@@ -52,6 +52,30 @@ stateDiagram-v2
 состояний выше — они не часть кадра, который стримит телефон, и поэтому не
 отдельные состояния этого автомата.
 
+## Кнопки дэша
+
+Джойстик/медиа-кнопки дэша шлют `09 00`; `DashSession` их только
+подтверждает (ack) и пробрасывает код наверх — `DashEngineController.onButton`
+→ плагин кладёт `{"button": code}` в `dashEngineRawStreamProvider`. Что код
+*означает*, решает
+[`DashButtonController`](../lib/state/dash_button_controller.dart) (Dart) —
+как и в оригинале, решение зависит от того же `navigating`, что и выбор
+кадра выше, плюс от текущих `nowPlayingTitle`/`incomingCaller`/`hasActiveCall`
+(тоже поля `DashEngineState`):
+
+| Состояние | Кнопка | Действие |
+|---|---|---|
+| `idleWallpaper` (`navigating == false`) | next/prev | `DashWallpaperStore.cycle(±1)` — листает слоты обоев; не меняет состояние автомата, только содержимое кадра, как и смена обоев из Настроек |
+| `navigating` (`navigating == true`), идёт музыка | next/prev | `DashEngine.skipNext()/skipPrevious()` |
+| `navigating`, музыки нет | next/prev | `DashEngine.zoomIn()/zoomOut()` (запасной маппинг) |
+| любое | zoom in/out | `DashEngine.zoomIn()/zoomOut()` |
+| любое, есть звонящий (`incomingCaller != null`) | «ответить» | `DashEngine.answerCall()` |
+| любое, есть звонок вообще (`hasActiveCall`, включая уже принятый/исходящий) | «сброс» | `DashEngine.hangupCall()` |
+
+`DashButtonController` подписан eagerly из `main.dart` (как
+`dashWallpaperStoreProvider`) — иначе, пока ни один экран его не «смотрит»,
+нажатия кнопок на дэше уходят в никуда.
+
 ## Таблица переходов
 
 | Откуда | Событие / условие | Куда | Что вызывается |
@@ -73,8 +97,13 @@ stateDiagram-v2
 - Автомат описывает именно **картинку кадра**, а не `DashStage` из
   [`state/dash_engine_state.dart`](../lib/state/dash_engine_state.dart)
   напрямую: `DashStage` не различает `idleWallpaper`/`navigating` — оба
-  относятся к `DashStage.streaming`. Различие видно только по
-  `RouteController.state.destination` / факту вызова `setDestination()`.
+  относятся к `DashStage.streaming`. Различие видно по отдельному полю
+  `DashEngineState.navigating` — прямому зеркалу нативного `navigating`,
+  пушится в Dart сразу из `setDestination()`/`clearDestination()` (не только
+  на очередном тике кадрового цикла), а не выводится из
+  `RouteController.state.destination` — тот выставляется уже на этапе
+  предпросмотра маршрута, до факта отправки на дэш, и потому сам по себе не
+  годится как признак `navigating`.
 - Источник истины на нативной стороне —
   [`DashEngineController.kt`](../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt):
   `tick()` выбирает `tickIdle()` vs навигационный рендер по флагу

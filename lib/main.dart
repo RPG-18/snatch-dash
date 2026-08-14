@@ -7,6 +7,7 @@ import 'package:yandex_maps_mapkit/mapkit_factory.dart' show mapkit;
 
 import 'l10n/app_localizations.dart';
 import 'router/app_router.dart';
+import 'state/dash_button_controller.dart';
 import 'state/dash_wallpaper_store.dart';
 import 'theme/app_theme.dart';
 import 'util/app_logger.dart';
@@ -67,6 +68,11 @@ class OpenDashApp extends ConsumerWidget {
     // DashEngine.setWallpaper) never runs and the dash idle screen stays
     // blank/black despite wallpaper slots being configured.
     ref.watch(dashWallpaperStoreProvider);
+    // Same reasoning for dashButtonControllerProvider: it only does anything
+    // via its build()-time ref.listen, so it has to be watched from
+    // somewhere alive for the whole app, or physical dash button presses
+    // (wallpaper cycling, zoom, call answer/reject, media skip) go nowhere.
+    ref.watch(dashButtonControllerProvider);
     return MaterialApp.router(
       title: 'SnatchDash',
       debugShowCheckedModeBanner: false,

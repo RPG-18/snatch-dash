@@ -21,6 +21,7 @@ class DashEngineState {
     this.wifiStatus,
     this.wifiSsid,
     this.wifiError,
+    this.navigating = false,
     this.hasGps = false,
     this.riderLat,
     this.riderLng,
@@ -34,12 +35,20 @@ class DashEngineState {
     this.headingUp = true,
     this.nowPlayingTitle,
     this.incomingCaller,
+    this.hasActiveCall = false,
   });
 
   final DashStage stage;
   final String? wifiStatus;
   final String? wifiSsid;
   final String? wifiError;
+
+  /// Mirrors the native `navigating` flag (set by `setDestination`/
+  /// `clearDestination`) — true once a destination has actually been sent to
+  /// the dash, not just previewed on the Route screen. Idle-wallpaper mode is
+  /// `!navigating`; see `DashButtonController`, ported from the original
+  /// `DashViewModel.isIdleWallpaperMode()`.
+  final bool navigating;
   final bool hasGps;
   final double? riderLat;
   final double? riderLng;
@@ -54,11 +63,18 @@ class DashEngineState {
   final String? nowPlayingTitle;
   final String? incomingCaller;
 
+  /// True for ANY call — ringing or already answered/outgoing — unlike
+  /// [incomingCaller], which only ever carries ringing calls. Lets the dash's
+  /// reject/hangup button end an already-answered call too; see
+  /// `DashButtonController`.
+  final bool hasActiveCall;
+
   factory DashEngineState.fromMap(Map<String, dynamic> map) => DashEngineState(
         stage: _stageFrom(map['stage'] as String?),
         wifiStatus: map['wifiStatus'] as String?,
         wifiSsid: map['wifiSsid'] as String?,
         wifiError: map['wifiError'] as String?,
+        navigating: map['navigating'] as bool? ?? false,
         hasGps: map['hasGps'] as bool? ?? false,
         riderLat: (map['riderLat'] as num?)?.toDouble(),
         riderLng: (map['riderLng'] as num?)?.toDouble(),
@@ -72,6 +88,7 @@ class DashEngineState {
         headingUp: map['headingUp'] as bool? ?? true,
         nowPlayingTitle: map['nowPlayingTitle'] as String?,
         incomingCaller: map['incomingCaller'] as String?,
+        hasActiveCall: map['hasActiveCall'] as bool? ?? false,
       );
 }
 

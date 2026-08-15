@@ -11,13 +11,16 @@ import 'route.dart';
 /// is a genuine win from the switch to Yandex MapKit (the original TODO
 /// wanted off the unsupported public OSRM demo server).
 ///
-/// Known gap vs. the OSRM version: the driving route exposes only overall
-/// geometry + aggregate weight (distance/time), not per-step turn
-/// instructions — so [Route.maneuvers] here is just a single synthetic
-/// ARRIVE at the destination. This is not a functional regression: the dash
-/// glyph was already hardcoded to CONTINUE for every maneuver (unverified
-/// glyph codes, see `Maneuver.dashCode`), so no turn-by-turn glyph fidelity
-/// is lost — only the (already-unused) instruction text.
+/// [Route.maneuvers] is built from the route's per-section turn annotations
+/// (`DrivingRoute.sections[i].metadata.annotation.action`) — real
+/// turn-by-turn data, not the single synthetic ARRIVE this used to fall back
+/// to before `sections` was wired up. Roundabout maneuvers also get a
+/// computed [Maneuver.roundaboutClockwise] (see [_roundaboutClockwise])
+/// since Yandex's SDK doesn't expose rotation direction directly but the
+/// dash's glyph set needs it. Dash glyph bytes themselves (`Maneuver.dashCode`)
+/// come from the real Royal Enfield app's maneuver table — not yet
+/// hardware-verified against this port's dash beyond `0x0B`, see that
+/// getter's doc.
 ///
 /// The official SDK's router is listener-based, not `Future`-based like the
 /// old `yandex_mapkit` community plugin — [route] wraps
@@ -40,6 +43,28 @@ class Router {
     ymk.JamType.Light: JamLevel.light,
     ymk.JamType.Hard: JamLevel.hard,
     ymk.JamType.VeryHard: JamLevel.veryHard,
+  };
+
+  static const _maneuverTypeByAction = {
+    ymk.DrivingAction.Straight: ManeuverType.straight,
+    ymk.DrivingAction.SlightLeft: ManeuverType.slightLeft,
+    ymk.DrivingAction.SlightRight: ManeuverType.slightRight,
+    ymk.DrivingAction.Left: ManeuverType.left,
+    ymk.DrivingAction.Right: ManeuverType.right,
+    ymk.DrivingAction.HardLeft: ManeuverType.hardLeft,
+    ymk.DrivingAction.HardRight: ManeuverType.hardRight,
+    ymk.DrivingAction.ForkLeft: ManeuverType.forkLeft,
+    ymk.DrivingAction.ForkRight: ManeuverType.forkRight,
+    ymk.DrivingAction.UturnLeft: ManeuverType.uturnLeft,
+    ymk.DrivingAction.UturnRight: ManeuverType.uturnRight,
+    ymk.DrivingAction.EnterRoundabout: ManeuverType.enterRoundabout,
+    ymk.DrivingAction.LeaveRoundabout: ManeuverType.leaveRoundabout,
+    ymk.DrivingAction.BoardFerry: ManeuverType.boardFerry,
+    ymk.DrivingAction.LeaveFerry: ManeuverType.leaveFerry,
+    ymk.DrivingAction.ExitLeft: ManeuverType.exitLeft,
+    ymk.DrivingAction.ExitRight: ManeuverType.exitRight,
+    ymk.DrivingAction.Finish: ManeuverType.finish,
+    ymk.DrivingAction.Waypoint: ManeuverType.waypoint,
   };
 
   static Future<Route?> route(GeoPoint from, GeoPoint to) async {
@@ -106,16 +131,22 @@ class Router {
 
     final weight = r.metadata.weight;
 
+    final maneuvers = [
+      // Section 0's annotation describes the route's initial heading, not a
+      // turn the rider needs a heads-up for — every section after that is a
+      // real manoeuvre-to-manoeuvre leg (see `DrivingRoute.sections` doc).
+      ...r.sections.skip(1).map((s) => _toManeuver(s, geometry, cumulative)).whereType<Maneuver>(),
+      Maneuver(
+        type: ManeuverType.arrive,
+        instruction: 'Arrive at destination',
+        location: geometry.last,
+        cumulativeMeters: weight.distance.value,
+      ),
+    ];
+
     return Route(
       geometry: geometry,
-      maneuvers: [
-        Maneuver(
-          type: ManeuverType.arrive,
-          instruction: 'Arrive at destination',
-          location: geometry.last,
-          cumulativeMeters: weight.distance.value,
-        ),
-      ],
+      maneuvers: maneuvers,
       totalMeters: weight.distance.value,
       totalSeconds: weight.timeWithTraffic.value,
       cumulative: cumulative,
@@ -123,5 +154,77 @@ class Router {
           .map((j) => _jamLevelByType[j.jamType] ?? JamLevel.unknown)
           .toList(),
     );
+  }
+
+  /// A section's turn happens at its geometry's start — [ymk.PolylinePosition]
+  /// indexes into the *route's* geometry/[cumulative] arrays (sections are
+  /// slices of the same overall polyline), so this interpolates the exact
+  /// point and distance instead of snapping to the nearest vertex. Returns
+  /// null for a malformed/out-of-range position rather than throwing —
+  /// dropping one intermediate turn beats losing the whole route.
+  static Maneuver? _toManeuver(
+    ymk.DrivingSection section,
+    List<GeoPoint> geometry,
+    List<double> cumulative,
+  ) {
+    final pos = section.geometry.begin;
+    final i = pos.segmentIndex;
+    if (i < 0 || i >= geometry.length - 1) return null;
+
+    final a = geometry[i];
+    final b = geometry[i + 1];
+    final t = pos.segmentPosition.clamp(0.0, 1.0);
+    final annotation = section.metadata.annotation;
+    final type = _maneuverTypeByAction[annotation.action] ?? ManeuverType.straight;
+
+    final isRoundabout =
+        type == ManeuverType.enterRoundabout || type == ManeuverType.leaveRoundabout;
+
+    return Maneuver(
+      type: type,
+      instruction: annotation.descriptionText,
+      location: GeoPoint(a.lat + (b.lat - a.lat) * t, a.lng + (b.lng - a.lng) * t),
+      cumulativeMeters: cumulative[i] + t * (cumulative[i + 1] - cumulative[i]),
+      roundaboutClockwise: isRoundabout
+          ? _roundaboutClockwise(geometry, section.geometry.begin, section.geometry.end)
+          : null,
+      roundaboutExitNumber:
+          isRoundabout ? annotation.actionMetadata?.asLeaveRoundaboutMetadata()?.exitNumber : null,
+    );
+  }
+
+  /// Net rotation sense of a roundabout traversal, read off the section's
+  /// own geometry slice — a section's geometry starts where its maneuver
+  /// happens and ends where the next one begins (`DrivingRoute.sections`'
+  /// doc: "manoeuvre-to-manoeuvre"), so for a section whose action IS the
+  /// roundabout entry/exit, that slice literally traces the arc actually
+  /// driven around the roundabout.
+  ///
+  /// Sums the signed bearing change at each interior vertex of the slice:
+  /// continuously turning right traces a clockwise arc (bearing keeps
+  /// increasing), continuously turning left traces counterclockwise — and
+  /// that's exactly how roundabout direction correlates with traffic side
+  /// (right-hand traffic circles counterclockwise, left-hand clockwise), so
+  /// no separate "which country" input is needed. Returns null if the slice
+  /// is too short (fewer than 2 interior segments) to tell — callers fall
+  /// back to the verified-safe glyph rather than guess.
+  static bool? _roundaboutClockwise(
+    List<GeoPoint> geometry,
+    ymk.PolylinePosition begin,
+    ymk.PolylinePosition end,
+  ) {
+    final from = begin.segmentIndex.clamp(0, geometry.length - 1);
+    final to = (end.segmentIndex + 1).clamp(0, geometry.length - 1);
+    if (to - from < 2) return null;
+
+    var sum = 0.0;
+    var prevBearing = GeoPoint.bearing(geometry[from], geometry[from + 1]);
+    for (var i = from + 1; i < to; i++) {
+      final bearing = GeoPoint.bearing(geometry[i], geometry[i + 1]);
+      final delta = ((bearing - prevBearing + 180) % 360 + 360) % 360 - 180;
+      sum += delta;
+      prevBearing = bearing;
+    }
+    return sum > 0;
   }
 }

@@ -9,8 +9,8 @@ import 'dash_wallpaper_store.dart';
 /// native app's `DashViewModel` companion constants.
 const _btnCallAnswer = 0x06;
 const _btnCallReject = 0x07;
-const _btnMapZoomOut = 0x13;
-const _btnMapZoomIn = 0x14;
+const _btnMapZoomIn = 0x13;
+const _btnMapZoomOut = 0x14;
 const _btnMediaNext = 0x09;
 const _btnMediaPrevious = 0x0A;
 

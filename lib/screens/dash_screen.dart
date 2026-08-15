@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -9,6 +10,7 @@ import '../nav/geo_point.dart';
 import '../state/dash_engine_state.dart';
 import '../state/route_controller.dart';
 import '../util/location_permission.dart';
+import 'debug/maneuver_glyph_probe.dart';
 
 /// In-app preview of what's being streamed to the physical dash, plus
 /// connect/disconnect controls. Ports `DashViewModel` + `DashScreen.kt` —
@@ -50,6 +52,12 @@ class DashScreen extends ConsumerWidget {
             jamSegments: route?.jamSegments ?? const [],
             navMode: true,
           ),
+          if (kDebugMode)
+            Positioned(
+              top: 12,
+              right: 12,
+              child: ManeuverGlyphProbe(riderLat: engine.riderLat, riderLng: engine.riderLng),
+            ),
           if (engine.gpsLost || engine.gpsWeak)
             Positioned(
               top: 12,

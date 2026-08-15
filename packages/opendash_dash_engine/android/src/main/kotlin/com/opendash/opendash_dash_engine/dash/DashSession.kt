@@ -74,7 +74,7 @@ class DashSession(private val scope: CoroutineScope) {
     }
 
     // Live nav-info pushed to the dash bubble at ~1 Hz (set by NavEngine output).
-    @Volatile private var navManeuver = DashCommands.NAV_MANEUVER_CONTINUE
+    @Volatile private var navManeuver = DashCommands.NAV_MANEUVER_STRAIGHT
     @Volatile private var navPrimaryDist = 0
     @Volatile private var navPrimaryUnit = DashCommands.NAV_UNIT_METERS
     @Volatile private var navTotalDist = 0
@@ -245,6 +245,27 @@ class DashSession(private val scope: CoroutineScope) {
     /**
      * Idle wallpaper mode: open projection without route-card/nav-start chrome.
      * Active navigation still uses [enterNavMode] unchanged.
+     *
+     * KNOWN BROKEN (2026-08-15) — three on-hardware rounds, all failed:
+     *   1. projectionFrame/projectionOn only, no route-card/z2 — wallpaper
+     *      frames encode/send fine (RTP has zero failures) but never appear;
+     *      the dash just never opens its decoder.
+     *   2. Added [enterNavMode]'s exact pcap-verified entry (route-card ×4 →
+     *      projectionFrame → navPlaceholder → z2 → confirming route-card).
+     *      Decoder opened, but the dash rendered ONLY its route-card chrome
+     *      (title/glyph/distance bubble) full-screen on a blank background —
+     *      video plane never became visible.
+     *   3. Also faked `navActive = true` so `launchNavInfo` would stream
+     *      `activeNavPacket` telemetry too, on the theory that a route-card
+     *      with no live telemetry reads to the firmware as a static
+     *      route-preview screen. No change — same chrome, still no video.
+     *
+     * Reverted to (1), the least-broken option: no visible chrome bleeding
+     * into idle mode, wallpaper just doesn't render. Whatever opens the
+     * video plane specifically (as opposed to the route-card chrome plane)
+     * isn't in the K1G surface this file already knows about — next step is
+     * capturing genuine idle-wallpaper traffic from the original app
+     * (`re_app`) or upstream `subtlesayak/open-dash`, not more guessing.
      */
     private suspend fun enterIdleProjectionMode(sock: DashSocket) {
         sock.send(DashCommands.projectionFrame()); delay(60)

@@ -138,10 +138,18 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> with WidgetsBin
               ),
             ]),
           ),
-          const SizedBox(height: 16),
-          Text(l10n.settingsDashWallpaper, style: Theme.of(context).textTheme.labelLarge),
-          const SizedBox(height: 8),
-          const _WallpaperGallery(),
+          // Idle-wallpaper gallery hidden (2026-08-15): on-hardware testing plus
+          // the better-dash reference (tripper_app_like_nav.py, which this
+          // protocol is ported from) both indicate the Tripper dash's video
+          // decoder only ever opens as part of active-navigation mode — there's
+          // no route-card-free path that shows plain video, so nothing picked
+          // here can ever actually appear on the dash. `DashWallpaperStore` and
+          // the native `setWallpaper` plumbing are left in place (harmless,
+          // and worth keeping in case a real idle-projection sequence is found
+          // later) — only this picker UI is hidden so it stops promising
+          // something the hardware can't currently do. See the investigation
+          // in the "не отобразились обои" conversation thread for the two
+          // failed on-hardware attempts (bare z2, z2 + faked activeNavPacket).
           const SizedBox(height: 16),
           Text(l10n.settingsCurrency, style: Theme.of(context).textTheme.labelLarge),
           const SizedBox(height: 8),
@@ -289,6 +297,12 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> with WidgetsBin
 /// Cropping is centered by default — the original's drag-to-reposition bias
 /// editor isn't ported yet; `updateCurrentOptions` on the store already
 /// supports it for whenever that lands.
+///
+/// Currently unreferenced — its call site in [SettingsScreen] is commented
+/// out (see the comment there) since the dash can't actually display idle
+/// wallpaper. Kept, not deleted, so restoring it is a one-line change if a
+/// working idle-projection sequence is ever found.
+// ignore: unused_element
 class _WallpaperGallery extends ConsumerWidget {
   const _WallpaperGallery();
 

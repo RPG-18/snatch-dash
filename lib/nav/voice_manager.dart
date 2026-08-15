@@ -17,12 +17,13 @@ const _prefsKeyMode = 'voice_mode';
 /// equivalent to `ToneGenerator`, see the plugin's `DashEngineController`).
 ///
 /// Note: the original's `turnPhrase` covered every `ManeuverType` from OSRM's
-/// step-by-step instructions. The Yandex driving router used here (Phase 2)
-/// doesn't expose per-step maneuvers, only overall geometry — so
-/// `nav/Route.dart`'s `ManeuverType` is just `continue_`/`arrive`, and so is
-/// this file's phrasing. Not a regression versus the original: the dash
-/// glyph was already hardcoded to CONTINUE for every turn there too
-/// (unverified glyph codes), so no turn-by-turn fidelity is actually lost.
+/// step-by-step instructions. `nav/Route.dart`'s `ManeuverType` now mirrors
+/// the Yandex driving router's real per-step turns too, but this file's
+/// phrasing hasn't caught up yet — [_turnPhrase] collapses every non-arrive
+/// type to the generic "continue" phrase pending real l10n strings per turn
+/// direction. Not a regression versus the original: the dash glyph is still
+/// hardcoded to CONTINUE for every turn (unverified glyph codes), so no
+/// turn-by-turn fidelity is lost on the dash side either.
 class VoiceManager {
   VoiceManager._();
   static final VoiceManager instance = VoiceManager._();
@@ -117,9 +118,11 @@ class VoiceManager {
     _arrived = false;
   }
 
+  // TODO(voice): give real turn directions their own l10n phrasing instead
+  // of collapsing them all to "continue" — see the class doc.
   String _turnPhrase(AppLocalizations l10n, Maneuver m) => switch (m.type) {
         ManeuverType.arrive => l10n.voiceTurnArrive,
-        ManeuverType.continue_ => l10n.voiceTurnContinue,
+        _ => l10n.voiceTurnContinue,
       };
 
   String _roundDist(AppLocalizations l10n, double m) {

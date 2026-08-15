@@ -1,8 +1,8 @@
 # snatch-dash
 
 **snatch-dash** is an open-source companion for a compatible bike dash:
-navigation, ride history, garage tracking, expenses, wallpapers, and
-media/call cards in one lightweight app.
+navigation, ride history, garage tracking, expenses, and media/call cards in
+one lightweight app.
 
 It renders its own dash view off-screen, encodes it as H.264, and streams it
 over Wi-Fi so the phone screen can stay off during a ride.
@@ -24,8 +24,6 @@ services are unavailable or unreliable.
 - ⛽ Expenses across fuel, repairs, accessories, riding gear, food, stays,
   transport, and other categories, with monthly/all-time filtering and
   CSV/HTML export through the Android share sheet.
-- 🖼️ Idle dash wallpapers — up to five local images/GIFs with crop/fit
-  controls (video wallpaper isn't ported yet, see below).
 - 🎵 Media and caller cards projected to the dash while streaming.
 - 🗣️ Turn-by-turn voice guidance (off / chime / spoken).
 - 🔔 Local maintenance-due reminders.
@@ -57,10 +55,6 @@ Maps). It uses its own pluggable raster tile source instead (see
 
 - No cloud sync / no sign-in — the original's optional Firebase sync was
   dropped; everything is local-only here.
-- No video idle-wallpaper support (image/GIF only) — `image_picker`'s
-  image/GIF flow has no single-call equivalent that also offers video.
-- No in-app wallpaper crop-bias editor yet (wallpapers default to centered
-  crop); the store's `updateCurrentOptions` API already supports it.
 - Route maneuver glyphs: only `CONTINUE` is ever sent to the dash (unchanged
   from the original — the Yandex driving router used here doesn't expose
   per-step maneuvers either, and the original's OSRM-derived glyph codes were
@@ -123,14 +117,13 @@ against isolated temp-file databases — no device/emulator needed.
 | Vehicles | Add/edit vehicles and choose the active vehicle |
 | Expenses | Add, filter, review, and export expenses |
 | Garage | Odometer, mileage, spare parts, service logging |
-| More | Dash pairing, idle wallpaper, currency |
+| More | Dash pairing, currency |
 
 ## 🔐 Privacy
 
 - App data is local-first; no analytics, no cloud sync, no account.
 - Dash Wi-Fi credentials are stored via `EncryptedSharedPreferences`
   (native side, `DashConfig.kt`).
-- Wallpaper media stays in app-private storage.
 - Expense exports are created locally and shared only when you choose to
   share them.
 

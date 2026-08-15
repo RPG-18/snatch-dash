@@ -16,6 +16,8 @@ import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * Raster tile provider with memory + disk cache, for the off-screen dash-stream
@@ -51,14 +53,46 @@ class TileProvider(context: Context, private val scope: CoroutineScope) {
             "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Mobile Safari/537.36"
         private const val MAX_PREFETCH_TILES = 600
         private const val MIN_FETCH_GAP_MS = 60L // be gentle on the tile host + the radio
+
+        // Disk cache is unbounded otherwise — a full ride's worth of prefetch plus
+        // months of ad-hoc riding would otherwise grow tiles_dash/ forever. Evict
+        // down to 90% of budget rather than exactly to it, so a write that's just
+        // over the line doesn't trigger another eviction pass on the very next one.
+        private const val MAX_DISK_CACHE_BYTES = 200L * 1024 * 1024
+        private const val DISK_EVICT_TARGET_BYTES = MAX_DISK_CACHE_BYTES * 9 / 10
+
+        // Sized in decoded bytes, not entry count — tiles come back at 512px now
+        // (see above), so a flat entry cap under- or over-commits RAM depending on
+        // how compressible the source imagery is.
+        private const val MEMORY_CACHE_BYTES = 24 * 1024 * 1024
     }
 
     private val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
     // Cache dir per tile source so a source switch doesn't serve stale tiles.
     private val diskDir = File(context.cacheDir, "tiles_dash").apply { mkdirs() }
-    private val memory = LruCache<String, Bitmap>(120)
+    private val memory = object : LruCache<String, Bitmap>(MEMORY_CACHE_BYTES) {
+        override fun sizeOf(key: String, value: Bitmap): Int = value.byteCount
+    }
     private val inflight = ConcurrentHashMap.newKeySet<String>()
     @Volatile private var lastFetchAt = 0L
+
+    // Running total of tiles_dash/ bytes on disk; seeded once by scanning the dir
+    // (cheap — at most a few thousand small files) and kept in sync by every write
+    // and eviction after that, so [maybeEvict] never has to re-walk the tree.
+    private val diskBytes = AtomicLong(0)
+    private val evicting = AtomicBoolean(false)
+
+    init {
+        scope.launch(Dispatchers.IO) {
+            var bytes = 0L
+            // Also sweeps up any `.tmp` orphaned by a process kill between
+            // writeBytes() and renameTo() in a previous run — those aren't valid
+            // tiles and [maybeEvict] never touches `.tmp` names, so nothing else
+            // would ever reclaim them.
+            diskDir.listFiles()?.forEach { f -> if (f.name.endsWith(".tmp")) f.delete() else bytes += f.length() }
+            diskBytes.set(bytes)
+        }
+    }
 
     /** Non-blocking: returns the cached tile, else kicks off async load. */
     fun get(z: Int, x: Int, y: Int): Bitmap? {
@@ -154,6 +188,10 @@ class TileProvider(context: Context, private val scope: CoroutineScope) {
     private fun loadDisk(key: String): Bitmap? {
         val f = diskFile(key)
         if (!f.exists()) return null
+        // Bump recency on read too, not just on write — otherwise a tile fetched
+        // once and then re-read every ride (the common case) looks "old" to
+        // [maybeEvict] and gets thrown out ahead of tiles nobody's used since.
+        f.setLastModified(System.currentTimeMillis())
         return BitmapFactory.decodeFile(f.absolutePath)
     }
 
@@ -177,11 +215,56 @@ class TileProvider(context: Context, private val scope: CoroutineScope) {
             conn.readTimeout = 8_000
             val bytes = conn.inputStream.use { it.readBytes() }
             conn.disconnect()
-            diskFile(key).writeBytes(bytes)
+            writeDiskAtomic(key, bytes)
             BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
         } catch (e: Exception) {
             DebugLog.w(TAG) { "Tile $key fetch failed: ${e.message}" }
             null
+        }
+    }
+
+    /**
+     * Write-then-rename so a killed process or dropped connection mid-write never
+     * leaves a truncated PNG sitting in the cache as if it were a valid tile —
+     * [loadDisk]/`BitmapFactory` would otherwise happily decode-fail on it forever.
+     */
+    private fun writeDiskAtomic(key: String, bytes: ByteArray) {
+        val target = diskFile(key)
+        val tmp = File(diskDir, "${key.replace('/', '_')}.tmp")
+        try {
+            tmp.writeBytes(bytes)
+            if (!tmp.renameTo(target)) {
+                tmp.delete()
+                return
+            }
+            diskBytes.addAndGet(bytes.size.toLong())
+            maybeEvict()
+        } catch (e: Exception) {
+            tmp.delete()
+            DebugLog.w(TAG) { "Tile $key disk write failed: ${e.message}" }
+        }
+    }
+
+    /** Kicks off an async LRU sweep once [diskBytes] crosses [MAX_DISK_CACHE_BYTES]. */
+    private fun maybeEvict() {
+        if (diskBytes.get() <= MAX_DISK_CACHE_BYTES) return
+        if (!evicting.compareAndSet(false, true)) return // a sweep is already in flight
+        scope.launch(Dispatchers.IO) {
+            try {
+                val files = diskDir.listFiles { f -> f.isFile && f.name.endsWith(".png") } ?: return@launch
+                var evicted = 0
+                for (f in files.sortedBy { it.lastModified() }) {
+                    if (diskBytes.get() <= DISK_EVICT_TARGET_BYTES) break
+                    val len = f.length()
+                    if (f.delete()) {
+                        diskBytes.addAndGet(-len)
+                        evicted++
+                    }
+                }
+                if (evicted > 0) DebugLog.i(TAG) { "Disk cache evicted $evicted tile(s), now ~${diskBytes.get() / 1024}KB" }
+            } finally {
+                evicting.set(false)
+            }
         }
     }
 

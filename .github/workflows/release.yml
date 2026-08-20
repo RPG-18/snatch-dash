@@ -62,10 +62,8 @@ jobs:
       - name: Write API key secrets
         env:
           YANDEX_API_KEY: ${{ secrets.YANDEX_API_KEY }}
-          MAPTILER_API_KEY: ${{ secrets.MAPTILER_API_KEY }}
         run: |
           echo "YANDEX_API_KEY=${YANDEX_API_KEY}" > android/dart_defines.local.properties
-          echo "MAPTILER_API_KEY=${MAPTILER_API_KEY}" > android/maptiler.local.properties
 
       - run: flutter pub get
 

@@ -1,11 +1,13 @@
 name: Nightly build
 
 # Ночная сборка Android APK из main. Запускается по расписанию (UTC!) и
-# вручную. Требует секретов репозитория:
-#   YANDEX_API_KEY   — см. android/dart_defines.defaults.properties
-#   MAPTILER_API_KEY — см. android/maptiler.defaults.properties
-# Без них сборка всё равно пройдёт (обе properties-заготовки принимают
-# пустое значение по умолчанию), но карта в приложении будет пустой.
+# вручную. Требует секрета репозитория:
+#   YANDEX_API_KEY — см. android/dart_defines.defaults.properties
+# Без него сборка всё равно пройдёт (properties-заготовка принимает пустое
+# значение по умолчанию), но карта в приложении будет пустой.
+# MAPTILER_API_KEY больше не нужен — TileProvider.kt (dash-stream рендерер)
+# ходит через собственный кеширующий прокси (см. /maptiler_proxy.conf в корне
+# репозитория, не в git), ключ MapTiler живёт только там, не в приложении.
 
 on:
   schedule:
@@ -111,10 +113,8 @@ jobs:
       - name: Write API key secrets
         env:
           YANDEX_API_KEY: ${{ secrets.YANDEX_API_KEY }}
-          MAPTILER_API_KEY: ${{ secrets.MAPTILER_API_KEY }}
         run: |
           echo "YANDEX_API_KEY=${YANDEX_API_KEY}" > android/dart_defines.local.properties
-          echo "MAPTILER_API_KEY=${MAPTILER_API_KEY}" > android/maptiler.local.properties
 
       - run: flutter pub get
 

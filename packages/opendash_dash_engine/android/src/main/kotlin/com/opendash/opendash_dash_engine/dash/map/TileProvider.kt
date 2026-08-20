@@ -36,8 +36,16 @@ import java.util.concurrent.atomic.AtomicLong
 class TileProvider(context: Context, private val scope: CoroutineScope) {
     companion object {
         private const val TAG = "TileProvider"
-        // Licensed raster source (MapTiler), keyed via BuildConfig.MAPTILER_API_KEY —
-        // see android/maptiler.defaults.properties for the bring-your-own-key template.
+        // Own caching reverse proxy (nginx, see /maptiler_proxy.conf at repo root — not
+        // checked in, it bakes in the MapTiler key) in front of MapTiler's licensed
+        // raster source, so repeated requests for the same z/x/y across devices/
+        // reinstalls/cache-clears don't all hit MapTiler's metered API. The MapTiler
+        // key now lives server-side only, in that nginx config — deliberately NOT
+        // shipped in the app anymore. The old BuildConfig.MAPTILER_API_KEY plumbing
+        // (android/maptiler.{defaults,local}.properties, the CI secret write step)
+        // is gone entirely as of this switch — a future direct-to-MapTiler fallback
+        // would need to re-add all of that from scratch.
+        //
         // This used to hit tile.openstreetmap.org directly, OSM's own dev-only tile
         // server; that stopped working once OSM added anti-hotlink protection (requires
         // a rotating TOTP token minted by JS on openstreetmap.org, so any direct request
@@ -46,7 +54,6 @@ class TileProvider(context: Context, private val scope: CoroutineScope) {
         // Mercator.TILE_SIZE-sized dst Rect so Canvas.drawBitmap scales it regardless.
         // Deliberately NOT the in-app Yandex MapKit map — see the map-renderer finding
         // in the project's migration plan for why the two can't share a tile source.
-        // Not `const` — BuildConfig.MAPTILER_API_KEY isn't a Kotlin compile-time constant.
         //
         // .webp over .png: BitmapFactory decodes it natively (no extra dependency),
         // and it's ~55-60% smaller than the same tile as .png on populated tiles
@@ -57,8 +64,7 @@ class TileProvider(context: Context, private val scope: CoroutineScope) {
         // hundred bytes on tiles that are already tiny, versus tens of KB saved on
         // every tile that actually has content. Net effect on a real ride's cache
         // is close to the populated-tile number, not the outlier.
-        private val URL_TEMPLATE =
-            "https://api.maptiler.com/maps/streets-v2/%d/%d/%d.webp?key=${BuildConfig.MAPTILER_API_KEY}"
+        private const val URL_TEMPLATE = "https://51-250-119-135.sslip.io/streets-v2/%d/%d/%d.webp"
         private const val USER_AGENT =
             "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Mobile Safari/537.36"
         private const val MAX_PREFETCH_TILES = 600

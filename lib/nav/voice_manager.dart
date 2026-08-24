@@ -17,13 +17,16 @@ const _prefsKeyMode = 'voice_mode';
 /// equivalent to `ToneGenerator`, see the plugin's `DashEngineController`).
 ///
 /// Note: the original's `turnPhrase` covered every `ManeuverType` from OSRM's
-/// step-by-step instructions. `nav/Route.dart`'s `ManeuverType` now mirrors
-/// the Yandex driving router's real per-step turns too, but this file's
-/// phrasing hasn't caught up yet — [_turnPhrase] collapses every non-arrive
-/// type to the generic "continue" phrase pending real l10n strings per turn
-/// direction. Not a regression versus the original: the dash glyph is still
-/// hardcoded to CONTINUE for every turn (unverified glyph codes), so no
-/// turn-by-turn fidelity is lost on the dash side either.
+/// step-by-step instructions with hand-written per-direction l10n strings.
+/// This port doesn't need that table — `Router` requests routes with
+/// `DrivingOptions.annotationLanguage` set to the device locale, so every
+/// non-synthetic [Maneuver.instruction] already arrives as a real,
+/// human-phrased instruction ("Поверните направо на ..."/"Turn right onto
+/// ...") straight from the SDK; [_turnPhrase] just speaks it. Only the
+/// synthetic `arrive` maneuver (appended by `Router`, not from the SDK) has
+/// no `descriptionText` behind it and keeps its own l10n phrase. The dash
+/// glyph is a separate concern and still hardcoded to CONTINUE for every
+/// turn (unverified glyph codes) — no turn-by-turn fidelity there either.
 class VoiceManager {
   VoiceManager._();
   static final VoiceManager instance = VoiceManager._();
@@ -118,11 +121,13 @@ class VoiceManager {
     _arrived = false;
   }
 
-  // TODO(voice): give real turn directions their own l10n phrasing instead
-  // of collapsing them all to "continue" — see the class doc.
+  /// The synthetic `arrive` maneuver has no SDK-generated `descriptionText`
+  /// behind it (see the class doc), so it keeps its own l10n phrase; every
+  /// real turn speaks `m.instruction` as-is — falling back to the generic
+  /// "continue" phrase only if the SDK ever hands back an empty string.
   String _turnPhrase(AppLocalizations l10n, Maneuver m) => switch (m.type) {
         ManeuverType.arrive => l10n.voiceTurnArrive,
-        _ => l10n.voiceTurnContinue,
+        _ => m.instruction.isNotEmpty ? m.instruction : l10n.voiceTurnContinue,
       };
 
   String _roundDist(AppLocalizations l10n, double m) {

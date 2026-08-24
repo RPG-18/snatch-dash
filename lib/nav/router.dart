@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/widgets.dart' show WidgetsBinding;
 import 'package:yandex_maps_mapkit/directions.dart' as ymk;
 import 'package:yandex_maps_mapkit/mapkit.dart' as ymk;
 
@@ -45,6 +46,15 @@ class Router {
     ymk.JamType.VeryHard: JamLevel.veryHard,
   };
 
+  /// Matches [deviceLocalizations]'s locale resolution (OS locale, ru/en
+  /// supported, no in-app switcher) so the SDK-generated
+  /// `annotation.descriptionText` [VoiceManager] speaks comes back in the
+  /// same language as the rest of the UI.
+  static ymk.AnnotationLanguage get _annotationLanguage =>
+      WidgetsBinding.instance.platformDispatcher.locale.languageCode == 'ru'
+          ? ymk.AnnotationLanguage.Russian
+          : ymk.AnnotationLanguage.English;
+
   static const _maneuverTypeByAction = {
     ymk.DrivingAction.Straight: ManeuverType.straight,
     ymk.DrivingAction.SlightLeft: ManeuverType.slightLeft,
@@ -83,7 +93,7 @@ class Router {
     // the GC can collect it (and cancel the native request) before either
     // callback fires — the request then hangs forever with no error.
     final session = _router.requestRoutes(
-      ymk.DrivingOptions(routesCount: routesCount),
+      ymk.DrivingOptions(routesCount: routesCount, annotationLanguage: _annotationLanguage),
       const ymk.DrivingVehicleOptions(),
       ymk.DrivingSessionRouteListener(
         onDrivingRoutes: (routes) => completer.complete(routes),
@@ -137,6 +147,11 @@ class Router {
       // real manoeuvre-to-manoeuvre leg (see `DrivingRoute.sections` doc).
       ...r.sections.skip(1).map((s) => _toManeuver(s, geometry, cumulative)).whereType<Maneuver>(),
       Maneuver(
+        // Synthetic — not from a `DrivingSection.metadata.annotation`, so
+        // there's no SDK `descriptionText` to put here. Left untranslated
+        // deliberately: `VoiceManager._turnPhrase` special-cases `arrive`
+        // and speaks its own l10n phrase instead of this field, and nothing
+        // else reads `Maneuver.instruction`.
         type: ManeuverType.arrive,
         instruction: 'Arrive at destination',
         location: geometry.last,

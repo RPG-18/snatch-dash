@@ -1310,6 +1310,30 @@ abstract class AppLocalizations {
   /// **'continue straight'**
   String get voiceTurnContinue;
 
+  /// No description provided for @voiceTurnLeft.
+  ///
+  /// In en, this message translates to:
+  /// **'turn left'**
+  String get voiceTurnLeft;
+
+  /// No description provided for @voiceTurnRight.
+  ///
+  /// In en, this message translates to:
+  /// **'turn right'**
+  String get voiceTurnRight;
+
+  /// No description provided for @voiceTurnUturnLeft.
+  ///
+  /// In en, this message translates to:
+  /// **'make a U-turn to the left'**
+  String get voiceTurnUturnLeft;
+
+  /// No description provided for @voiceTurnUturnRight.
+  ///
+  /// In en, this message translates to:
+  /// **'make a U-turn to the right'**
+  String get voiceTurnUturnRight;
+
   /// No description provided for @voiceDistanceKm.
   ///
   /// In en, this message translates to:

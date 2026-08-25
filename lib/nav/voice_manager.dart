@@ -18,15 +18,21 @@ const _prefsKeyMode = 'voice_mode';
 ///
 /// Note: the original's `turnPhrase` covered every `ManeuverType` from OSRM's
 /// step-by-step instructions with hand-written per-direction l10n strings.
-/// This port doesn't need that table — `Router` requests routes with
-/// `DrivingOptions.annotationLanguage` set to the device locale, so every
-/// non-synthetic [Maneuver.instruction] already arrives as a real,
-/// human-phrased instruction ("Поверните направо на ..."/"Turn right onto
-/// ...") straight from the SDK; [_turnPhrase] just speaks it. Only the
-/// synthetic `arrive` maneuver (appended by `Router`, not from the SDK) has
-/// no `descriptionText` behind it and keeps its own l10n phrase. The dash
-/// glyph is a separate concern and still hardcoded to CONTINUE for every
-/// turn (unverified glyph codes) — no turn-by-turn fidelity there either.
+/// This port originally spoke `Maneuver.instruction` as-is — SDK-generated
+/// `descriptionText` from `DrivingOptions.annotationLanguage` — but Yandex's
+/// own guidance is not to rely on `descriptionText` for voice guidance (no
+/// contract on wording/tense/language fidelity, it's meant for on-screen
+/// display). [_turnPhrase] now builds the phrase itself, hand-written per
+/// l10n like the original, for the three maneuvers that make up the bulk of
+/// real turns: `left`, `right`, and both U-turn variants (spoken direction-
+/// agnostic — "make a U-turn" either way). The synthetic `arrive` maneuver
+/// (appended by `Router`, not from the SDK) keeps its own l10n phrase same
+/// as before. Every other `ManeuverType` (slight/hard turns, forks, ramps,
+/// roundabouts, ferries) still falls back to the SDK's `instruction`, or the
+/// generic "continue" phrase if that's empty — narrowing that gap (i.e.
+/// hand-writing the rest of the table) is follow-up work, not done here.
+/// The dash glyph is a separate concern and still hardcoded to CONTINUE for
+/// every turn (unverified glyph codes) — no turn-by-turn fidelity there either.
 class VoiceManager {
   VoiceManager._();
   static final VoiceManager instance = VoiceManager._();
@@ -121,12 +127,21 @@ class VoiceManager {
     _arrived = false;
   }
 
-  /// The synthetic `arrive` maneuver has no SDK-generated `descriptionText`
-  /// behind it (see the class doc), so it keeps its own l10n phrase; every
-  /// real turn speaks `m.instruction` as-is — falling back to the generic
-  /// "continue" phrase only if the SDK ever hands back an empty string.
+  /// See the class doc for why this doesn't just speak `m.instruction`
+  /// anymore. The synthetic `arrive` maneuver has no SDK-generated
+  /// `descriptionText` behind it regardless, so it always kept its own l10n
+  /// phrase. `left`/`right` and the two U-turn variants are hand-written
+  /// here now — U-turn direction matters (a left U-turn crosses oncoming
+  /// traffic, a right one doesn't), so `uturnLeft`/`uturnRight` get distinct
+  /// phrases rather than a shared "make a U-turn". Everything else still
+  /// falls back to `m.instruction` (from `descriptionText`) or the generic
+  /// "continue" phrase if that's empty.
   String _turnPhrase(AppLocalizations l10n, Maneuver m) => switch (m.type) {
         ManeuverType.arrive => l10n.voiceTurnArrive,
+        ManeuverType.left => l10n.voiceTurnLeft,
+        ManeuverType.right => l10n.voiceTurnRight,
+        ManeuverType.uturnLeft => l10n.voiceTurnUturnLeft,
+        ManeuverType.uturnRight => l10n.voiceTurnUturnRight,
         _ => m.instruction.isNotEmpty ? m.instruction : l10n.voiceTurnContinue,
       };
 

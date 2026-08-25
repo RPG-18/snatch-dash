@@ -701,6 +701,18 @@ class AppLocalizationsEn extends AppLocalizations {
   String get voiceTurnContinue => 'continue straight';
 
   @override
+  String get voiceTurnLeft => 'turn left';
+
+  @override
+  String get voiceTurnRight => 'turn right';
+
+  @override
+  String get voiceTurnUturnLeft => 'make a U-turn to the left';
+
+  @override
+  String get voiceTurnUturnRight => 'make a U-turn to the right';
+
+  @override
   String voiceDistanceKm(String km) {
     return '$km kilometers';
   }

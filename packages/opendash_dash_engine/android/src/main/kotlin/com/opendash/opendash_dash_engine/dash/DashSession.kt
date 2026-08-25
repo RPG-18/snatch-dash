@@ -23,6 +23,12 @@ class DashSession(private val scope: CoroutineScope) {
     companion object {
         private const val TAG           = "DashSession"
         private const val AUTH_TIMEOUT  = 15_000L
+        // While STREAMING the dash acks every frame (~8/s, see dispatchIncoming) — silence
+        // this long means it's gone even if the socket/WiFi link still looks fine locally
+        // (e.g. still "associated" but out of range, or the dash itself powered off/hung).
+        // DashWifiManager's NetworkCallback never fires for that case, so this is the only
+        // place that notices.
+        private const val RX_IDLE_TIMEOUT_MS = 10_000L
         private const val BURST_PAUSE   = 20L
         private const val PROJ_HB_MS     = 250L   // 4 Hz
         private const val ROUTE_CARD_MS  = 1_000L // 1 Hz keep-alive
@@ -274,6 +280,7 @@ class DashSession(private val scope: CoroutineScope) {
     }
 
     private fun launchReceiveLoop(sock: DashSocket) {
+        var lastRxAtMs = System.currentTimeMillis()
         rxJob = scope.launch(Dispatchers.IO) {
             while (isActive) {
                 val pkt = try {
@@ -286,7 +293,27 @@ class DashSession(private val scope: CoroutineScope) {
                     DebugLog.w(TAG) { "RX loop stopped — socket error: ${e.message}" }
                     onError?.invoke("Lost connection to dash")
                     break
-                } ?: continue
+                }
+                if (pkt == null) {
+                    // Timeout — not itself a problem (see DashSocket.RECV_TIMEOUT_MS), but
+                    // repeated timeouts during STREAMING with no real packet in between mean
+                    // the dash has gone silent (see RX_IDLE_TIMEOUT_MS's doc). Mirrors the
+                    // socket-error path above: tear down the session so a fresh `connect()`
+                    // isn't blocked by the stale-socket state guard.
+                    if (_state.value == DashState.STREAMING &&
+                        System.currentTimeMillis() - lastRxAtMs > RX_IDLE_TIMEOUT_MS
+                    ) {
+                        DebugLog.w(TAG) { "RX loop stopped — no data from dash for over ${RX_IDLE_TIMEOUT_MS}ms" }
+                        heartbeatJob?.cancel(); projHbJob?.cancel(); routeCardJob?.cancel()
+                        navInfoJob?.cancel(); mediaInfoJob?.cancel()
+                        sock.close(); socket = null
+                        setState(DashState.IDLE)
+                        onError?.invoke("Lost connection to dash")
+                        break
+                    }
+                    continue
+                }
+                lastRxAtMs = System.currentTimeMillis()
                 dispatchIncoming(pkt, sock)
             }
         }

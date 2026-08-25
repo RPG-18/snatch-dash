@@ -706,6 +706,18 @@ class AppLocalizationsRu extends AppLocalizations {
   String get voiceTurnContinue => 'продолжайте движение прямо';
 
   @override
+  String get voiceTurnLeft => 'поворот налево';
+
+  @override
+  String get voiceTurnRight => 'поворот направо';
+
+  @override
+  String get voiceTurnUturnLeft => 'левый разворот';
+
+  @override
+  String get voiceTurnUturnRight => 'правый разворот';
+
+  @override
   String voiceDistanceKm(String km) {
     return '$km километра';
   }

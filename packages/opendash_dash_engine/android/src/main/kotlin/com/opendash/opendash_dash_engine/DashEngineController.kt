@@ -172,8 +172,17 @@ class DashEngineController(
                     sessionStarted = true
                     val resolvedSsid = if (ssid.isNotBlank()) ssid else wifi.ssid
                     session.connect(resolvedSsid, wifiManager.network)
+                } else if (wifi.status != WifiConnStatus.CONNECTED && sessionStarted) {
+                    // The network the running session's sockets are bound to (via
+                    // Network.bindSocket) is gone — whether WifiManager is about to retry
+                    // (REQUESTING) or has given up (ERROR), that session is now sending
+                    // into a dead network and will never notice on its own (see
+                    // DashSocket.send/sendRtp — failures there are swallowed, not fatal).
+                    // Tear it down so the `connect()` branch above starts a fresh one,
+                    // bound to whatever network reconnect eventually resolves.
+                    sessionStarted = false
+                    session.disconnect()
                 }
-                if (wifi.status != WifiConnStatus.CONNECTED) sessionStarted = false
             }
         }
 

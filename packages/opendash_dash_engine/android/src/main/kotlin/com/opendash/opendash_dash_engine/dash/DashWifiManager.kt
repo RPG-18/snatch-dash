@@ -19,6 +19,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 enum class WifiConnStatus { IDLE, REQUESTING, CONNECTED, ERROR }
@@ -57,6 +58,9 @@ class DashWifiManager(
         private const val RECONNECT_DELAY  = 8_000L
         // Android returns this sentinel from WifiInfo.getSsid() when it can't read the SSID.
         private const val WifiManagerUnknownSsid = "<unknown ssid>"
+        // Frequent enough to see a signal degrading before it actually drops, without
+        // drowning the persisted app log — see [logSignalInfo].
+        private const val RSSI_POLL_INTERVAL_MS = 5_000L
     }
 
     private val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
@@ -78,11 +82,20 @@ class DashWifiManager(
     private var cellularCallback: ConnectivityManager.NetworkCallback? = null
     private var reconnectJob: Job? = null
     private var ssidPollJob: Job? = null
+    private var rssiPollJob: Job? = null
     private var wantConnected = false
     private var pendingSsid = ""
     private var pendingPassword = ""
     private var pendingPrefix = false
     private var resolvedSsid: String? = null
+
+    /**
+     * Set once [connect] reaches CONNECTED for the first time this session, cleared on
+     * [connect]/[disconnect]. Distinguishes "never found this dash" (bad SSID/password —
+     * see [onUnavailable]) from "found it before, lost it now" (rider briefly out of
+     * range) so only the former gives up after one failed retry.
+     */
+    private var hasConnectedOnce = false
 
     /**
      * When we connect by prefix (any RE_* dash), the exact SSID is only known once the
@@ -106,6 +119,7 @@ class DashWifiManager(
         pendingPassword  = password
         pendingPrefix    = prefixMatch
         resolvedSsid     = null
+        hasConnectedOnce = false
         requestNetwork()
         requestCellularDefault()
     }
@@ -130,6 +144,7 @@ class DashWifiManager(
     fun disconnect() {
         DebugLog.i(TAG) { "Disconnect requested" }
         wantConnected = false
+        hasConnectedOnce = false
         reconnectJob?.cancel()
         release()
         releaseCellularDefault()
@@ -199,7 +214,7 @@ class DashWifiManager(
             resolvedSsid = activeSsid
             DebugLog.i(TAG) { "Using already-connected matching WiFi '${maskSsid(activeSsid)}'" }
             onSsidResolved?.invoke(activeSsid)
-            _state.value = WifiState(status = WifiConnStatus.CONNECTED, ssid = activeSsid)
+            markConnected(activeSsid)
             return
         }
 
@@ -224,11 +239,11 @@ class DashWifiManager(
                         resolvedSsid = resolved
                         DebugLog.i(TAG) { "WiFi callback available; resolved SSID '${maskSsid(resolved)}'" }
                         onSsidResolved?.invoke(resolved)
-                        _state.value = WifiState(status = WifiConnStatus.CONNECTED, ssid = resolved)
+                        markConnected(resolved)
                     }
                     !pendingPrefix -> {
                         DebugLog.i(TAG) { "WiFi callback available for exact SSID '${maskSsid(pendingSsid)}'" }
-                        _state.value = WifiState(status = WifiConnStatus.CONNECTED, ssid = pendingSsid)
+                        markConnected(pendingSsid)
                     }
                     else -> {
                         DebugLog.w(TAG) { "WiFi callback available but SSID is redacted; waiting for fallback resolution" }
@@ -255,23 +270,44 @@ class DashWifiManager(
                 this@DashWifiManager.network = network
                 DebugLog.i(TAG) { "Resolved dash SSID via capabilities: '${maskSsid(ssid)}'" }
                 onSsidResolved?.invoke(ssid)
-                _state.value = WifiState(status = WifiConnStatus.CONNECTED, ssid = ssid)
+                markConnected(ssid)
             }
 
             override fun onUnavailable() {
-                DebugLog.w(TAG) { "WiFi unavailable — SSID not found or user declined" }
                 this@DashWifiManager.network = null
-                _state.value = WifiState(
-                    status = WifiConnStatus.ERROR,
-                    ssid   = pendingSsid,
-                    error  = "Could not connect to '$pendingSsid' — network not found or wrong password",
-                )
-                // Don't auto-retry onUnavailable; user must try again
-                wantConnected = false
+                if (wantConnected && hasConnectedOnce) {
+                    // We reached CONNECTED for this dash earlier in this session, so a
+                    // timed-out re-request is just another transient drop (rider briefly
+                    // out of range) — same as onLost below. Keep retrying instead of
+                    // giving up, matching this class's own "auto-reconnects on link loss
+                    // until disconnect()" contract.
+                    DebugLog.w(TAG) { "WiFi still unavailable — reconnecting in ${RECONNECT_DELAY}ms" }
+                    _state.value = WifiState(
+                        status = WifiConnStatus.REQUESTING,
+                        ssid   = pendingSsid,
+                        error  = "Link lost — reconnecting…",
+                    )
+                    scheduleReconnect()
+                } else {
+                    // Never connected this session — likely wrong SSID/password. Don't
+                    // spin forever on that; user must try again.
+                    DebugLog.w(TAG) { "WiFi unavailable — SSID not found or user declined" }
+                    _state.value = WifiState(
+                        status = WifiConnStatus.ERROR,
+                        ssid   = pendingSsid,
+                        error  = "Could not connect to '$pendingSsid' — network not found or wrong password",
+                    )
+                    wantConnected = false
+                }
             }
 
             override fun onLost(network: Network) {
                 DebugLog.w(TAG) { "WiFi link lost — reconnecting in ${RECONNECT_DELAY}ms" }
+                // Last-known signal before the Network object goes stale — shows whether
+                // this was a fading signal (see the periodic "poll" samples leading up to
+                // it) or a clean step down (dash powered off, radio toggled, etc.).
+                logSignalInfo("last before loss", network)
+                stopRssiPolling()
                 this@DashWifiManager.network = null
                 _state.value = WifiState(
                     status = WifiConnStatus.REQUESTING,
@@ -304,6 +340,45 @@ class DashWifiManager(
         }
     }
 
+    /** Publish CONNECTED and record that this dash has answered at least once this session. */
+    private fun markConnected(ssid: String) {
+        hasConnectedOnce = true
+        _state.value = WifiState(status = WifiConnStatus.CONNECTED, ssid = ssid)
+        startRssiPolling()
+    }
+
+    /**
+     * RSSI/link-speed samples logged into the same persisted [DebugLog] as everything
+     * else — no `adb`/OS-level "Wi-Fi verbose logging" needed to see whether a drop was a
+     * signal fading out over several samples (rider drifting out of range) or a clean
+     * step down to nothing (dash powered off, phone Wi-Fi radio toggled, etc.).
+     */
+    private fun logSignalInfo(context: String, net: Network?) {
+        val info = net?.let { cm.getNetworkCapabilities(it)?.transportInfo as? WifiInfo }
+        if (info == null) {
+            DebugLog.i(TAG) { "Signal ($context): unavailable" }
+            return
+        }
+        DebugLog.i(TAG) {
+            "Signal ($context): rssi=${info.rssi}dBm linkSpeed=${info.linkSpeed}Mbps freq=${info.frequency}MHz"
+        }
+    }
+
+    private fun startRssiPolling() {
+        rssiPollJob?.cancel()
+        rssiPollJob = scope.launch {
+            while (isActive) {
+                delay(RSSI_POLL_INTERVAL_MS)
+                logSignalInfo("poll", network)
+            }
+        }
+    }
+
+    private fun stopRssiPolling() {
+        rssiPollJob?.cancel()
+        rssiPollJob = null
+    }
+
     /** Read the connected network's SSID (strips the surrounding quotes Android adds). */
     private fun resolveSsid(network: Network): String {
         val caps = cm.getNetworkCapabilities(network) ?: return ""
@@ -329,7 +404,7 @@ class DashWifiManager(
                     resolvedSsid = activeSsid
                     DebugLog.i(TAG) { "Android 11 SSID fallback #${attempt + 1} resolved '${maskSsid(activeSsid)}'" }
                     onSsidResolved?.invoke(activeSsid)
-                    _state.value = WifiState(status = WifiConnStatus.CONNECTED, ssid = activeSsid)
+                    markConnected(activeSsid)
                     return@launch
                 }
                 delay(2_000)
@@ -379,6 +454,7 @@ class DashWifiManager(
         // never reaches [startAndroid11SsidPolling]'s own cancel.
         ssidPollJob?.cancel()
         ssidPollJob = null
+        stopRssiPolling()
         networkCallback?.let { runCatching { cm.unregisterNetworkCallback(it) } }
         networkCallback = null
         network = null

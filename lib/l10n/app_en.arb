@@ -254,5 +254,7 @@
   "voiceDistance500m": "500 meters",
   "voiceDistance200m": "200 meters",
   "voiceDistanceM": "{m} meters",
-  "@voiceDistanceM": {"placeholders": {"m": {"type": "int"}}}
+  "@voiceDistanceM": {"placeholders": {"m": {"type": "int"}}},
+  "voiceDashDisconnected": "Dash disconnected. Restart the dash to reconnect.",
+  "voiceDashReconnected": "Dash reconnected"
 }

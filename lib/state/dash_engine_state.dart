@@ -36,6 +36,7 @@ class DashEngineState {
     this.nowPlayingTitle,
     this.incomingCaller,
     this.hasActiveCall = false,
+    this.explicitDisconnect = false,
   });
 
   final DashStage stage;
@@ -69,6 +70,13 @@ class DashEngineState {
   /// `DashButtonController`.
   final bool hasActiveCall;
 
+  /// True only on the single `publishState()` call inside the native
+  /// `disconnect()` — every other update leaves it false. Distinguishes
+  /// "rider asked to disconnect" from "session died on its own", which
+  /// otherwise both surface as the same [DashStage.idle]/[DashStage.error];
+  /// see `DashConnectionAlertController`, the only reader of this field.
+  final bool explicitDisconnect;
+
   factory DashEngineState.fromMap(Map<String, dynamic> map) => DashEngineState(
         stage: _stageFrom(map['stage'] as String?),
         wifiStatus: map['wifiStatus'] as String?,
@@ -89,6 +97,7 @@ class DashEngineState {
         nowPlayingTitle: map['nowPlayingTitle'] as String?,
         incomingCaller: map['incomingCaller'] as String?,
         hasActiveCall: map['hasActiveCall'] as bool? ?? false,
+        explicitDisconnect: map['explicitDisconnect'] as bool? ?? false,
       );
 }
 

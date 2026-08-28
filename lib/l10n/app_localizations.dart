@@ -1357,6 +1357,18 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'{m} meters'**
   String voiceDistanceM(int m);
+
+  /// No description provided for @voiceDashDisconnected.
+  ///
+  /// In en, this message translates to:
+  /// **'Dash disconnected. Restart the dash to reconnect.'**
+  String get voiceDashDisconnected;
+
+  /// No description provided for @voiceDashReconnected.
+  ///
+  /// In en, this message translates to:
+  /// **'Dash reconnected'**
+  String get voiceDashReconnected;
 }
 
 class _AppLocalizationsDelegate

@@ -114,6 +114,32 @@ class VoiceManager {
     }
   }
 
+  /// Sustained dash-connection-loss alert — see `DashConnectionAlertController`,
+  /// the sole caller. Unlike [maybeAnnounce], this fires regardless of active
+  /// navigation (idle-wallpaper mode included) since it's about the link to
+  /// the dash itself, not a turn. Respects [VoiceMode.off] like everything
+  /// else here; CHIME mode gets the chime (a full sentence would be
+  /// pointless if the rider muted speech) rather than staying silent.
+  Future<void> announceConnectionLost() async {
+    if (_mode == VoiceMode.off) return;
+    if (_mode == VoiceMode.full) {
+      await _speak(deviceLocalizations().voiceDashDisconnected);
+    } else {
+      await DashEngine.instance.playChime();
+    }
+  }
+
+  /// Companion to [announceConnectionLost] — called once the dash is back,
+  /// only if the loss was actually announced (see the controller).
+  Future<void> announceConnectionRestored() async {
+    if (_mode == VoiceMode.off) return;
+    if (_mode == VoiceMode.full) {
+      await _speak(deviceLocalizations().voiceDashReconnected);
+    } else {
+      await DashEngine.instance.playChime();
+    }
+  }
+
   Future<void> _speak(String text) async {
     await _tts.setLanguage(deviceLocalizations().localeName == 'ru' ? 'ru-RU' : 'en-US');
     await _tts.speak(text);

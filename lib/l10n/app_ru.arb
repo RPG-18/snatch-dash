@@ -223,5 +223,7 @@
   "voiceDistanceKm": "{km} километра",
   "voiceDistance500m": "500 метров",
   "voiceDistance200m": "200 метров",
-  "voiceDistanceM": "{m} метров"
+  "voiceDistanceM": "{m} метров",
+  "voiceDashDisconnected": "Связь с дэшем потеряна. Перезапустите дэш, чтобы переподключиться.",
+  "voiceDashReconnected": "Дэш снова на связи"
 }

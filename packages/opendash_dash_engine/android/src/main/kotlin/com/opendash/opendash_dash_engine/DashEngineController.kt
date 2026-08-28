@@ -65,6 +65,21 @@ class DashEngineController(
         private const val FORCE_REDRAW_MS = 2_000L
         private const val SMOOTH_TAU = 0.35
         private const val MANUAL_IDLE_MS = 8_000L
+        // The K1G auth handshake occasionally fails on its own (seen in the wild — see
+        // spec/wifi_retry_policy.md) even while the WiFi link to the dash is fine. Retrying
+        // `session.connect()` directly is far cheaper than tearing down and re-requesting WiFi
+        // (skips the whole WifiNetworkSpecifier dance, no system dialog risk) — bounded so a
+        // genuinely dead dash still surfaces as ERROR instead of retrying forever.
+        private const val MAX_AUTH_RETRIES = 4
+        private const val AUTH_RETRY_DELAY_MS = 1_500L
+        // Battery/annoyance backstop (see spec/wifi_retry_policy.md's "Из живого форка" —
+        // ported from NorthStar's armReconnectGiveup): the WiFi/auth retry loops above are
+        // individually unbounded by design (a rider stuck in a dead zone should keep trying),
+        // but the whole connection attempt — from the very first `connect()` through every
+        // automatic retry — must not run forever if it never reaches STREAMING. Two minutes
+        // chosen to comfortably outlast a normal reconnect cycle (~38s WiFi + a few auth
+        // retries) while still cutting off before it meaningfully drains the battery.
+        private const val RECONNECT_GIVEUP_MS = 120_000L
     }
 
     private val dashConfig = DashConfig.get(context)
@@ -90,6 +105,13 @@ class DashEngineController(
     private var wifiWatchJob: Job? = null
     private var mediaForwardJob: Job? = null
     private var callForwardJob: Job? = null
+    // Bounded retry count for the cheap re-auth path in [connect]'s sessionWatchJob — see
+    // MAX_AUTH_RETRIES's doc. Reset on READY (auth actually succeeded) and on every fresh
+    // top-level [connect] call.
+    private var authRetries = 0
+    // Armed whenever session.state isn't STREAMING, cancelled once it is — see
+    // RECONNECT_GIVEUP_MS's doc.
+    private var giveupJob: Job? = null
 
     // ── Destination / nav state, pushed from Dart ──
     @Volatile private var destName: String? = null
@@ -153,6 +175,7 @@ class DashEngineController(
         session.onButton = { code -> onButton?.invoke(code.toInt() and 0xFF) }
         session.onError = { msg -> publishState(errorMessage = msg) }
         locationTracker.start()
+        authRetries = 0
 
         val ssid = dashConfig.ssid
         wifiWatchJob?.cancel()
@@ -195,7 +218,26 @@ class DashEngineController(
         sessionWatchJob = scope.launch {
             session.state.collect { st ->
                 publishState()
-                if (st == DashState.READY) startStream()
+                if (st == DashState.STREAMING) cancelGiveupTimer() else armGiveupTimer()
+                when (st) {
+                    DashState.READY -> { authRetries = 0; startStream() }
+                    // The K1G handshake failed but the WiFi link itself is still up — no need
+                    // to tear down and re-request WiFi (which risks the system dialog, see
+                    // spec/wifi_retry_policy.md's "Из живого форка"). Just retry the handshake
+                    // directly, same network, bounded so a genuinely dead dash still ends in
+                    // ERROR rather than retrying forever.
+                    DashState.ERROR -> {
+                        val wifi = wifiManager.state.value
+                        if (wifi.status == WifiConnStatus.CONNECTED && authRetries < MAX_AUTH_RETRIES) {
+                            authRetries++
+                            delay(AUTH_RETRY_DELAY_MS)
+                            if (wifiManager.state.value.status == WifiConnStatus.CONNECTED) {
+                                session.connect(wifi.ssid, wifiManager.network)
+                            }
+                        }
+                    }
+                    else -> {}
+                }
             }
         }
 
@@ -203,6 +245,7 @@ class DashEngineController(
     }
 
     fun disconnect() {
+        giveupJob?.cancel(); giveupJob = null
         streamJob?.cancel(); streamJob = null
         sessionWatchJob?.cancel(); sessionWatchJob = null
         wifiWatchJob?.cancel(); wifiWatchJob = null
@@ -212,8 +255,27 @@ class DashEngineController(
         locationTracker.stop()
         encoder?.release(); encoder = null
         DashKeepAliveService.stop(context)
-        publishState()
+        // explicitDisconnect=true distinguishes this from every other publishState() call (all
+        // of which leave it false/absent) — Dart's connection-lost voice alert uses it to tell
+        // "rider asked to disconnect" apart from "session died on its own", which otherwise both
+        // surface as the same DashStage.idle/error and would otherwise fire a spurious alert.
+        publishState(explicitDisconnect = true)
     }
+
+    /** Start the give-up countdown if it isn't already running (idempotent) — see
+     *  RECONNECT_GIVEUP_MS's doc. */
+    private fun armGiveupTimer() {
+        if (giveupJob?.isActive == true) return
+        giveupJob = scope.launch {
+            delay(RECONNECT_GIVEUP_MS)
+            if (session.state.value != DashState.STREAMING) {
+                DebugLog.w(TAG) { "Giving up — ${RECONNECT_GIVEUP_MS}ms without reaching STREAMING" }
+                disconnect()
+            }
+        }
+    }
+
+    private fun cancelGiveupTimer() { giveupJob?.cancel(); giveupJob = null }
 
     /**
      * Forwards the phone's now-playing/incoming-call state to the dash via
@@ -485,10 +547,10 @@ class DashEngineController(
             gpsWeak = gpsWeak,
         )
 
-        if (!navigating) {
-            tickIdle()
-            return
-        }
+        // EXPERIMENT (2026-08-28, unverified on hardware) — see tickIdle()'s doc for why this
+        // no longer branches there. [navigating] still gates everything ELSE that isn't frame
+        // content (DashButtonController's zoom-vs-wallpaper-cycle mapping, DashSession's own
+        // chrome/nav-info decisions) — only the render path changed here.
 
         val haveTarget = riderLat != null || (destLat != null && destLng != null)
         val targetLat = riderLat ?: destLat ?: camLat
@@ -534,10 +596,28 @@ class DashEngineController(
     }
 
     /**
-     * Idle mode: no destination, so no camera math — just the wallpaper (or
-     * the standby "waiting" frame when none is set). Signature is keyed off
-     * the wallpaper fields instead of GPS, and [camMoving] is pinned false so
-     * the frame loop settles at [FPS_IDLE].
+     * SUPERSEDED, no longer called from [tick] (2026-08-28) — kept for now as the fallback to
+     * revert to if the replacement doesn't pan out on hardware, not dead for its own sake.
+     *
+     * This rendered the wallpaper photo/GIF from [DashWallpaperStore] whenever idle. It always
+     * ran into the same wall documented on [DashSession.enterIdleProjectionMode] (also
+     * superseded, same date): the video plane never became visible without the dash's
+     * route-card chrome, and adding that chrome back only showed the chrome, not the video
+     * underneath. [tick] now takes the opposite approach — found in a sibling fork's source
+     * (`OpenMotoDash/NorthStar`, see spec/wifi_retry_policy.md's "Из живого форка" for how that
+     * fork was found): its dash session ALWAYS enters nav-mode chrome, idle or not, and idle
+     * itself is just a plain map with an empty route/destination rather than a distinct
+     * chrome-free mode. Adopted here as the same idea, but genuinely untested combination on
+     * THIS dash — the two prior on-hardware rounds both still fed static/faked content (a
+     * wallpaper bitmap, then a wallpaper bitmap + faked nav telemetry) through nav-mode chrome;
+     * neither tried what this does, a real live self-consistent map (no route, matching what the
+     * chrome now always says) as the video content. Whether that's what was actually missing, or
+     * this dash's firmware just never shows video without genuine turn-by-turn data flowing, is
+     * exactly what's unverified — needs an on-hardware ride to confirm either way.
+     *
+     * `DashWallpaperStore`/the Settings screen's wallpaper gallery still exist and still push
+     * `setWallpaper()` down here — they're just not read by anything right now. Left alone
+     * pending the hardware verification above, not a decision to remove the feature.
      */
     private fun tickIdle() {
         camMoving = false
@@ -603,10 +683,12 @@ class DashEngineController(
         gpsLost: Boolean? = null,
         gpsWeak: Boolean? = null,
         errorMessage: String? = null,
+        explicitDisconnect: Boolean = false,
     ) {
         onState(
             mapOf(
                 "stage" to session.state.value.name,
+                "explicitDisconnect" to explicitDisconnect,
                 "wifiStatus" to wifiManager.state.value.status.name,
                 "wifiSsid" to wifiManager.state.value.ssid,
                 "wifiError" to wifiManager.state.value.error,

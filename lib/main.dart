@@ -8,6 +8,7 @@ import 'package:yandex_maps_mapkit/mapkit_factory.dart' show mapkit;
 import 'l10n/app_localizations.dart';
 import 'router/app_router.dart';
 import 'state/dash_button_controller.dart';
+import 'state/dash_connection_alert_controller.dart';
 import 'state/dash_wallpaper_store.dart';
 import 'theme/app_theme.dart';
 import 'util/app_logger.dart';
@@ -73,6 +74,12 @@ class OpenDashApp extends ConsumerWidget {
     // somewhere alive for the whole app, or physical dash button presses
     // (wallpaper cycling, zoom, call answer/reject, media skip) go nowhere.
     ref.watch(dashButtonControllerProvider);
+    // Same reasoning again for dashConnectionAlertControllerProvider: it only
+    // does anything via its own ref.listen, and the whole point is catching a
+    // dash-connection drop while the rider isn't looking at the (deliberately
+    // off) screen — so it must be alive for the whole session, not just while
+    // the Dash screen happens to be open.
+    ref.watch(dashConnectionAlertControllerProvider);
     return MaterialApp.router(
       title: 'SnatchDash',
       debugShowCheckedModeBanner: false,

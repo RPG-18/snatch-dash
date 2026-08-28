@@ -732,4 +732,11 @@ class AppLocalizationsRu extends AppLocalizations {
   String voiceDistanceM(int m) {
     return '$m метров';
   }
+
+  @override
+  String get voiceDashDisconnected =>
+      'Связь с дэшем потеряна. Перезапустите дэш, чтобы переподключиться.';
+
+  @override
+  String get voiceDashReconnected => 'Дэш снова на связи';
 }

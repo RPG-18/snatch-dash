@@ -344,14 +344,24 @@ class DashWifiManager(
     private fun markConnected(ssid: String) {
         hasConnectedOnce = true
         _state.value = WifiState(status = WifiConnStatus.CONNECTED, ssid = ssid)
+        // BSSID at the moment of connecting, not just from the first 5s-later poll tick —
+        // see [logSignalInfo]'s doc for why this matters (BSSID-drift theory, spec/wifi_retry_policy.md).
+        logSignalInfo("connected", network)
         startRssiPolling()
     }
 
     /**
-     * RSSI/link-speed samples logged into the same persisted [DebugLog] as everything
+     * RSSI/link-speed/BSSID samples logged into the same persisted [DebugLog] as everything
      * else — no `adb`/OS-level "Wi-Fi verbose logging" needed to see whether a drop was a
      * signal fading out over several samples (rider drifting out of range) or a clean
      * step down to nothing (dash powered off, phone Wi-Fi radio toggled, etc.).
+     *
+     * BSSID specifically is here to test the theory in spec/wifi_retry_policy.md's "Внешние
+     * находки": Android's WifiNetworkSpecifier approval cache is keyed on (SSID, BSSID,
+     * security type), not SSID alone — if the dash's radio hands out a different BSSID on
+     * every full re-associate, that alone re-triggers the system dialog even for an
+     * already-approved exact SSID. Comparing "last before loss" vs the next "connected"
+     * BSSID across a full disconnect/reconnect cycle confirms or rules this out.
      */
     private fun logSignalInfo(context: String, net: Network?) {
         val info = net?.let { cm.getNetworkCapabilities(it)?.transportInfo as? WifiInfo }
@@ -360,7 +370,8 @@ class DashWifiManager(
             return
         }
         DebugLog.i(TAG) {
-            "Signal ($context): rssi=${info.rssi}dBm linkSpeed=${info.linkSpeed}Mbps freq=${info.frequency}MHz"
+            "Signal ($context): bssid=${info.bssid} rssi=${info.rssi}dBm " +
+                "linkSpeed=${info.linkSpeed}Mbps freq=${info.frequency}MHz"
         }
     }
 

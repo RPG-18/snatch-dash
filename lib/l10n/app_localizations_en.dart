@@ -727,4 +727,11 @@ class AppLocalizationsEn extends AppLocalizations {
   String voiceDistanceM(int m) {
     return '$m meters';
   }
+
+  @override
+  String get voiceDashDisconnected =>
+      'Dash disconnected. Restart the dash to reconnect.';
+
+  @override
+  String get voiceDashReconnected => 'Dash reconnected';
 }

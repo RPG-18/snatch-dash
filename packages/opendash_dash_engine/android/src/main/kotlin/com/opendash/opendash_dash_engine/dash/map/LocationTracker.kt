@@ -7,15 +7,29 @@ import android.location.LocationListener
 import android.location.LocationManager
 import android.os.Looper
 import com.opendash.opendash_dash_engine.util.DebugLog
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 
 /** GPS position via LocationManager (no Play Services dependency). */
-class LocationTracker(context: Context) {
+class LocationTracker(context: Context, private val scope: CoroutineScope) {
     companion object {
         private const val TAG = "LocationTracker"
         // While a GPS fix is younger than this, ignore coarse NETWORK fixes entirely.
         private const val GPS_STALE_MS = 10_000L
+        // Same threshold DashEngineController.tick() uses for its own gpsWeak flag — reused
+        // here so this log and that live UI signal agree on what "degraded" means.
+        private const val DEGRADED_ACCURACY_M = 25f
+        private const val QUALITY_LOG_INTERVAL_MS = 60_000L
+        // Silence longer than this while "running" gets its own warning line, independent of
+        // the interval above — a genuine gap (GPS provider died, location permission yanked
+        // mid-ride, etc.) shouldn't have to wait a full minute to show up.
+        private const val FIX_GAP_WARN_MS = 10_000L
     }
 
     private val lm = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
@@ -23,12 +37,23 @@ class LocationTracker(context: Context) {
     private val _location = MutableStateFlow<Location?>(null)
     val location = _location.asStateFlow()
 
+    // Quality counters for [launchQualityLog] — accumulate between reports, reset there.
+    private var acceptedCount = 0
+    private var rejectedCount = 0
+    private var degradedCount = 0
+    @Volatile private var lastFixAtMs = 0L
+    private var qualityLogJob: Job? = null
+
     private val listener = LocationListener { loc ->
         val cur = _location.value
         if (acceptFix(cur, loc)) {
             _location.value = loc
+            acceptedCount++
+            if (loc.accuracy > DEGRADED_ACCURACY_M) degradedCount++
+            lastFixAtMs = System.currentTimeMillis()
             DebugLog.d(TAG) { "fix ${loc.provider} acc=${loc.accuracy} (${loc.latitude},${loc.longitude})" }
         } else {
+            rejectedCount++
             DebugLog.d(TAG) { "REJECT ${loc.provider} acc=${loc.accuracy} dt=${loc.time - (cur?.time ?: 0)}ms" }
         }
     }
@@ -83,6 +108,8 @@ class LocationTracker(context: Context) {
                 }
             }
             running = true
+            lastFixAtMs = System.currentTimeMillis()
+            launchQualityLog()
             DebugLog.i(TAG) { "Location updates started" }
         } catch (e: SecurityException) {
             DebugLog.w(TAG) { "Location permission missing — GPS disabled" }
@@ -94,7 +121,50 @@ class LocationTracker(context: Context) {
     fun stop() {
         if (!running) return
         lm.removeUpdates(listener)
+        qualityLogJob?.cancel(); qualityLogJob = null
         running = false
+    }
+
+    /**
+     * Periodic fix-quality report — added after a 2026-08-28 field session where working out
+     * "was GPS actually healthy at this point in the ride" meant eyeballing raw `fix`/`REJECT`
+     * lines by hand. One job, ticking every second, driving two independent signals so a slow
+     * 60s summary cadence never delays a real gap warning:
+     *   - a standalone warning the FIRST second a gap exceeds [FIX_GAP_WARN_MS] (a dead GPS
+     *     provider mid-ride is worth seeing immediately, not up to a minute late);
+     *   - a rolling accepted/rejected/degraded count flushed every [QUALITY_LOG_INTERVAL_MS].
+     */
+    private fun launchQualityLog() {
+        qualityLogJob?.cancel()
+        acceptedCount = 0; rejectedCount = 0; degradedCount = 0
+        var warnedForThisGap = false
+        var msSinceLastSummary = 0L
+        qualityLogJob = scope.launch(Dispatchers.Default) {
+            while (isActive) {
+                delay(1_000)
+                val gapMs = System.currentTimeMillis() - lastFixAtMs
+                if (gapMs > FIX_GAP_WARN_MS) {
+                    if (!warnedForThisGap) {
+                        warnedForThisGap = true
+                        DebugLog.w(TAG) { "GPS quality: no accepted fix for ${gapMs}ms — location may be stale/frozen" }
+                    }
+                } else {
+                    warnedForThisGap = false
+                }
+
+                msSinceLastSummary += 1_000
+                if (msSinceLastSummary >= QUALITY_LOG_INTERVAL_MS) {
+                    msSinceLastSummary = 0L
+                    val accepted = acceptedCount; val rejected = rejectedCount; val degraded = degradedCount
+                    acceptedCount = 0; rejectedCount = 0; degradedCount = 0
+                    DebugLog.i(TAG) {
+                        "GPS quality: accepted=$accepted rejected=$rejected " +
+                            "degraded(acc>${DEGRADED_ACCURACY_M.toInt()}m)=$degraded in the last " +
+                            "${QUALITY_LOG_INTERVAL_MS / 1_000}s"
+                    }
+                }
+            }
+        }
     }
 
     /** Best last-known fix without starting updates (for routing before connecting). */

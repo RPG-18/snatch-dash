@@ -5,6 +5,8 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.media.AudioManager
 import android.media.ToneGenerator
+import android.os.Build
+import android.os.PowerManager
 import com.opendash.opendash_dash_engine.dash.DashConfig
 import com.opendash.opendash_dash_engine.dash.DashKeepAliveService
 import com.opendash.opendash_dash_engine.dash.DashSession
@@ -26,6 +28,7 @@ import com.opendash.opendash_dash_engine.media.CallController
 import com.opendash.opendash_dash_engine.media.CallInfoProvider
 import com.opendash.opendash_dash_engine.media.MediaInfoProvider
 import com.opendash.opendash_dash_engine.util.DebugLog
+import com.opendash.opendash_dash_engine.util.RideDiagnostics
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -80,18 +83,43 @@ class DashEngineController(
         // chosen to comfortably outlast a normal reconnect cycle (~38s WiFi + a few auth
         // retries) while still cutting off before it meaningfully drains the battery.
         private const val RECONNECT_GIVEUP_MS = 120_000L
+        // How often [startStream]'s loop reports encoder/RTP output — the OTHER half of the
+        // frame-decode-ack counter in DashSession: that one proves the dash decoded a frame,
+        // this one proves we actually produced/sent one. Zero here while STREAMING means the
+        // encoder itself stalled (this side); nonzero here but zero acks on the DashSession side
+        // means frames leave the phone but the dash never confirms them — two different bugs in
+        // two different files, previously indistinguishable without hex-grepping raw TX dumps.
+        private const val ENCODER_LOG_INTERVAL_MS = 60_000L
     }
 
     private val dashConfig = DashConfig.get(context)
     private val wifiManager = DashWifiManager(context, scope)
     private val session = DashSession(scope)
-    private val locationTracker = LocationTracker(context)
+    private val locationTracker = LocationTracker(context, scope)
     private val tileProvider = TileProvider(context, scope)
     private val mapRenderer = MapRenderer(tileProvider)
     private val idleRenderer = DashIdleRenderer()
     private var toneGenerator: ToneGenerator? = null
     private val mediaInfo = MediaInfoProvider(context)
     private val callController = CallController(context)
+    private val powerManager = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
+
+    /**
+     * OK/Warm/Hot from [PowerManager.currentThermalStatus] (API 29+; "n/a" below that). Folded
+     * into the encoder health log below — a hardware encoder throttling under heat is a
+     * plausible, previously-uninstrumented explanation for the exact silent stall (0 frames,
+     * no exception) the 2026-08-28 field session found. Ported from OpenMotoDash/NorthStar's
+     * `updateThermal()` (see spec/wifi_retry_policy.md's "Из живого форка").
+     */
+    private fun thermalLabel(): String {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return "n/a"
+        val status = runCatching { powerManager?.currentThermalStatus }.getOrNull() ?: return "?"
+        return when (status) {
+            PowerManager.THERMAL_STATUS_NONE, PowerManager.THERMAL_STATUS_LIGHT -> "OK"
+            PowerManager.THERMAL_STATUS_MODERATE -> "Warm"
+            else -> "Hot" // SEVERE/CRITICAL/EMERGENCY/SHUTDOWN, and any future status value
+        }
+    }
 
     // Written on the main thread by [startStream] and read by the frame loop on
     // Dispatchers.Default (and rewritten there when it rebuilds a wedged
@@ -171,6 +199,12 @@ class DashEngineController(
     // ── Public API (invoked by the plugin's MethodChannel handler) ────────
 
     fun connect() {
+        RideDiagnostics.init(context)
+        RideDiagnostics.start("connect")
+        RideDiagnostics.log(
+            "connect",
+            "ssid='${dashConfig.ssid}' needsDiscovery=${dashConfig.needsDiscovery} dest=$destName",
+        )
         DashKeepAliveService.start(context)
         session.onButton = { code -> onButton?.invoke(code.toInt() and 0xFF) }
         session.onError = { msg -> publishState(errorMessage = msg) }
@@ -190,6 +224,12 @@ class DashEngineController(
                 wifiManager.connect(dashConfig.ssidPrefix, dashConfig.password, prefixMatch = true)
             }
             wifiManager.state.collect { wifi ->
+                RideDiagnostics.log(
+                    "wifi",
+                    wifi.status.toString() +
+                        (wifi.ssid.takeIf { it.isNotBlank() }?.let { " ssid=$it" } ?: "") +
+                        (wifi.error?.let { " err=$it" } ?: ""),
+                )
                 publishState()
                 if (wifi.status == WifiConnStatus.CONNECTED && !sessionStarted) {
                     sessionStarted = true
@@ -217,6 +257,7 @@ class DashEngineController(
         sessionWatchJob?.cancel()
         sessionWatchJob = scope.launch {
             session.state.collect { st ->
+                RideDiagnostics.log("session", "→ $st")
                 publishState()
                 if (st == DashState.STREAMING) cancelGiveupTimer() else armGiveupTimer()
                 when (st) {
@@ -245,6 +286,7 @@ class DashEngineController(
     }
 
     fun disconnect() {
+        RideDiagnostics.log("connect", "disconnect() called")
         giveupJob?.cancel(); giveupJob = null
         streamJob?.cancel(); streamJob = null
         sessionWatchJob?.cancel(); sessionWatchJob = null
@@ -255,6 +297,7 @@ class DashEngineController(
         locationTracker.stop()
         encoder?.release(); encoder = null
         DashKeepAliveService.stop(context)
+        RideDiagnostics.stop("disconnect")
         // explicitDisconnect=true distinguishes this from every other publishState() call (all
         // of which leave it false/absent) — Dart's connection-lost voice alert uses it to tell
         // "rider asked to disconnect" apart from "session died on its own", which otherwise both
@@ -270,6 +313,7 @@ class DashEngineController(
             delay(RECONNECT_GIVEUP_MS)
             if (session.state.value != DashState.STREAMING) {
                 DebugLog.w(TAG) { "Giving up — ${RECONNECT_GIVEUP_MS}ms without reaching STREAMING" }
+                RideDiagnostics.log("error", "gave up — ${RECONNECT_GIVEUP_MS}ms without reaching STREAMING")
                 disconnect()
             }
         }
@@ -466,11 +510,31 @@ class DashEngineController(
      * from the [sessionWatchJob] collector, which is already a suspend context.
      */
     private suspend fun startStream() {
-        val packetizer = RtpPacketizer { rtpPkt -> session.sendRtp(rtpPkt) }
+        RideDiagnostics.log("stream", "startStream — encoder up, RTP→dash beginning")
+        // Encoder/RTP output counters for the periodic health log below — reset per
+        // startStream() call, same lifetime as everything else here (streamJob/encoder).
+        var framesEncoded = 0
+        var idrFramesEncoded = 0
+        var rtpPacketsSent = 0
+        // One-shot timing, paired with DashSession's own "dash DECODED first IDR" line — the
+        // gap between the two is exactly the dash's own decode latency for this session. Ported
+        // idea from OpenMotoDash/NorthStar's `loggedFirstFrame` (see
+        // spec/wifi_retry_policy.md's "Из живого форка").
+        var loggedFirstFrame = false
+
+        val packetizer = RtpPacketizer { rtpPkt -> session.sendRtp(rtpPkt); rtpPacketsSent++ }
         val nalProc = NalProcessor { nal, _ ->
             packetizer.packetize(nal, endOfAU = true, wallClockMs = System.currentTimeMillis())
         }
-        val onEncoded: (ByteArray, Boolean) -> Unit = { annexB, _ -> nalProc.process(annexB) }
+        val onEncoded: (ByteArray, Boolean) -> Unit = { annexB, isKey ->
+            framesEncoded++
+            if (isKey) idrFramesEncoded++
+            if (!loggedFirstFrame) {
+                loggedFirstFrame = true
+                RideDiagnostics.log("stream", "first video frame sent (key=$isKey, ${annexB.size}B)")
+            }
+            nalProc.process(annexB)
+        }
 
         streamJob?.cancelAndJoin()
         streamJob = null
@@ -488,6 +552,8 @@ class DashEngineController(
         streamJob = scope.launch(Dispatchers.Default) {
             var lastPrefetch = 0L
             var failures = 0
+            var lastEncoderLogAt = System.currentTimeMillis()
+            var loggedFrames = 0; var loggedIdr = 0; var loggedRtp = 0
             while (isActive && session.state.value == DashState.STREAMING) {
                 try {
                     tick()
@@ -502,6 +568,25 @@ class DashEngineController(
                     if (now - lastPrefetch > 20_000) {
                         lastPrefetch = now
                         locationTracker.location.value?.let { tileProvider.prefetch(it.latitude, it.longitude) }
+                    }
+                    if (now - lastEncoderLogAt > ENCODER_LOG_INTERVAL_MS) {
+                        val dFrames = framesEncoded - loggedFrames
+                        val dIdr = idrFramesEncoded - loggedIdr
+                        val dRtp = rtpPacketsSent - loggedRtp
+                        loggedFrames = framesEncoded; loggedIdr = idrFramesEncoded; loggedRtp = rtpPacketsSent
+                        lastEncoderLogAt = now
+                        val intervalS = ENCODER_LOG_INTERVAL_MS / 1_000
+                        val thermal = thermalLabel()
+                        if (dFrames == 0) {
+                            DebugLog.w(TAG) {
+                                "Encoder output: 0 frames in the last ${intervalS}s while STREAMING " +
+                                    "— render/encode loop itself stalled (nothing to even send) — thermal=$thermal"
+                            }
+                        } else {
+                            DebugLog.i(TAG) {
+                                "Encoder output: frames=$dFrames (idr=$dIdr) rtp=$dRtp thermal=$thermal in the last ${intervalS}s"
+                            }
+                        }
                     }
                 } catch (e: CancellationException) {
                     throw e

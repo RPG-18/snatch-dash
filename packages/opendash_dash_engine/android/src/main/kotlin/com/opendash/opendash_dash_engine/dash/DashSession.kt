@@ -3,9 +3,11 @@ package com.opendash.opendash_dash_engine.dash
 import com.opendash.opendash_dash_engine.dash.protocol.DashCommands
 import com.opendash.opendash_dash_engine.dash.protocol.K1GPacket
 import com.opendash.opendash_dash_engine.util.DebugLog
+import com.opendash.opendash_dash_engine.util.RideDiagnostics
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import java.util.concurrent.atomic.AtomicInteger
 
 enum class DashState { IDLE, CONNECTING, AUTHENTICATING, READY, STREAMING, ERROR }
 
@@ -33,6 +35,10 @@ class DashSession(private val scope: CoroutineScope) {
         private const val PROJ_HB_MS     = 250L   // 4 Hz
         private const val ROUTE_CARD_MS  = 1_000L // 1 Hz keep-alive
         private const val HOSTNAME       = "OpenDash"
+        // How often [launchAckCounterLog] reports the frame-decode-ack delta. Short enough to
+        // catch a stall within a couple of minutes on a live ride, long enough not to add to
+        // the per-frame log spam dispatchIncoming already avoids (see its "onlyAcks" filter).
+        private const val ACK_LOG_INTERVAL_MS = 60_000L
     }
 
     private val _state = MutableStateFlow(DashState.IDLE)
@@ -63,6 +69,25 @@ class DashSession(private val scope: CoroutineScope) {
     private var heartbeatJob: Job? = null
     private var navInfoJob: Job? = null
     private var mediaInfoJob: Job? = null
+
+    /**
+     * Counts the dash's own "I decoded a frame" notifies (09 06 55 IDR / 09 04 55 P-frame,
+     * see [dispatchIncoming]) — the only signal that the live map video is actually landing on
+     * screen, as opposed to just being sent. Distinct from any RTP/encoder-side counter: those
+     * only prove we tried to send a frame, not that the dash decoded it. Added after a
+     * 2026-08-28 field session where the nav bubble (glyph/distance, a separate TLV channel —
+     * see [launchNavInfo]) kept updating correctly for tens of minutes while the map behind it
+     * was frozen, and confirming that required grepping raw TX hex for `06 11`/`06 12` acks by
+     * hand — see [launchAckCounterLog] for the periodic log this feeds.
+     */
+    private val idrAckCount = AtomicInteger(0)
+    private val pFrameAckCount = AtomicInteger(0)
+    private var lastLoggedIdrAcks = 0
+    private var lastLoggedPFrameAcks = 0
+    private var ackCounterJob: Job? = null
+    // One-shot per session — pairs with DashEngineController's own "first video frame sent"
+    // line; the gap between the two is this session's dash-side decode latency.
+    @Volatile private var loggedFirstIdrAck = false
 
     @Volatile private var mediaTitle: String? = null
     @Volatile private var mediaAlbum = ""
@@ -163,7 +188,7 @@ class DashSession(private val scope: CoroutineScope) {
         // READY after we tear down (which would re-trigger streaming on a dead socket).
         sessionJob?.cancel(); sessionJob = null
         rxJob?.cancel(); projHbJob?.cancel(); routeCardJob?.cancel(); heartbeatJob?.cancel()
-        navInfoJob?.cancel(); mediaInfoJob?.cancel()
+        navInfoJob?.cancel(); mediaInfoJob?.cancel(); ackCounterJob?.cancel()
         navActive = false
         socket?.let {
             runCatching { it.send(DashCommands.projectionStop()) }
@@ -190,14 +215,21 @@ class DashSession(private val scope: CoroutineScope) {
             auth = DashAuth(ssid)
             authConfirmed = false
             authRetries = 0
+            idrAckCount.set(0); pFrameAckCount.set(0)
+            lastLoggedIdrAcks = 0; lastLoggedPFrameAcks = 0
+            loggedFirstIdrAck = false
 
             // RX loop MUST be running before the burst (early pubkey + no ICMP).
             launchReceiveLoop(sock)
             // 1 Hz status heartbeat throughout the session.
             launchStatusHeartbeat(sock)
+            // Periodic "is the dash actually decoding video" sanity check (see the field
+            // reasoning on idrAckCount's doc above).
+            launchAckCounterLog()
 
             setState(DashState.AUTHENTICATING)
             DebugLog.i(TAG) { "Sending initial burst…" }
+            RideDiagnostics.log("auth", "initial burst sent — waiting up to ${AUTH_TIMEOUT}ms for 07 01 01")
             for (pkt in DashCommands.initialBurst(HOSTNAME)) {
                 sock.send(pkt)
                 delay(BURST_PAUSE)
@@ -212,6 +244,7 @@ class DashSession(private val scope: CoroutineScope) {
                 return
             }
             DebugLog.i(TAG) { "Authenticated ✓" }
+            RideDiagnostics.log("auth", "authenticated (07 01 01) — entering nav mode")
 
             // Always nav-mode entry now, idle or not — see enterIdleProjectionMode's doc.
             enterNavMode(sock)
@@ -299,6 +332,7 @@ class DashSession(private val scope: CoroutineScope) {
                     // Link dropped (EBADF/ENETUNREACH) — end the loop cleanly instead of
                     // crashing the app; DashWifiManager handles reconnect.
                     DebugLog.w(TAG) { "RX loop stopped — socket error: ${e.message}" }
+                    RideDiagnostics.log("error", "RX loop stopped — socket error: ${e.message}")
                     onError?.invoke("Lost connection to dash")
                     break
                 }
@@ -312,6 +346,8 @@ class DashSession(private val scope: CoroutineScope) {
                         System.currentTimeMillis() - lastRxAtMs > RX_IDLE_TIMEOUT_MS
                     ) {
                         DebugLog.w(TAG) { "RX loop stopped — no data from dash for over ${RX_IDLE_TIMEOUT_MS}ms" }
+                        val silentS = (System.currentTimeMillis() - lastRxAtMs) / 1000
+                        RideDiagnostics.log("error", "RX watchdog: dash silent ${silentS}s → link lost")
                         heartbeatJob?.cancel(); projHbJob?.cancel(); routeCardJob?.cancel()
                         navInfoJob?.cancel(); mediaInfoJob?.cancel()
                         sock.close(); socket = null
@@ -350,6 +386,7 @@ class DashSession(private val scope: CoroutineScope) {
                     AuthEvent.Rejected -> {
                         authRetries++
                         DebugLog.w(TAG) { "Auth rejected — retry #$authRetries" }
+                        RideDiagnostics.log("auth", "REJECTED — retry #$authRetries")
                         auth?.reset()
                         if (authRetries <= 5) sock.send(DashCommands.authRequest())
                     }
@@ -362,6 +399,11 @@ class DashSession(private val scope: CoroutineScope) {
                 tlv.value.firstOrNull()?.toInt() == 0x55
             ) {
                 sock.send(DashCommands.frameDecodedIdr())
+                idrAckCount.incrementAndGet()
+                if (!loggedFirstIdrAck) {
+                    loggedFirstIdrAck = true
+                    RideDiagnostics.log("dash", "dash DECODED first IDR (09 06 55) — video accepted ✓")
+                }
                 continue
             }
             // ── 09 04 55: P-frame decoded → q3c.K2 ──
@@ -369,6 +411,7 @@ class DashSession(private val scope: CoroutineScope) {
                 tlv.value.firstOrNull()?.toInt() == 0x55
             ) {
                 sock.send(DashCommands.frameDecodedP())
+                pFrameAckCount.incrementAndGet()
                 continue
             }
             // ── 09 00: button / joystick event → echo ack + notify UI ──
@@ -438,6 +481,39 @@ class DashSession(private val scope: CoroutineScope) {
         }
     }
 
+    /**
+     * Every [ACK_LOG_INTERVAL_MS], reports how many frame-decode acks (see [idrAckCount]'s doc)
+     * went out since the last report. Zero of both while STREAMING means the dash has stopped
+     * decoding the video plane — logged at warning level specifically so it's greppable/visible
+     * without knowing to look for it, unlike the nav bubble (glyph/distance), which keeps
+     * updating over an entirely separate channel ([launchNavInfo]) and gives no indication on
+     * its own that the map behind it is frozen.
+     */
+    private fun launchAckCounterLog() {
+        ackCounterJob?.cancel()
+        ackCounterJob = scope.launch(Dispatchers.IO) {
+            while (isActive) {
+                delay(ACK_LOG_INTERVAL_MS)
+                if (_state.value != DashState.STREAMING) continue
+                val idr = idrAckCount.get()
+                val p = pFrameAckCount.get()
+                val idrDelta = idr - lastLoggedIdrAcks
+                val pDelta = p - lastLoggedPFrameAcks
+                lastLoggedIdrAcks = idr
+                lastLoggedPFrameAcks = p
+                val intervalS = ACK_LOG_INTERVAL_MS / 1_000
+                if (idrDelta == 0 && pDelta == 0) {
+                    DebugLog.w(TAG) {
+                        "Frame decode acks: 0 in the last ${intervalS}s (IDR+P) while STREAMING " +
+                            "— dash has stopped decoding video (map likely frozen on-screen)"
+                    }
+                } else {
+                    DebugLog.i(TAG) { "Frame decode acks: IDR=$idrDelta P=$pDelta in the last ${intervalS}s" }
+                }
+            }
+        }
+    }
+
     private fun launchProjectionHeartbeat() {
         projHbJob?.cancel()
         projHbJob = scope.launch(Dispatchers.IO) {
@@ -501,7 +577,8 @@ class DashSession(private val scope: CoroutineScope) {
 
     private fun fail(msg: String) {
         DebugLog.e(TAG, { "ERROR — $msg" })
-        rxJob?.cancel(); heartbeatJob?.cancel(); mediaInfoJob?.cancel()
+        RideDiagnostics.log("error", "session fail: $msg")
+        rxJob?.cancel(); heartbeatJob?.cancel(); mediaInfoJob?.cancel(); ackCounterJob?.cancel()
         socket?.close(); socket = null
         setState(DashState.ERROR)
         onError?.invoke(msg)

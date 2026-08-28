@@ -23,6 +23,10 @@ import kotlinx.coroutines.launch
  * every [DebugLog] line so it also lands in the Dart-side Talker log.
  */
 class OpendashDashEnginePlugin : FlutterPlugin, MethodCallHandler, EventChannel.StreamHandler {
+    private companion object {
+        private const val TAG = "OpendashDashEnginePlugin"
+    }
+
     private lateinit var channel: MethodChannel
     private lateinit var eventChannel: EventChannel
     private var eventSink: EventChannel.EventSink? = null
@@ -61,6 +65,17 @@ class OpendashDashEnginePlugin : FlutterPlugin, MethodCallHandler, EventChannel.
         }
         debugLogSink = sink
         DebugLog.sink = sink
+
+        // Process-lifecycle marker: the only direct signal for "was this a genuinely fresh
+        // process, or just the plugin/engine reattaching within one that's been alive a
+        // while" — see spec/wifi_retry_policy.md's 2026-08-28 log analysis, where this had to
+        // be inferred indirectly (LocationTracker.start() being a no-op if already running).
+        // processUptimeMs small (a few seconds) ⇒ cold start/process respawn; large ⇒ just an
+        // engine/activity recreation in a process that was already running.
+        val pid = android.os.Process.myPid()
+        val processUptimeMs = android.os.SystemClock.elapsedRealtime() -
+            android.os.Process.getStartElapsedRealtime()
+        DebugLog.i(TAG) { "Plugin attached — pid=$pid processUptime=${processUptimeMs}ms" }
 
         controller = DashEngineController(
             context = binding.applicationContext,
@@ -164,6 +179,9 @@ class OpendashDashEnginePlugin : FlutterPlugin, MethodCallHandler, EventChannel.
     }
 
     override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {
+        // Logged BEFORE tearing down the sink below — this is the last line that's
+        // guaranteed to actually reach app_log.txt for this engine instance.
+        DebugLog.i(TAG) { "Plugin detaching — controller disposed" }
         channel.setMethodCallHandler(null)
         eventChannel.setStreamHandler(null)
         logChannel.setStreamHandler(null)

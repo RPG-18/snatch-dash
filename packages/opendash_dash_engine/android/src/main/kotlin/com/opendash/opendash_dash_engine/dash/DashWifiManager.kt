@@ -90,6 +90,17 @@ class DashWifiManager(
     private var resolvedSsid: String? = null
 
     /**
+     * Session-level connection-quality counters, reset in [connect] and reported once in
+     * [disconnect] — see spec/wifi_retry_policy.md's 2026-08-28 log analysis, where both
+     * numbers had to be reconstructed by hand from timestamps across dozens of log lines.
+     * [downSinceMs] is nonzero for exactly as long as we're NOT [WifiConnStatus.CONNECTED]
+     * while [wantConnected] — zero means "currently connected" or "never started counting".
+     */
+    private var reconnectCount = 0
+    private var downtimeAccumMs = 0L
+    private var downSinceMs = 0L
+
+    /**
      * Set once [connect] reaches CONNECTED for the first time this session, cleared on
      * [connect]/[disconnect]. Distinguishes "never found this dash" (bad SSID/password —
      * see [onUnavailable]) from "found it before, lost it now" (rider briefly out of
@@ -120,6 +131,9 @@ class DashWifiManager(
         pendingPrefix    = prefixMatch
         resolvedSsid     = null
         hasConnectedOnce = false
+        reconnectCount   = 0
+        downtimeAccumMs  = 0L
+        downSinceMs      = System.currentTimeMillis() // "down" until the first markConnected
         requestNetwork()
         requestCellularDefault()
     }
@@ -143,6 +157,15 @@ class DashWifiManager(
 
     fun disconnect() {
         DebugLog.i(TAG) { "Disconnect requested" }
+        if (downSinceMs != 0L) {
+            downtimeAccumMs += System.currentTimeMillis() - downSinceMs
+            downSinceMs = 0L
+        }
+        // See the field session this closed the loop on — spec/wifi_retry_policy.md's
+        // 2026-08-28 log analysis, where reconstructing these two numbers by hand from raw
+        // timestamps was most of the work. Logged unconditionally (even reconnectCount=0 is
+        // useful — it says the WiFi link never dropped once this whole time).
+        DebugLog.i(TAG) { "Session summary: reconnects=$reconnectCount downtime=${downtimeAccumMs}ms" }
         wantConnected = false
         hasConnectedOnce = false
         reconnectJob?.cancel()
@@ -202,6 +225,14 @@ class DashWifiManager(
     }
 
     private fun requestNetwork() {
+        // Cancel any auto-retry scheduled by an earlier onUnavailable/onLost BEFORE doing
+        // anything else — otherwise a manual connect() racing a pending scheduleReconnect()
+        // leaves both timers alive, and the stale one fires its own requestNetwork() a few
+        // seconds later (reproduced in spec/wifi_retry_policy.md's 2026-08-28 log analysis,
+        // episode 2 steps 4–5: a manual reconnect followed ~4.6s later by an unrequested
+        // second "Requesting WiFi", whose own 30s CONNECT_TIMEOUT is what actually decided
+        // the outcome). Symmetric to the same cancel already done in onAvailable below.
+        reconnectJob?.cancel()
         release()
         DebugLog.i(TAG) {
             "Requesting WiFi: '${maskSsid(pendingSsid)}' " +
@@ -282,6 +313,8 @@ class DashWifiManager(
                     // giving up, matching this class's own "auto-reconnects on link loss
                     // until disconnect()" contract.
                     DebugLog.w(TAG) { "WiFi still unavailable — reconnecting in ${RECONNECT_DELAY}ms" }
+                    reconnectCount++
+                    if (downSinceMs == 0L) downSinceMs = System.currentTimeMillis()
                     _state.value = WifiState(
                         status = WifiConnStatus.REQUESTING,
                         ssid   = pendingSsid,
@@ -303,6 +336,8 @@ class DashWifiManager(
 
             override fun onLost(network: Network) {
                 DebugLog.w(TAG) { "WiFi link lost — reconnecting in ${RECONNECT_DELAY}ms" }
+                reconnectCount++
+                if (downSinceMs == 0L) downSinceMs = System.currentTimeMillis()
                 // Last-known signal before the Network object goes stale — shows whether
                 // this was a fading signal (see the periodic "poll" samples leading up to
                 // it) or a clean step down (dash powered off, radio toggled, etc.).
@@ -343,6 +378,10 @@ class DashWifiManager(
     /** Publish CONNECTED and record that this dash has answered at least once this session. */
     private fun markConnected(ssid: String) {
         hasConnectedOnce = true
+        if (downSinceMs != 0L) {
+            downtimeAccumMs += System.currentTimeMillis() - downSinceMs
+            downSinceMs = 0L
+        }
         _state.value = WifiState(status = WifiConnStatus.CONNECTED, ssid = ssid)
         // BSSID at the moment of connecting, not just from the first 5s-later poll tick —
         // see [logSignalInfo]'s doc for why this matters (BSSID-drift theory, spec/wifi_retry_policy.md).

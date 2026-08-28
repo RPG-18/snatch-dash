@@ -338,14 +338,62 @@ recovered from Kotlin reflection metadata). **The site that fills it with real
 numbers was not located**, so their actual stream parameters remain unknown and
 our `526×300 @ 2–4 fps, 200 kbps` is still unconfirmed against the original.
 
+## Incoming telemetry `0x0F` — external lead
+
+Not from this decompile. `hbg.java`'s string-constant extraction — the method
+behind the whole table above — can't see `0x0F` at all: it only harvests
+constants the app uses to *send* a frame, and the app never needs a literal
+string constant to build the packet it merely *parses* on receive. Our own
+[`DashSession.kt`](../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/DashSession.kt)
+already decrypts `0x0F` (AES-256-CBC under the session key, IV = first 16
+bytes) but has never mapped what the plaintext means — see *Open questions*
+below.
+
+A separate, independent write-up reverse-engineering the same companion app
+(`com.royalenfield.reprime`) on a different bike (Bear 650, same Tripper
+Dash / Visteon K Dash hardware family) proposes a field layout for it, reached
+by *behavioural observation* of the official app rather than a hex dump or a
+disclosed decryption — no packet bytes are shown, and the piece makes no
+mention of the RSA/AES handshake this port already has working, so it
+doesn't confirm our crypto, only (maybe) the field layout underneath it:
+
+| sub | proposed field |
+|---|---|
+| `01` | chassis number |
+| `02` | serial number |
+| `05` | BSSID (dash's own WiFi AP, 6 raw bytes) |
+| `06` | manufacturing date |
+| `07` | hardware version |
+| `08` | part number / variant |
+| `0A` | FOTA version |
+
+`03`/`04`/`09` aren't covered by that source. The same write-up separately
+proposes `0x03` as a phone→dash *settings sync* type as a whole (clock
+format, temperature/distance/fuel units, theme, language, notification/POI
+toggles) — broader but vaguer than this doc's own `0x03`/`0x04` breakdown
+above, which already pins `04 01` down to temperature unit specifically from
+static strings in *this* decompile.
+
+Source: <https://www.mihaiblaga.dev/reverse-engineering-royal-enfields-connected-bike-stack>
+
+Treat this as a hypothesis to test against our own decrypted plaintext, not
+as a confirmed mapping. It can't be checked from a `.pcap` — `0x0F` is
+encrypted under a per-session key the Lua dissector doesn't have — only from
+`DashSession`'s own decrypt-and-log path (`adb logcat -s DashSession` on a
+live session): watch whether `0F01`/`0F02` decode to ASCII-ish text and
+whether `0F05` matches the dash's own BSSID.
+
 ## Open questions
 
-- **Incoming telemetry `0C` / `0F` is still undecoded.** This was the reason to
-  go looking in the first place (see the field-mapping note in
+- **Incoming telemetry `0C` is still fully undecoded, `0F` has only the
+  external lead above.** This was the reason to go looking in the first
+  place (see the field-mapping note in
   [`DashSession.kt`](../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/DashSession.kt)),
-  and it is *not* answered here. The app's incoming-packet parser was not
-  found. Note though that `0C` turns out to be **bidirectional** — the app
-  sends `0C 14` with values `00`–`03` — so our comment calling `0C` a
+  and `0x0C` is *not* answered here or by the external source — the app's
+  incoming-packet parser was not found, and the outside write-up lists `0C`
+  as "present but not fully mapped" too, so there's no external lead to
+  borrow there. Note though that `0C` turns out to be **bidirectional** — the
+  app sends `0C 14` with values `00`–`03` — so our comment calling `0C` a
   dash→phone type is at best incomplete.
 - `09 01` has 24 distinct two-byte values (`00 55`, `00 AA`, `00 BB`, `00 CC`,
   `01 55`, …) — a 2-D enum, structure unknown.

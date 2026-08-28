@@ -85,6 +85,22 @@ local KNOWN = {
     ["09.04"] = "P-frame decoded notify",
     ["09.06"] = "IDR-frame decoded notify",
 
+    -- incoming device-identity telemetry, dash -> app, AES-256-CBC under the
+    -- session key -- this dissector sees ciphertext only (no key here), so
+    -- these labels are just a naming hint, not a decode. Hypothesis from an
+    -- independent RE writeup of the same official app on different hardware,
+    -- NOT from a packet dump -- verify against DashSession's own decrypted
+    -- log (`adb logcat -s DashSession`), not from this capture. See
+    -- docs/k1g_commands.md's "Incoming telemetry 0x0F" section.
+    -- Source: https://www.mihaiblaga.dev/reverse-engineering-royal-enfields-connected-bike-stack
+    ["0f.01"] = "HYPOTHESIS (external, unconfirmed, ciphertext here): chassis number",
+    ["0f.02"] = "HYPOTHESIS (external, unconfirmed, ciphertext here): serial number",
+    ["0f.05"] = "HYPOTHESIS (external, unconfirmed, ciphertext here): BSSID (6B)",
+    ["0f.06"] = "HYPOTHESIS (external, unconfirmed, ciphertext here): manufacturing date",
+    ["0f.07"] = "HYPOTHESIS (external, unconfirmed, ciphertext here): hardware version",
+    ["0f.08"] = "HYPOTHESIS (external, unconfirmed, ciphertext here): part number/variant",
+    ["0f.0a"] = "HYPOTHESIS (external, unconfirmed, ciphertext here): FOTA version",
+
     -- seen in the init burst / heartbeat template, meaning not yet confirmed
     ["05.1b"] = "unknown (init burst capability flag)",
     ["05.21"] = "unknown (init burst capability flag)",

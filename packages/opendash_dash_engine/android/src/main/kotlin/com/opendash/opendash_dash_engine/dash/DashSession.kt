@@ -380,12 +380,27 @@ class DashSession(private val scope: CoroutineScope) {
                 continue
             }
             // ── 0F: vehicle-secure telemetry (AES-256-CBC under the session key,
-            //    IV = first 16 bytes). This is the dash's instrument-cluster data
-            //    (likely trip/odo/fuel/speed/temp). The better-dash reference only
-            //    logs these as ciphertext — we actually DECRYPT with our session key
-            //    and log the plaintext for field-mapping (P1b). It arrives over our
-            //    own session, so plain `adb logcat -s DashSession` captures it — no
-            //    root, no monitor mode. ──
+            //    IV = first 16 bytes). The better-dash reference only logs these as
+            //    ciphertext — we actually DECRYPT with our session key and log the
+            //    plaintext for field-mapping (P1b). It arrives over our own session,
+            //    so plain `adb logcat -s DashSession` captures it — no root, no
+            //    monitor mode. ──
+            //
+            //    Working hypothesis for sub, from independent RE against the same
+            //    Royal Enfield Tripper/K-Dash hardware (behavioural inference on
+            //    the OFFICIAL app, no hex dump, no mention of the RSA/AES handshake
+            //    we already have — so it doesn't confirm our crypto, only the field
+            //    layout): 0F carries DEVICE IDENTITY, not trip telemetry —
+            //      0F01 chassis number, 0F02 serial number, 0F05 BSSID (own WiFi
+            //      AP's, 6B), 0F06 manufacturing date, 0F07 hardware version,
+            //      0F08 part number/variant, 0F0A FOTA version. 0F03/0F04/0F09
+            //      not covered by that source. 0x03 (separately, unmapped here
+            //      too) is hypothesised as phone→dash SETTINGS SYNC: clock format,
+            //      temp/distance/fuel units, theme, language, notification/POI
+            //      toggles. Source: https://www.mihaiblaga.dev/reverse-engineering-royal-enfields-connected-bike-stack
+            //      — treat as a lead to verify against our decrypted plaintext
+            //      (chassis/serial should look ASCII-ish, 0F05 should be 6 raw
+            //      bytes matching the dash's own BSSID), not as ground truth.
             if (tlv.type == 0x0F) {
                 val key = auth?.sessionKey
                 val plain = key?.let { aesDecryptCbc(tlv.value, it) }
@@ -394,7 +409,10 @@ class DashSession(private val scope: CoroutineScope) {
                     plain?.toHexFull() ?: "<key=${key != null}; decrypt failed>") }
                 continue
             }
-            // ── 0C xx: dash → app telemetry (trip/odo/fuel/temp — P1b) ──
+            // ── 0C xx: dash → app telemetry (trip/odo/fuel/temp — P1b). Still
+            //    unmapped even by the independent RE above (0x0B/0x0C listed there
+            //    as "present but not fully mapped" too) — no external lead here,
+            //    this needs our own sweep. ──
             if (tlv.type == 0x0C) {
                 DebugLog.i(TAG) { "DASH TELEMETRY 0C sub=0x%02X (%dB) val=%s"
                     .format(tlv.sub, tlv.value.size, tlv.value.toHexFull()) }

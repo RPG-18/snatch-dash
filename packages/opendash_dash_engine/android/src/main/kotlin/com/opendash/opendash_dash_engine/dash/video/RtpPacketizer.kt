@@ -25,12 +25,18 @@ class RtpPacketizer(private val onPacket: (ByteArray) -> Unit) {
 
     /**
      * Packetize a single NAL unit.
-     * @param nal         raw NAL bytes (no start code)
-     * @param endOfAU     true if this is the last NAL in the access unit (triggers marker bit)
-     * @param wallClockMs monotonic wall clock in milliseconds
+     * @param nal    raw NAL bytes (no start code)
+     * @param endOfAU true if this is the last NAL in the access unit (triggers marker bit)
+     * @param ptsMs  presentation timestamp in milliseconds. Deliberately NOT
+     *   `System.currentTimeMillis()` at the call site — see [DashEngineController.startStream]'s
+     *   `videoPtsMs`, a clock advanced by the INTENDED frame interval rather than real elapsed
+     *   time, so the RTP timeline stays evenly spaced regardless of render/encode jitter. Ported
+     *   from OpenMotoDash/NorthStar's `videoPtsMs` (see spec/wifi_retry_policy.md's "Из живого
+     *   форка") after the 2026-08-29 field session found the dash decoding almost nothing past
+     *   the first frame of every stream while wall-clock timestamps were in use.
      */
-    fun packetize(nal: ByteArray, endOfAU: Boolean, wallClockMs: Long) {
-        val ts = (tsBase + wallClockMs * 90L) and 0xFFFFFFFFL
+    fun packetize(nal: ByteArray, endOfAU: Boolean, ptsMs: Long) {
+        val ts = (tsBase + ptsMs * 90L) and 0xFFFFFFFFL
         if (nal.size <= MAX_PAYLOAD) {
             emit(nal, marker = endOfAU, ts = ts)
         } else {

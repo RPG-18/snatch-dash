@@ -25,11 +25,14 @@ class DashSession(private val scope: CoroutineScope) {
     companion object {
         private const val TAG           = "DashSession"
         private const val AUTH_TIMEOUT  = 15_000L
-        // While STREAMING the dash acks every frame (~8/s, see dispatchIncoming) — silence
-        // this long means it's gone even if the socket/WiFi link still looks fine locally
-        // (e.g. still "associated" but out of range, or the dash itself powered off/hung).
-        // DashWifiManager's NetworkCallback never fires for that case, so this is the only
-        // place that notices.
+        // While STREAMING a healthy dash keeps sending SOMETHING on :2002 (heartbeat replies,
+        // 0C/0F telemetry, button events, ...) — silence this long means it's gone even if the
+        // socket/WiFi link still looks fine locally (e.g. still "associated" but out of range,
+        // or the dash itself powered off/hung). DashWifiManager's NetworkCallback never fires
+        // for that case, so this is the only place that notices. NOT specifically about frame-
+        // decode acks (09 06/04 55) — see idrAckCount's doc: a 2026-08-29 field session found
+        // the map updating fine on a physical dash despite those acks going silent for most of
+        // the ride, so whatever "silence" means for 09 06/04 55 isn't the same as "dash is gone".
         private const val RX_IDLE_TIMEOUT_MS = 10_000L
         private const val BURST_PAUSE   = 20L
         private const val PROJ_HB_MS     = 250L   // 4 Hz
@@ -72,13 +75,19 @@ class DashSession(private val scope: CoroutineScope) {
 
     /**
      * Counts the dash's own "I decoded a frame" notifies (09 06 55 IDR / 09 04 55 P-frame,
-     * see [dispatchIncoming]) — the only signal that the live map video is actually landing on
-     * screen, as opposed to just being sent. Distinct from any RTP/encoder-side counter: those
-     * only prove we tried to send a frame, not that the dash decoded it. Added after a
-     * 2026-08-28 field session where the nav bubble (glyph/distance, a separate TLV channel —
-     * see [launchNavInfo]) kept updating correctly for tens of minutes while the map behind it
-     * was frozen, and confirming that required grepping raw TX hex for `06 11`/`06 12` acks by
-     * hand — see [launchAckCounterLog] for the periodic log this feeds.
+     * see [dispatchIncoming]). Added after a 2026-08-28 field session where the nav bubble
+     * (glyph/distance, a separate TLV channel — see [launchNavInfo]) kept updating correctly for
+     * tens of minutes while these acks went quiet, and confirming that required grepping raw TX
+     * hex for `06 11`/`06 12` by hand — see [launchAckCounterLog] for the periodic log this feeds.
+     *
+     * CORRECTION (2026-08-30): originally documented here as "the only signal that the live map
+     * video is actually landing on screen" — i.e. zero acks == frozen map. A 2026-08-29 field
+     * session directly falsified that: the map updated fine on the physical dash for a whole
+     * ride despite acks going to zero after the very first frame (see spec/video.md's "09 06/04
+     * 55 — НЕ ack на каждый кадр"). So `09 06/04 55` is most likely a ONE-TIME "decoder opened"
+     * milestone, not a per-frame heartbeat the way better-dash's naming implied — this counter
+     * still tracks something real (whether/when the dash first confirms it's decoding at all),
+     * just not "is the map frozen right now".
      */
     private val idrAckCount = AtomicInteger(0)
     private val pFrameAckCount = AtomicInteger(0)
@@ -483,11 +492,14 @@ class DashSession(private val scope: CoroutineScope) {
 
     /**
      * Every [ACK_LOG_INTERVAL_MS], reports how many frame-decode acks (see [idrAckCount]'s doc)
-     * went out since the last report. Zero of both while STREAMING means the dash has stopped
-     * decoding the video plane — logged at warning level specifically so it's greppable/visible
-     * without knowing to look for it, unlike the nav bubble (glyph/distance), which keeps
-     * updating over an entirely separate channel ([launchNavInfo]) and gives no indication on
-     * its own that the map behind it is frozen.
+     * went out since the last report — raw data only, logged at INFO regardless of the count.
+     *
+     * Used to be logged at WARNING with "dash has stopped decoding video (map likely frozen
+     * on-screen)" when zero — a 2026-08-29 field session falsified that (map updated fine on a
+     * physical dash for a whole ride with acks at zero the entire time past the first frame).
+     * Zero here is apparently the NORMAL steady state, not a problem — see [idrAckCount]'s doc
+     * and spec/video.md for the correction. Kept as plain info in case the pattern (0 vs nonzero,
+     * or a session with literally none EVER) turns out to matter for something else later.
      */
     private fun launchAckCounterLog() {
         ackCounterJob?.cancel()
@@ -502,14 +514,7 @@ class DashSession(private val scope: CoroutineScope) {
                 lastLoggedIdrAcks = idr
                 lastLoggedPFrameAcks = p
                 val intervalS = ACK_LOG_INTERVAL_MS / 1_000
-                if (idrDelta == 0 && pDelta == 0) {
-                    DebugLog.w(TAG) {
-                        "Frame decode acks: 0 in the last ${intervalS}s (IDR+P) while STREAMING " +
-                            "— dash has stopped decoding video (map likely frozen on-screen)"
-                    }
-                } else {
-                    DebugLog.i(TAG) { "Frame decode acks: IDR=$idrDelta P=$pDelta in the last ${intervalS}s" }
-                }
+                DebugLog.i(TAG) { "Frame decode acks: IDR=$idrDelta P=$pDelta in the last ${intervalS}s" }
             }
         }
     }

@@ -521,10 +521,17 @@ class DashEngineController(
         // idea from OpenMotoDash/NorthStar's `loggedFirstFrame` (see
         // spec/wifi_retry_policy.md's "Из живого форка").
         var loggedFirstFrame = false
+        // Monotonic RTP presentation clock — advanced by the INTENDED frame interval (see the
+        // loop below), NOT System.currentTimeMillis(). Ported from OpenMotoDash/NorthStar's
+        // `videoPtsMs` (see spec/wifi_retry_policy.md's "Из живого форка") after the 2026-08-29
+        // field session found the ACK-counter above sitting at 0 for 66 of 67 sampled minutes —
+        // the dash decoding almost nothing past each stream's first frame. Real wall-clock
+        // timestamps carry render/encode/GC jitter straight into the RTP timeline; this doesn't.
+        var videoPtsMs = 0L
 
         val packetizer = RtpPacketizer { rtpPkt -> session.sendRtp(rtpPkt); rtpPacketsSent++ }
         val nalProc = NalProcessor { nal, _ ->
-            packetizer.packetize(nal, endOfAU = true, wallClockMs = System.currentTimeMillis())
+            packetizer.packetize(nal, endOfAU = true, ptsMs = videoPtsMs)
         }
         val onEncoded: (ByteArray, Boolean) -> Unit = { annexB, isKey ->
             framesEncoded++
@@ -554,13 +561,25 @@ class DashEngineController(
             var failures = 0
             var lastEncoderLogAt = System.currentTimeMillis()
             var loggedFrames = 0; var loggedIdr = 0; var loggedRtp = 0
+            // Declared outside the try/catch and assigned fresh right after tick() each
+            // iteration, so the trailing delay() below can reuse the SAME value the PTS advance
+            // used — both must agree on "how long is this frame", or the RTP timeline and the
+            // actual send cadence drift apart from each other. Starts at the conservative (idle)
+            // interval; only matters for a hypothetical exception inside tick() itself, before
+            // the real value below gets assigned.
+            var frameIntervalMs = 1000L / FPS_IDLE
             while (isActive && session.state.value == DashState.STREAMING) {
                 try {
                     tick()
+                    frameIntervalMs = 1000L / (if (camMoving) FPS_MOVING else FPS_IDLE)
                     val bmp = frameBitmap
                     val enc = encoder
                     if (bmp != null && enc != null) {
                         enc.renderFrame { canvas -> canvas.drawBitmap(bmp, 0f, 0f, null) }
+                        // Advance the presentation clock by THIS frame's interval BEFORE
+                        // draining, so the frame(s) pulled this iteration carry an
+                        // evenly-spaced RTP timestamp — see videoPtsMs's own doc above.
+                        videoPtsMs += frameIntervalMs
                         enc.drain()
                     }
                     failures = 0
@@ -602,7 +621,7 @@ class DashEngineController(
                         failures = 0
                     }
                 }
-                delay(1000L / (if (camMoving) FPS_MOVING else FPS_IDLE))
+                delay(frameIntervalMs)
             }
         }
     }

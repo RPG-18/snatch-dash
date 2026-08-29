@@ -523,10 +523,13 @@ class DashEngineController(
         var loggedFirstFrame = false
         // Monotonic RTP presentation clock — advanced by the INTENDED frame interval (see the
         // loop below), NOT System.currentTimeMillis(). Ported from OpenMotoDash/NorthStar's
-        // `videoPtsMs` (see spec/wifi_retry_policy.md's "Из живого форка") after the 2026-08-29
-        // field session found the ACK-counter above sitting at 0 for 66 of 67 sampled minutes —
-        // the dash decoding almost nothing past each stream's first frame. Real wall-clock
-        // timestamps carry render/encode/GC jitter straight into the RTP timeline; this doesn't.
+        // `videoPtsMs` (see spec/wifi_retry_policy.md's "Из живого форка" for how that fork was
+        // found). Originally motivated by a 2026-08-29 field session that read the ACK-counter
+        // above sitting at 0 for 66 of 67 sampled minutes as "dash stopped decoding video" — a
+        // reading a LATER 2026-08-29 field report (map updated fine that whole ride) falsified;
+        // see spec/video.md's "09 06/04 55 — НЕ ack на каждый кадр" for the correction. Keeping
+        // this change anyway: a monotonic PTS instead of one carrying render/encode/GC jitter is
+        // more correct RTP practice regardless, just not proven to fix anything real here.
         var videoPtsMs = 0L
 
         val packetizer = RtpPacketizer { rtpPkt -> session.sendRtp(rtpPkt); rtpPacketsSent++ }

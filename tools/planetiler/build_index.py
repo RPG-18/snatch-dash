@@ -48,9 +48,10 @@ def build_country_entry(country: common.Country, out_dir: Path) -> Optional[dict
         return None
 
     regions = []
-    for path in files:
+    total = len(files)
+    for i, path in enumerate(files, start=1):
         size = path.stat().st_size
-        log.info("%s: sha256 %s (%.1f МБ)...", country.iso, path.name, size / 1_048_576)
+        log.info("%s: [%d/%d] sha256 %s (%.1f МБ)...", country.iso, i, total, path.name, size / 1_048_576)
         regions.append(
             {
                 "code": path.stem,

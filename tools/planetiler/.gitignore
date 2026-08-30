@@ -4,4 +4,6 @@
 /polygons/
 /extracts/
 /out/
+/data/
+/planetiler.jar
 *.tmp

@@ -28,6 +28,15 @@
 # Конкретные числа под MacBook Pro M3 Pro / 18 ГБ — см. tools/README.md
 # ("Тюнинг под конкретную машину"). Без PLANETILER_THREADS planetiler сам
 # берёт все доступные ядра (--threads не передаётся вовсе).
+#
+# --download — профиль OpenMapTiles (тот, что собирает planetiler.jar по
+# умолчанию) требует ещё три глобальных вспомогательных датасета (лини
+# берегов озёр, полигоны воды, Natural Earth) для фоновых слоёв на низких
+# зумах — без них падает с "does not exist. Run with --download to fetch it"
+# ещё до чтения нашего .osm.pbf. Это не зависит от региона и не качается
+# заново на каждый запуск — кладётся в data/sources/ рядом и переиспользуется
+# для всех следующих субъектов/стран, но на самый первый прогон (на любом,
+# даже крошечном регионе) стоит рассчитывать ~1.4 ГБ разовой подкачки.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -65,11 +74,14 @@ if [[ ${#files[@]} -eq 0 ]]; then
   exit 1
 fi
 
+total=${#files[@]}
+i=0
 for f in "${files[@]}"; do
+  i=$((i + 1))
   base="$(basename "$f" .osm.pbf)" # ru-mow.osm.pbf -> ru-mow ; by.osm.pbf -> by
   iso="${base%%-*}"                # ru-mow -> ru ; by -> by
   dest_dir="$OUT_DIR/$iso"
   mkdir -p "$dest_dir"
-  echo "==> $base -> $dest_dir/$base.pmtiles"
-  java -jar "$PLANETILER_JAR" --osm-path="$f" --output="$dest_dir/$base.pmtiles" --languages=ru,en --maxzoom=14 $threads_arg
+  echo "==> [$i/$total] $base -> $dest_dir/$base.pmtiles"
+  java -jar "$PLANETILER_JAR" --osm-path="$f" --output="$dest_dir/$base.pmtiles" --languages=ru,en --maxzoom=14 --download $threads_arg
 done

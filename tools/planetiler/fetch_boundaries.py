@@ -118,6 +118,47 @@ def build_osm_xml(elements: list[dict[str, Any]]) -> ET.ElementTree:
     return ET.ElementTree(root)
 
 
+def fetch_single_code(code: str, overpass_url: str, out_dir: Path, force: bool) -> tuple[int, int]:
+    """Границу ровно одного субъекта по коду ISO3166-2 (ru-kgd), без обхода всей страны.
+
+    ISO3166-2 глобально уникален сам по себе, area-фильтр по стране не нужен —
+    удобно для точечного теста/перекачки одного региона.
+    """
+    code = code.strip().lower()
+    out_path = out_dir / f"{code}.osm"
+    if out_path.exists() and not force:
+        log.info("%s уже существует, пропускаю (--force для перекачки)", out_path.name)
+        return 0, 0
+
+    iso_tag = code.upper()
+    query = f"""
+[out:json][timeout:180];
+relation["ISO3166-2"="{iso_tag}"]["boundary"="administrative"];
+out tags;
+""".strip()
+    result = query_overpass(query, overpass_url, timeout=200)
+    elements = result.get("elements", [])
+    if not elements:
+        log.error("Не нашёл релацию с ISO3166-2=%s", iso_tag)
+        return 0, 1
+    if len(elements) > 1:
+        log.warning("Нашёл %d релаций с ISO3166-2=%s, беру первую (id=%s)", len(elements), iso_tag, elements[0]["id"])
+    rel = elements[0]
+    name = rel.get("tags", {}).get("name", "?")
+
+    log.info("Тяну границу %s (%s, релация %s)...", code, name, rel["id"])
+    closure = fetch_relation_closure(rel["id"], overpass_url)
+    rel_elements = closure.get("elements", [])
+    if not rel_elements:
+        log.error("Пустой ответ Overpass для релации %s (%s)", rel["id"], name)
+        return 0, 1
+
+    tree = build_osm_xml(rel_elements)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    tree.write(out_path, encoding="UTF-8", xml_declaration=True)
+    return 1, 0
+
+
 def process_country(country: common.Country, overpass_url: str, out_dir: Path, force: bool) -> tuple[int, int]:
     log.info(
         "Страна %s (%s): запрашиваю список субъектов (admin_level=%s)...",
@@ -128,22 +169,23 @@ def process_country(country: common.Country, overpass_url: str, out_dir: Path, f
 
     written = 0
     skipped = 0
+    total = len(relations)
     out_dir.mkdir(parents=True, exist_ok=True)
-    for rel in relations:
+    for i, rel in enumerate(relations, start=1):
         tags = rel.get("tags", {})
         iso_code = tags.get("ISO3166-2", "").strip().lower()
         name = tags.get("name", tags.get("name:ru", "?"))
         if not iso_code:
-            log.warning("Пропускаю релацию %s (%s) — нет тега ISO3166-2, сопоставить вручную", rel["id"], name)
+            log.warning("[%d/%d] Пропускаю релацию %s (%s) — нет тега ISO3166-2, сопоставить вручную", i, total, rel["id"], name)
             skipped += 1
             continue
 
         out_path = out_dir / f"{iso_code}.osm"
         if out_path.exists() and not force:
-            log.debug("%s уже существует, пропускаю (--force для перекачки)", out_path.name)
+            log.info("[%d/%d] %s уже существует, пропускаю (--force для перекачки)", i, total, out_path.name)
             continue
 
-        log.info("Тяну границу %s (%s, релация %s)...", iso_code, name, rel["id"])
+        log.info("[%d/%d] Тяну границу %s (%s, релация %s)...", i, total, iso_code, name, rel["id"])
         closure = fetch_relation_closure(rel["id"], overpass_url)
         elements = closure.get("elements", [])
         if not elements:
@@ -165,11 +207,19 @@ def main() -> int:
     parser.add_argument("--out-dir", type=Path, default=common.POLYGONS_DIR, help="куда писать <code>.osm")
     parser.add_argument("--overpass-url", default=DEFAULT_OVERPASS_URL, help="Overpass API endpoint")
     parser.add_argument("--only", help="ограничиться странами по iso, через запятую (например: ru)")
+    parser.add_argument(
+        "--code", help="скачать только один субъект по коду ISO3166-2 (ru-kgd), а не все субъекты страны — для теста/точечной перекачки"
+    )
     parser.add_argument("--force", action="store_true", help="перекачать границу, даже если файл уже есть")
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
 
     common.setup_logging(args.verbose)
+
+    if args.code:
+        written, skipped = fetch_single_code(args.code, args.overpass_url, args.out_dir, args.force)
+        log.info("Готово: записано %d границ, пропущено %d.", written, skipped)
+        return 0
 
     countries = [c for c in common.filter_by_iso(common.enabled_countries(args.regions), args.only) if c.mode == "subjects"]
     if not countries:

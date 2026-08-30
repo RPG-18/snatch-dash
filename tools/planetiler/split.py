@@ -20,6 +20,7 @@ import logging
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -48,9 +49,13 @@ def split_subjects(country: common.Country, extracts_dir: Path, osmium_bin: str,
         )
         return
 
-    cmd = [osmium_bin, "extract", f"--strategy={strategy}", "-c", str(config_path), str(source)]
+    cmd = [osmium_bin, "extract", f"--strategy={strategy}", "--progress", "-c", str(config_path), str(source)]
     log.info("%s: %s", country.iso, " ".join(cmd))
     subprocess.run(cmd, check=True)
+
+
+COPY_CHUNK_SIZE = 64 * 1024 * 1024  # 64 МБ — шаг для лога прогресса копирования
+COPY_LOG_EVERY_SECONDS = 5.0
 
 
 def split_whole(country: common.Country, extracts_dir: Path) -> None:
@@ -61,8 +66,22 @@ def split_whole(country: common.Country, extracts_dir: Path) -> None:
         )
         return
     dest = extracts_dir / f"{country.iso}.osm.pbf"
-    log.info("%s: копирую %s -> %s (mode: whole, нарезка не нужна)", country.iso, source, dest)
-    shutil.copy2(source, dest)
+    total = source.stat().st_size
+    log.info(
+        "%s: копирую %s -> %s (%.1f МБ, mode: whole, нарезка не нужна)",
+        country.iso, source, dest, total / 1_048_576,
+    )
+    copied = 0
+    last_log = time.monotonic()
+    with source.open("rb") as src, dest.open("wb") as dst:
+        while chunk := src.read(COPY_CHUNK_SIZE):
+            dst.write(chunk)
+            copied += len(chunk)
+            now = time.monotonic()
+            if now - last_log >= COPY_LOG_EVERY_SECONDS or copied == total:
+                log.info("%s: скопировано %.1f%% (%.1f / %.1f МБ)", country.iso, 100 * copied / total, copied / 1_048_576, total / 1_048_576)
+                last_log = now
+    shutil.copystat(source, dest)
 
 
 def main() -> int:

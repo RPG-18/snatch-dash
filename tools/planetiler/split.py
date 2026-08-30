@@ -16,6 +16,7 @@ mode: whole     — нарезка не нужна вообще, скачанн�
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import shutil
 import subprocess
@@ -38,6 +39,15 @@ def require_osmium() -> str:
 
 
 def split_subjects(country: common.Country, extracts_dir: Path, osmium_bin: str, strategy: str) -> None:
+    """Нарезает на субъекты по одному вызову `osmium extract -p` на каждый.
+
+    НЕ одним `osmium extract -c` со всеми экстрактами сразу: память osmium extract
+    растёт как `число_экстрактов × (макс_ид_ноды / 8)` (bitset по глобальным OSM-ид),
+    и на России (83 субъекта, иды нод до ~12 млрд) это ~120+ ГБ — OOM на любой
+    обычной машине (см. MEMORY USAGE в `osmium help extract`). По одному экстракту
+    на вызов — это `1 × (макс_ид/8) ≈ 1.5 ГБ`, но исходник перечитывается N раз
+    (медленнее, зато работает). Возобновляемо: уже готовые `<output>` пропускаются.
+    """
     config_path = extracts_dir / f"{country.iso}-extracts.json"
     if not config_path.exists():
         log.error("%s: нет %s — сначала запустить build_extract_config.py", country.iso, config_path)
@@ -49,9 +59,27 @@ def split_subjects(country: common.Country, extracts_dir: Path, osmium_bin: str,
         )
         return
 
-    cmd = [osmium_bin, "extract", f"--strategy={strategy}", "--progress", "-c", str(config_path), str(source)]
-    log.info("%s: %s", country.iso, " ".join(cmd))
-    subprocess.run(cmd, check=True)
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    extracts = config.get("extracts", [])
+    directory = Path(config.get("directory", extracts_dir))
+
+    total = len(extracts)
+    done = skipped = 0
+    for i, ex in enumerate(extracts, start=1):
+        output = directory / ex["output"]
+        polygon = Path(ex["polygon"]["file_name"])
+        if output.exists() and output.stat().st_size > 0:
+            log.info("[%d/%d] %s уже существует, пропускаю", i, total, output.name)
+            skipped += 1
+            continue
+        log.info("[%d/%d] %s <- %s", i, total, output.name, polygon.name)
+        cmd = [
+            osmium_bin, "extract", f"--strategy={strategy}", "--progress", "--overwrite",
+            "-p", str(polygon), "-o", str(output), str(source),
+        ]
+        subprocess.run(cmd, check=True)
+        done += 1
+    log.info("%s: готово — нарезано %d, пропущено (уже были) %d.", country.iso, done, skipped)
 
 
 COPY_CHUNK_SIZE = 64 * 1024 * 1024  # 64 МБ — шаг для лога прогресса копирования

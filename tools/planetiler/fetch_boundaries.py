@@ -36,7 +36,11 @@ import common
 
 log = logging.getLogger("fetch_boundaries")
 
-DEFAULT_OVERPASS_URL = "https://overpass-api.de/api/interpreter"
+# Публичное зеркало VK Maps (РФ): основной overpass-api.de часто отдаёт 504 и не
+# укладывается в лимит на тяжёлых запросах, а зеркало VK — в списке публичных
+# инстансов OSM (https://wiki.openstreetmap.org/wiki/Overpass_API) и без
+# заявленных лимитов запросов.
+DEFAULT_OVERPASS_URL = "https://maps.mail.ru/osm/tools/overpass/api/interpreter"
 REQUEST_RETRIES = 3
 RETRY_DELAY_SECONDS = 5.0
 POLITE_DELAY_SECONDS = 1.0  # пауза между запросами по отдельным релациям — не долбить публичный Overpass
@@ -60,11 +64,16 @@ def query_overpass(query: str, url: str, timeout: int) -> dict[str, Any]:
 
 
 def list_subject_relations(country: common.Country, overpass_url: str) -> list[dict[str, Any]]:
-    """Лёгкий запрос: id + tags релаций admin_level=N внутри страны, без геометрии."""
+    """Лёгкий запрос: id + tags релаций admin_level=N с ISO3166-2-кодом страны, без геометрии.
+
+    По префиксу ISO3166-2 (RU-…) вместо area-пивота по стране: area["ISO3166-1:alpha2"="RU"]
+    на публичных Overpass-зеркалах не укладывается в лимит времени (504), а прямой
+    фильтр по тегу ISO3166-2 — дешёвый, и он же потом читается для имени выходного
+    файла. Без bbox намеренно — иначе потерялись бы субъекты восточнее 180° (Чукотка).
+    """
     query = f"""
 [out:json][timeout:180];
-area["ISO3166-1:alpha2"="{country.iso.upper()}"]["admin_level"="2"]->.country;
-relation(area.country)["admin_level"="{country.subject_admin_level}"]["boundary"="administrative"];
+relation["admin_level"="{country.subject_admin_level}"]["boundary"="administrative"]["ISO3166-2"~"^{country.iso.upper()}-"];
 out tags;
 """.strip()
     result = query_overpass(query, overpass_url, timeout=200)

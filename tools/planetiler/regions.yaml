@@ -1,0 +1,100 @@
+# Конфигурация конвейера OSM extract -> PMTiles.
+#
+# Один элемент `countries` — одна страна. Скрипты конвейера (fetch/extract/build,
+# см. plan.md) обязаны пропускать любую страну с `enabled: false` — она в конфиге
+# только как заготовка/место для будущих полей, реальный osmium/planetiler
+# по ней не запускается и данные не скачиваются.
+#
+# mode:
+#   whole    — вся страна одним файлом, выход `<iso>.pmtiles`.
+#   subjects — резать на субъекты/регионы; код каждого субъекта берётся из тега
+#              ISO3166-2 на релации границы с admin_level = subject_admin_level,
+#              приведённого к нижнему регистру (RU-MOW -> ru-mow). Список субъектов
+#              не хардкодится здесь — получается на этапе fetch_boundaries (см. plan.md).
+#
+# source — прямая ссылка на .osm.pbf с Geofabrik. Не проверялись живым запросом
+# на момент написания конфига — свериться со списком https://download.geofabrik.de/
+# перед первым использованием, у Geofabrik страницы иногда переезжают.
+
+countries:
+  - iso: ru
+    name: Россия
+    enabled: true
+    mode: subjects
+    subject_admin_level: 4
+    source: https://download.geofabrik.de/russia-latest.osm.pbf
+
+  - iso: ab
+    name: Абхазия
+    enabled: false
+    mode: whole
+    source: null
+    note: >
+      Частично признанное государство, без собственного кода ISO 3166-1 (код
+      "ab" здесь условный, де-факто, не ISO-стандарт) и без отдельного
+      Geofabrik-экстракта — территория входит в грузинский. Нужно отдельно
+      решить, откуда брать границу и данные, прежде чем включать.
+
+  - iso: az
+    name: Азербайджан
+    enabled: false
+    mode: whole
+    source: https://download.geofabrik.de/asia/azerbaijan-latest.osm.pbf
+
+  - iso: am
+    name: Армения
+    enabled: false
+    mode: whole
+    source: https://download.geofabrik.de/asia/armenia-latest.osm.pbf
+
+  - iso: by
+    name: Беларусь
+    enabled: false
+    mode: whole
+    source: https://download.geofabrik.de/europe/belarus-latest.osm.pbf
+
+  - iso: ge
+    name: Грузия
+    enabled: false
+    mode: whole
+    source: https://download.geofabrik.de/asia/georgia-latest.osm.pbf
+
+  - iso: kz
+    name: Казахстан
+    enabled: false
+    mode: whole
+    source: https://download.geofabrik.de/asia/kazakhstan-latest.osm.pbf
+
+  - iso: kg
+    name: Кыргызстан
+    enabled: false
+    mode: whole
+    source: https://download.geofabrik.de/asia/kyrgyzstan-latest.osm.pbf
+
+  - iso: md
+    name: Молдова
+    enabled: false
+    mode: whole
+    source: https://download.geofabrik.de/europe/moldova-latest.osm.pbf
+
+  - iso: tj
+    name: Таджикистан
+    enabled: false
+    mode: whole
+    source: https://download.geofabrik.de/asia/tajikistan-latest.osm.pbf
+
+  - iso: uz
+    name: Узбекистан
+    enabled: false
+    mode: whole
+    source: https://download.geofabrik.de/asia/uzbekistan-latest.osm.pbf
+
+  - iso: ua
+    name: Украина
+    enabled: false
+    mode: whole
+    source: https://download.geofabrik.de/europe/ukraine-latest.osm.pbf
+    note: >
+      В OSM для части территории (Крым, зоны конфликта) существуют
+      альтернативные релации границы. Какую использовать — решить отдельно
+      до включения обработки, конвейер здесь этот выбор не делает.

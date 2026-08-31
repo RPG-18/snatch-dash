@@ -1,15 +1,20 @@
 # tools/
 
-См. [`tools/CLAUDE.md`](CLAUDE.md) за тем, что вообще здесь лежит. Сейчас
-единственное содержимое — [`planetiler/`](planetiler) (подготовка оффлайн
-векторных тайлов в PMTiles), схема конвейера — [`planetiler/plan.md`](planetiler/plan.md).
+Вспомогательные скрипты, не входящие в сборку приложения. Сейчас здесь одно —
+[`planetiler/`](planetiler): конвейер «выгрузка OSM → офлайн-тайлы PMTiles».
+
+- **Что это и как запускать** — [`planetiler/README.md`](planetiler/README.md).
+- **Что вообще лежит в `tools/`** — [`CLAUDE.md`](CLAUDE.md).
+- **Как ставить окружение** — этот файл, ниже.
 
 ## Окружение
 
 Три внешние вещи нужны, чтобы прогнать конвейер `tools/planetiler/*`
 целиком: **Python** (сами скрипты), **osmium-tool** (`split.py` режет
-`.osm.pbf` через него) и **Java + planetiler.jar** (`build_pmtiles.sh`).
-Ниже — как поставить каждую на Linux/macOS/Windows.
+`.osm.pbf` через него) и **Java + planetiler.jar** (`build_pmtiles.py`).
+Ниже — как поставить каждую на Linux/macOS/Windows. Версии, на которых
+конвейер реально прогонялся целиком: Python 3.14, osmium-tool 1.19.1,
+OpenJDK 21.0.12 (macOS 26.6, Apple M3 Pro).
 
 ### Python 3.9+
 
@@ -40,7 +45,7 @@ pip install -r requirements.txt
 
 ### osmium-tool
 
-Нужен только `split.py` (шаг «Нарезка» в [plan.md](planetiler/plan.md)) —
+Нужен только `split.py` (шаг «Нарезка» в [README.md](planetiler/README.md)) —
 и только для стран с `mode: subjects` (сейчас — Россия). Проверить, что
 поставилось: `osmium --version`.
 
@@ -76,25 +81,31 @@ Linux/macOS проверено, Windows не проверял):
 conda install -c conda-forge osmium-tool
 ```
 
-### Java 17+ и planetiler.jar
+### Java 21+ и planetiler.jar
 
-Нужны только `build_pmtiles.sh` (шаг «Тайлы»). Planetiler требует **JDK/JRE
-17 или новее** — более старый Java не подойдёт.
+Нужны только `build_pmtiles.py` (шаг «Тайлы»). Нужен **JDK/JRE 21 или новее**:
+классы в нашем `planetiler.jar` имеют версию формата 65, а её понимает только
+Java 21+. На 17 запуск падает с `UnsupportedClassVersionError` ещё до чтения
+данных — то есть «поставить 17, вдруг хватит» не сработает.
 
 - **Linux (Debian/Ubuntu)**:
   ```bash
-  sudo apt install openjdk-17-jre
+  sudo apt install openjdk-21-jre
   ```
-- **macOS** (через Homebrew; Homebrew не линкует JDK в `PATH` по умолчанию —
-  нужен один дополнительный шаг):
+- **macOS** (через Homebrew; JDK там keg-only и в `PATH` сам не попадает —
+  нужен второй шаг, иначе `java` просто «не найден», хотя пакет установлен):
   ```bash
-  brew install openjdk@17
-  echo 'export PATH="'"$(brew --prefix openjdk@17)"'/bin:$PATH"' >> ~/.zshrc
+  brew install openjdk@21
+  echo 'export PATH="'"$(brew --prefix openjdk@21)"'/bin:$PATH"' >> ~/.zshrc
+  ```
+  Разово, без правки `~/.zshrc`, можно и так:
+  ```bash
+  PATH="$(brew --prefix openjdk@21)/bin:$PATH" python3 build_pmtiles.py
   ```
 - **Windows** — [Eclipse Temurin](https://adoptium.net/) (стандартный
   бесплатный сборщик OpenJDK для Windows):
   ```powershell
-  winget install EclipseAdoptium.Temurin.17.JDK
+  winget install EclipseAdoptium.Temurin.21.JDK
   ```
 
 Планетайлер распространяется одним jar-файлом с
@@ -114,27 +125,27 @@ Invoke-WebRequest -Uri "https://github.com/onthegomap/planetiler/releases/latest
 Если имя ассета в конкретном релизе отличается — проверить на странице
 [releases](https://github.com/onthegomap/planetiler/releases/latest).
 
-Дальше путь до скачанного jar передаётся в `build_pmtiles.sh` через
-переменную окружения — см. раздел «Как запустить» в [`planetiler/plan.md`](planetiler/plan.md):
+Дальше путь до скачанного jar передаётся в `build_pmtiles.py` через
+переменную окружения — см. раздел «Как запустить» в [`planetiler/README.md`](planetiler/README.md):
 ```bash
-PLANETILER_JAR=/path/to/planetiler.jar ./build_pmtiles.sh
+PLANETILER_JAR=/path/to/planetiler.jar python3 build_pmtiles.py
 ```
 
 **Память**: planetiler держит бо́льшую часть данных в памяти при сборке —
 ориентировочно нужно ~1 ГБ heap на 1 ГБ входного `.osm.pbf`. Для отдельных
 субъектов РФ хватит настроек по умолчанию, а для чего-то заметно крупнее
 может понадобиться `JAVA_TOOL_OPTIONS="-Xmx8g"` (или больше) перед запуском
-`build_pmtiles.sh`.
+`build_pmtiles.py`.
 
 ### Тюнинг под конкретную машину (пример: MacBook Pro M3 Pro, 18 ГБ)
 
-`build_pmtiles.sh` не зашивает память/потоки под конкретное железо (иначе
+`build_pmtiles.py` не зашивает память/потоки под конкретное железо (иначе
 он перестал бы быть переносимым на другую машину/CI) — обе настройки через
 окружение, значения ниже — под M3 Pro/18 ГБ:
 
 ```bash
 JAVA_TOOL_OPTIONS="-Xmx10g" PLANETILER_THREADS=8 \
-  PLANETILER_JAR=/path/to/planetiler.jar ./build_pmtiles.sh
+  PLANETILER_JAR=/path/to/planetiler.jar python3 build_pmtiles.py
 ```
 
 - **`-Xmx10g`** — из 18 ГБ отдаём JVM чуть больше половины, остальное — macOS
@@ -153,6 +164,11 @@ JAVA_TOOL_OPTIONS="-Xmx10g" PLANETILER_THREADS=8 \
   ноутбук в этот момент не нужен ни для чего другого — можно смело убрать
   `PLANETILER_THREADS` вовсе (planetiler возьмёт все 12 ядер сам) или
   выставить его в `12` явно.
+**Проверено этими значениями**: 84 файла (83 субъекта РФ, Чукотка двумя
+половинами) собрались за 32 минуты, ~25 с на субъект вместе со стартом JVM,
+без OOM и без единой ошибки. Самый крупный вход — Краснодарский край, 107 МБ
+`.osm.pbf`.
+
 - Более тонкие флаги planetiler под экономию памяти (`--nodemap-type`,
   `--nodemap-storage` и т.п. — то, что реально нужно на planet-scale
   сборках) сознательно не трогали: при нашей архитектуре (нарезка на
@@ -166,5 +182,5 @@ JAVA_TOOL_OPTIONS="-Xmx10g" PLANETILER_THREADS=8 \
 ```bash
 python3 --version   # 3.9+
 osmium --version    # любая современная версия osmium-tool
-java -version       # 17 или новее
+java -version       # 21 или новее
 ```

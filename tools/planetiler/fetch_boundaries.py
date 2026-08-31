@@ -16,7 +16,7 @@ admin_level = subject_admin_level внутри страны и сохраняе�
 пропускает релацию с предупреждением — сопоставление вручную в эту версию
 скрипта не входит.
 
-См. tools/planetiler/plan.md за общей схемой конвейера.
+См. tools/planetiler/README.md за общей схемой конвейера.
 """
 from __future__ import annotations
 

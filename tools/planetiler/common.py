@@ -3,7 +3,7 @@
 Держит только то, что реально переиспользуется несколькими скриптами
 (fetch_boundaries.py / build_extract_config.py / split.py / build_index.py):
 загрузку regions.yaml, пути каталогов конвейера, настройку логирования.
-Общая схема конвейера — см. tools/planetiler/plan.md.
+Общая схема конвейера — см. tools/planetiler/README.md.
 """
 from __future__ import annotations
 

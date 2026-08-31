@@ -9,7 +9,7 @@ osmium умеет резать сразу на много экстрактов �
 файлу — поэтому один конфиг на страну, а не отдельный вызов на каждый
 субъект (иначе на файле размером с russia-latest.osm.pbf это в 80+ раз дольше).
 
-См. tools/planetiler/plan.md.
+См. tools/planetiler/README.md.
 """
 from __future__ import annotations
 

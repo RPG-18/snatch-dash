@@ -7,11 +7,11 @@ mode: whole     — нарезка не нужна вообще, скачанн�
                  в extracts/<iso>.osm.pbf — Geofabrik уже обрезал его по стране.
 
 Ожидает исходные .osm.pbf в downloads/<iso>-latest.osm.pbf — они не
-скачиваются автоматически (см. plan.md: `source` в regions.yaml — просто
+скачиваются автоматически (см. README.md: `source` в regions.yaml — просто
 ссылка, куда сходить руками, а не URL для авто-загрузки).
 
 На Python, а не shell — чтобы конвейер не зависел от bash/zsh и одинаково
-работал под Windows/macOS/Linux (см. tools/planetiler/plan.md).
+работал под Windows/macOS/Linux (см. tools/planetiler/README.md).
 """
 from __future__ import annotations
 
@@ -102,7 +102,8 @@ def split_subjects(country: common.Country, extracts_dir: Path, osmium_bin: str,
         # Без разреза planetiler увидел бы bbox шириной во весь мир (-180..180) и
         # сгенерировал бы тайлы через все 360° долготы — в основном пустой океан.
         crosses = crosses_antimeridian(get_bbox(osmium_bin, polygon))
-        east_output = output.with_name(f"{output.stem}-east{output.suffix}")
+        base = output.name.removesuffix(".osm.pbf")  # не Path.stem: тот снимет только .pbf и даст "ru-chu.osm"
+        east_output = output.with_name(f"{base}-east.osm.pbf")
 
         expected = [output] + ([east_output] if crosses else [])
         if all(p.exists() and p.stat().st_size > 0 for p in expected):

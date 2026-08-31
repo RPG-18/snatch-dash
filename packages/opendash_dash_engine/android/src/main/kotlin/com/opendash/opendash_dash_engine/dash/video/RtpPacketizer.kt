@@ -14,7 +14,13 @@ import java.util.Random
  */
 class RtpPacketizer(private val onPacket: (ByteArray) -> Unit) {
     companion object {
-        private const val MAX_PAYLOAD = 1380
+        /**
+         * Largest RTP payload sent in one packet. Public because [NalProcessor]
+         * has to know it too: it decides whether an SPS+PPS+IDR bundle still
+         * fits one packet or must be split, since [fuA] can only fragment a
+         * SINGLE NAL unit (see its doc).
+         */
+        const val MAX_PAYLOAD = 1380
         private const val PT = 96
     }
 
@@ -44,6 +50,13 @@ class RtpPacketizer(private val onPacket: (ByteArray) -> Unit) {
         }
     }
 
+    /**
+     * RFC 6184 §5.8 FU-A. Fragments **one** NAL unit: the type is taken from
+     * `nal[0]` and stamped onto every fragment, so handing this a concatenation
+     * of several NALs would relabel all of them as the first one's type and
+     * produce an undecodable stream. [NalProcessor] is responsible for never
+     * passing a multi-NAL bundle in here.
+     */
     private fun fuA(nal: ByteArray, endOfAU: Boolean, ts: Long) {
         val nalType  = nal[0].toInt() and 0x1F
         val fuInd    = ((nal[0].toInt() and 0xE0) or 28).toByte()

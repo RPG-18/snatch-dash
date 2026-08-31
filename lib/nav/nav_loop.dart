@@ -42,6 +42,11 @@ class NavLoop {
   Timer? _timer;
   double? _lat;
   double? _lng;
+
+  /// Last known ground speed (m/s) from the engine's GPS fixes, fed into
+  /// [NavEngine.progress] for the ETA. Held across events like [_lat]/[_lng]
+  /// so a momentary null doesn't throw the estimate back to the default.
+  double _speedMps = 0;
   bool _stopped = false;
 
   int _offRouteTicks = 0;
@@ -77,6 +82,8 @@ class NavLoop {
       _lat = lat;
       _lng = lng;
     }
+    final speed = (event['riderSpeed'] as num?)?.toDouble();
+    if (speed != null) _speedMps = speed;
   }
 
   void _tick() {
@@ -85,7 +92,7 @@ class NavLoop {
     if (lat == null || lng == null) return;
 
     final pos = GeoPoint(lat, lng);
-    final progress = NavEngine.progress(_route, pos, 0);
+    final progress = NavEngine.progress(_route, pos, _speedMps);
     final eta = DateTime.now().add(Duration(seconds: progress.etaSeconds.round()));
     final etaHHMM =
         '${eta.hour.toString().padLeft(2, '0')}${eta.minute.toString().padLeft(2, '0')}';
@@ -93,7 +100,10 @@ class NavLoop {
     DashEngine.instance.setNavState(
       remainingMeters: progress.remainingMeters,
       nextTurnMeters: progress.distanceToManeuverM,
-      maneuver: progress.nextManeuver?.dashCode ?? 0x0B,
+      // 0x09 = straight ahead, the dash's confirmed neutral glyph — see the note on
+      // `_dashCodeByType` in nav/route.dart for why it is NOT 0x0B (which the firmware
+      // renders as "roundabout, clockwise, exit 1").
+      maneuver: progress.nextManeuver?.dashCode ?? 0x09,
       etaHHMM: etaHHMM,
       offRoute: progress.offRoute,
       points: const [],

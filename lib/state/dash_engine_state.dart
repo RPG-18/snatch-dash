@@ -26,6 +26,7 @@ class DashEngineState {
     this.riderLat,
     this.riderLng,
     this.riderBearing,
+    this.riderSpeed,
     this.remainingKm,
     this.offRoute = false,
     this.gpsLost = false,
@@ -54,6 +55,11 @@ class DashEngineState {
   final double? riderLat;
   final double? riderLng;
   final double? riderBearing;
+
+  /// Ground speed from the native GPS fix, m/s — null when there's no fix.
+  /// Feeds `NavEngine.progress`, which otherwise falls back to a flat 11 m/s
+  /// assumption for every ETA.
+  final double? riderSpeed;
   final double? remainingKm;
   final bool offRoute;
   final bool gpsLost;
@@ -87,6 +93,7 @@ class DashEngineState {
         riderLat: (map['riderLat'] as num?)?.toDouble(),
         riderLng: (map['riderLng'] as num?)?.toDouble(),
         riderBearing: (map['riderBearing'] as num?)?.toDouble(),
+        riderSpeed: (map['riderSpeed'] as num?)?.toDouble(),
         remainingKm: (map['remainingKm'] as num?)?.toDouble(),
         offRoute: map['offRoute'] as bool? ?? false,
         gpsLost: map['gpsLost'] as bool? ?? false,

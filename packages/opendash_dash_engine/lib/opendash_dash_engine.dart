@@ -41,7 +41,7 @@ class DashEngine {
   Future<void> setNavState({
     double? remainingMeters,
     double? nextTurnMeters,
-    int maneuver = 0x0B,
+    int maneuver = 0x09,
     String? etaHHMM,
     bool offRoute = false,
     List<List<double>> points = const [],

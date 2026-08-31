@@ -68,6 +68,10 @@ class DashEngineController(
         private const val FORCE_REDRAW_MS = 2_000L
         private const val SMOOTH_TAU = 0.35
         private const val MANUAL_IDLE_MS = 8_000L
+        /** A fix older than this counts as "GPS lost" for the Dash screen's chip. */
+        private const val GPS_FIX_STALE_MS = 4_000L
+        /** Horizontal accuracy (m) above which a fix counts as "GPS weak". */
+        private const val GPS_WEAK_ACCURACY_M = 25f
         // The K1G auth handshake occasionally fails on its own (seen in the wild — see
         // spec/wifi_retry_policy.md) even while the WiFi link to the dash is fine. Retrying
         // `session.connect()` directly is far cheaper than tearing down and re-requesting WiFi
@@ -533,8 +537,12 @@ class DashEngineController(
         var videoPtsMs = 0L
 
         val packetizer = RtpPacketizer { rtpPkt -> session.sendRtp(rtpPkt); rtpPacketsSent++ }
-        val nalProc = NalProcessor { nal, _ ->
-            packetizer.packetize(nal, endOfAU = true, ptsMs = videoPtsMs)
+        // endOfAU comes from NalProcessor, which knows which NAL closes the access unit —
+        // this used to be hardcoded `true`, marking every packet. Harmless while each AU
+        // was exactly one NAL, but wrong the moment an IDR goes out as separate
+        // SPS/PPS/IDR packets: the marker bit has to land on the last one only.
+        val nalProc = NalProcessor { nal, endOfAU ->
+            packetizer.packetize(nal, endOfAU = endOfAU, ptsMs = videoPtsMs)
         }
         val onEncoded: (ByteArray, Boolean) -> Unit = { annexB, isKey ->
             framesEncoded++
@@ -640,19 +648,12 @@ class DashEngineController(
         val heading = loc?.bearing ?: (if (camInit) camHdg else 0f)
 
         val fixAgeMs = loc?.let { System.currentTimeMillis() - it.time } ?: Long.MAX_VALUE
-        val gpsLost = loc == null || fixAgeMs > 4_000L
-        val gpsWeak = !gpsLost && (loc?.accuracy ?: 0f) > 25f
+        val gpsLost = loc == null || fixAgeMs > GPS_FIX_STALE_MS
+        val gpsWeak = !gpsLost && (loc?.accuracy ?: 0f) > GPS_WEAK_ACCURACY_M
 
-        publishState(
-            hasGps = loc != null,
-            riderLat = riderLat,
-            riderLng = riderLng,
-            riderBearing = heading,
-            remainingKm = remainingM?.let { it / 1000.0 },
-            offRoute = offRoute,
-            gpsLost = gpsLost,
-            gpsWeak = gpsWeak,
-        )
+        // GPS/progress fields come from publishState's own read of the live sources now —
+        // it is no longer this function's job to be their only supplier.
+        publishState()
 
         // EXPERIMENT (2026-08-28, unverified on hardware) — see tickIdle()'s doc for why this
         // no longer branches there. [navigating] still gates everything ELSE that isn't frame
@@ -780,18 +781,26 @@ class DashEngineController(
         return 2 * r * atan2(sqrt(s), sqrt(1 - s))
     }
 
+    /**
+     * Publishes one snapshot of engine state to Dart.
+     *
+     * The GPS/progress fields are read from the live sources here rather than taken as
+     * parameters. They used to be nullable parameters that only [tick] ever filled in, so
+     * every other caller — WiFi status changes, session transitions, media/call forwarding,
+     * setDestination — published them as null, which Dart's `fromMap` turns into
+     * false/null and writes over the last good values (the state object is replaced
+     * wholesale, not merged). The visible result was the Dash screen's rider marker and
+     * GPS chips flickering, and no GPS status at all before STREAMING, since [tick] — the
+     * only source of those values — runs only while streaming.
+     */
     private fun publishState(
-        hasGps: Boolean? = null,
-        riderLat: Double? = null,
-        riderLng: Double? = null,
-        riderBearing: Float? = null,
-        remainingKm: Double? = null,
-        offRoute: Boolean? = null,
-        gpsLost: Boolean? = null,
-        gpsWeak: Boolean? = null,
         errorMessage: String? = null,
         explicitDisconnect: Boolean = false,
     ) {
+        val loc = locationTracker.location.value
+        val fixAgeMs = loc?.let { System.currentTimeMillis() - it.time } ?: Long.MAX_VALUE
+        val gpsLost = loc == null || fixAgeMs > GPS_FIX_STALE_MS
+        val gpsWeak = !gpsLost && (loc?.accuracy ?: 0f) > GPS_WEAK_ACCURACY_M
         onState(
             mapOf(
                 "stage" to session.state.value.name,
@@ -803,11 +812,15 @@ class DashEngineController(
                 // the same source of truth the frame loop's tick()/tickIdle() branch on. Dart's
                 // button dispatcher needs this to replicate DashViewModel.isIdleWallpaperMode().
                 "navigating" to navigating,
-                "hasGps" to hasGps,
-                "riderLat" to riderLat,
-                "riderLng" to riderLng,
-                "riderBearing" to riderBearing,
-                "remainingKm" to remainingKm,
+                "hasGps" to (loc != null),
+                "riderLat" to loc?.latitude,
+                "riderLng" to loc?.longitude,
+                "riderBearing" to (loc?.bearing ?: (if (camInit) camHdg else 0f)),
+                // Ground speed straight from the fix, m/s. Published so Dart's NavEngine can
+                // compute a real ETA — NavLoop used to pass a hardcoded 0, which made
+                // NavEngine fall back to its 11 m/s constant for every estimate.
+                "riderSpeed" to loc?.speed,
+                "remainingKm" to remainingM?.let { it / 1000.0 },
                 "offRoute" to offRoute,
                 "gpsLost" to gpsLost,
                 "gpsWeak" to gpsWeak,

@@ -68,7 +68,16 @@ class ExpenseExporter {
     return '${d.year.toString().padLeft(4, '0')}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
   }
 
-  static String _csvCell(String value) => '"${value.replaceAll('"', '""')}"';
+  /// Quotes a CSV field, and neutralises the leading characters that make
+  /// Excel/Sheets treat a cell as a formula rather than text — a free-text
+  /// note or category starting with `=`, `+`, `-` or `@` would otherwise be
+  /// evaluated on open. Prefixing an apostrophe is the standard defence; it
+  /// isn't shown by the spreadsheet, and quoting alone does not prevent this.
+  static String _csvCell(String value) {
+    final escaped = value.replaceAll('"', '""');
+    final needsGuard = escaped.isNotEmpty && '=+-@\t\r'.contains(escaped[0]);
+    return '"${needsGuard ? "'" : ''}$escaped"';
+  }
 
   static String _html(String value) =>
       value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');

@@ -251,7 +251,15 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> with WidgetsBin
       context: context,
       builder: (dialogContext) => AlertDialog(
         title: Text(l10n.settingsSsidDialogTitle),
-        content: TextField(controller: controller, decoration: InputDecoration(labelText: l10n.settingsExactSsidLabel)),
+        // 32 is the 802.11 cap on an SSID, so nothing longer can name a real
+        // network anyway. Enforced here because the native side puts the SSID
+        // through an RSA-1024 block in DashAuth.buildKeyPacket, which overflows
+        // (and fails the session) somewhere past 85 bytes.
+        content: TextField(
+          controller: controller,
+          maxLength: 32,
+          decoration: InputDecoration(labelText: l10n.settingsExactSsidLabel),
+        ),
         actions: [
           TextButton(onPressed: () => Navigator.pop(dialogContext), child: Text(l10n.actionCancel)),
           TextButton(

@@ -2,6 +2,7 @@ package com.opendash.opendash_dash_engine.dash
 
 import com.opendash.opendash_dash_engine.dash.protocol.DashCommands
 import com.opendash.opendash_dash_engine.dash.protocol.Tlv
+import com.opendash.opendash_dash_engine.util.DebugLog
 import java.math.BigInteger
 import java.security.KeyFactory
 import java.security.SecureRandom
@@ -27,6 +28,12 @@ sealed class AuthEvent {
  * emitted exactly once per attempt; [reset] re-arms it after a rejection.
  */
 class DashAuth(private val ssid: String) {
+    private companion object {
+        const val TAG = "DashAuth"
+        /** RSA-1024 PKCS#1 v1.5 plaintext limit (117 B) minus the 32-byte AES key. */
+        const val MAX_SSID_BYTES = 85
+    }
+
     private var modulus: BigInteger? = null
     private var exponent: BigInteger? = null
     private var keySent = false
@@ -63,7 +70,17 @@ class DashAuth(private val ssid: String) {
         val aes = ByteArray(32).also { SecureRandom().nextBytes(it) }
         sessionKey = aes
 
-        val payload = ssid.toByteArray(Charsets.UTF_8) + aes
+        // RSA-1024 with PKCS#1 v1.5 padding tops out at 117 bytes of plaintext, and the AES
+        // key already claims 32 of them. A real 802.11 SSID is capped at 32 bytes so this can
+        // only trip on a hand-entered one; truncate rather than let doFinal throw, since this
+        // runs inside the RX loop where the throw would fail the whole session.
+        val ssidBytes = ssid.toByteArray(Charsets.UTF_8).let {
+            if (it.size > MAX_SSID_BYTES) {
+                DebugLog.w(TAG) { "SSID is ${it.size}B — truncating to $MAX_SSID_BYTES to fit the RSA block" }
+                it.copyOf(MAX_SSID_BYTES)
+            } else it
+        }
+        val payload = ssidBytes + aes
         val pubKey = KeyFactory.getInstance("RSA")
             .generatePublic(RSAPublicKeySpec(modulus, exponent))
         val cipher = Cipher.getInstance("RSA/ECB/PKCS1Padding")

@@ -66,6 +66,14 @@ class RouteState {
 class RouteController extends Notifier<RouteState> {
   NavLoop? _navLoop;
 
+  /// Bumped by every entry point that starts a destination/route request, so a
+  /// slow one can tell it has been superseded before writing to `state`. Two
+  /// picks in quick succession finish in whatever order the network decides —
+  /// a share link needing a round-trip resolve can easily land after a saved
+  /// place picked right afterwards — and without this the stale result wins.
+  /// Same guard [RouteSearchController] uses for its suggestion queries.
+  int _requestId = 0;
+
   @override
   RouteState build() {
     ref.onDispose(() => _navLoop?.stop());
@@ -73,6 +81,7 @@ class RouteController extends Notifier<RouteState> {
   }
 
   void setDestinationFromShareText(String text) {
+    final requestId = ++_requestId;
     final parsed = LocationParser.parse(text);
     state = state.copyWith(
       queryText: text,
@@ -80,27 +89,32 @@ class RouteController extends Notifier<RouteState> {
       clearRoute: true,
       clearError: true,
     );
-    unawaited(_resolveAndRoute(parsed));
+    unawaited(_resolveAndRoute(parsed, requestId));
   }
 
   void clear() {
     _navLoop?.stop();
     _navLoop = null;
+    // Anything still in flight is now stale — clear() means "forget this".
+    _requestId++;
     state = const RouteState();
   }
 
   /// Loads a previously saved destination straight from its coordinates
   /// (no re-parsing/network resolve needed) and kicks off route planning.
   void selectSaved(SavedLocation location) {
+    final requestId = ++_requestId;
     final destination = SharedLocation(name: location.name, lat: location.lat, lng: location.lng);
     state = state.copyWith(destination: destination, clearRoute: true, clearError: true);
-    unawaited(_fetchRoute(destination));
+    unawaited(_fetchRoute(destination, requestId));
   }
 
   /// Adopts a destination + route already resolved elsewhere (the route
   /// preview screen's alternative picker) instead of fetching one, then
   /// [sendToDash] can be called right away.
   void selectRoute(SharedLocation destination, nav.Route route) {
+    // Adopting a finished route also supersedes anything still resolving.
+    _requestId++;
     state = state.copyWith(destination: destination, route: route, clearError: true);
   }
 
@@ -110,11 +124,12 @@ class RouteController extends Notifier<RouteState> {
     ref.read(savedDestinationsControllerProvider.notifier).save(d!.name, d.lat!, d.lng!);
   }
 
-  Future<void> _resolveAndRoute(SharedLocation parsed) async {
+  Future<void> _resolveAndRoute(SharedLocation parsed, int requestId) async {
     var destination = parsed;
     if (parsed.needsExpansion && parsed.url != null) {
       state = state.copyWith(resolving: true);
       final (coords, name) = await LocationParser.resolve(parsed.url!);
+      if (requestId != _requestId) return; // superseded while resolving
       destination = SharedLocation(
         name: name ?? parsed.name,
         lat: coords?.$1,
@@ -130,13 +145,14 @@ class RouteController extends Notifier<RouteState> {
       return;
     }
 
-    await _fetchRoute(destination);
+    await _fetchRoute(destination, requestId);
   }
 
-  Future<void> _fetchRoute(SharedLocation destination) async {
+  Future<void> _fetchRoute(SharedLocation destination, int requestId) async {
     state = state.copyWith(resolving: true, clearError: true);
     try {
       final origin = await currentPosition();
+      if (requestId != _requestId) return;
       if (origin == null) {
         state = state.copyWith(resolving: false, error: const RouteError(RouteErrorKind.noGpsFix));
         return;
@@ -145,11 +161,13 @@ class RouteController extends Notifier<RouteState> {
         origin,
         GeoPoint(destination.lat!, destination.lng!),
       );
+      if (requestId != _requestId) return;
       state = state.copyWith(route: route, resolving: false, clearError: route != null);
       if (route == null) {
         state = state.copyWith(error: const RouteError(RouteErrorKind.routingFailedConnection));
       }
     } catch (e) {
+      if (requestId != _requestId) return;
       state = state.copyWith(
         resolving: false,
         error: RouteError(RouteErrorKind.routingFailedDetail, detail: '$e'),

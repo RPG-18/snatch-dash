@@ -55,10 +55,18 @@ class DashSession(private val scope: CoroutineScope) {
         _state.value = next
     }
 
-    private var socket: DashSocket? = null
+    // Touched from Main (disconnect), IO (runSession/rxJob) and Default (sendRtp off the
+    // stream loop), so the write that clears it on teardown has to be visible to the others.
+    @Volatile private var socket: DashSocket? = null
     private var auth: DashAuth? = null
     @Volatile private var authConfirmed = false
-    @Volatile private var authRetries = 0
+
+    /**
+     * Retries of the `authRequest` handshake step after the dash answers `07 01` with a
+     * rejection — a session-local counter, distinct from [DashEngineController]'s own
+     * `authRetries`, which counts whole re-handshakes driven from its sessionWatchJob.
+     */
+    @Volatile private var authRejectRetries = 0
 
     var onButton: ((Byte) -> Unit)? = null
     var onError:  ((String) -> Unit)? = null
@@ -163,6 +171,13 @@ class DashSession(private val scope: CoroutineScope) {
 
     fun startStreaming() {
         if (_state.value != DashState.READY) return
+        // A live socket is as much a precondition as the state is: READY only means the
+        // handshake finished, and a teardown racing the tail of runSession can leave the
+        // state saying READY with nothing underneath it.
+        if (socket == null) {
+            DebugLog.w(TAG) { "startStreaming() with no socket — session was torn down" }
+            return
+        }
         setState(DashState.STREAMING)
         launchProjectionHeartbeat()
         launchRouteCardKeepAlive()
@@ -223,7 +238,7 @@ class DashSession(private val scope: CoroutineScope) {
 
             auth = DashAuth(ssid)
             authConfirmed = false
-            authRetries = 0
+            authRejectRetries = 0
             idrAckCount.set(0); pFrameAckCount.set(0)
             lastLoggedIdrAcks = 0; lastLoggedPFrameAcks = 0
             loggedFirstIdrAck = false
@@ -257,6 +272,19 @@ class DashSession(private val scope: CoroutineScope) {
 
             // Always nav-mode entry now, idle or not — see enterIdleProjectionMode's doc.
             enterNavMode(sock)
+            // Cancellation is cooperative and [enterNavMode]'s last suspension point is a
+            // delay() several synchronous sends before this line, so a disconnect() landing in
+            // that window would otherwise still flip the state to READY over an already
+            // torn-down session. That matters because it is not merely a stale flag: the
+            // sessionWatchJob collector (alive whenever the teardown came from wifiWatchJob
+            // rather than the user) answers READY with startStream() -> STREAMING, which
+            // cancels the give-up timer AND makes the guard in [connect] reject every later
+            // reconnect, wedging the session for the rest of the ride.
+            currentCoroutineContext().ensureActive()
+            if (socket !== sock) {
+                DebugLog.w(TAG) { "Session torn down during nav-mode entry — not signalling READY" }
+                return
+            }
             setState(DashState.READY)
 
         } catch (e: Exception) {
@@ -342,7 +370,11 @@ class DashSession(private val scope: CoroutineScope) {
                     // crashing the app; DashWifiManager handles reconnect.
                     DebugLog.w(TAG) { "RX loop stopped — socket error: ${e.message}" }
                     RideDiagnostics.log("error", "RX loop stopped — socket error: ${e.message}")
-                    onError?.invoke("Lost connection to dash")
+                    // A deliberate disconnect() closes the socket out from under this blocking
+                    // receive(), so this exception is the EXPECTED way the loop ends there.
+                    // Reporting it would republish state with the explicitDisconnect flag back
+                    // to false and leave a "Lost connection" error hanging after a clean stop.
+                    reportLinkLost()
                     break
                 }
                 if (pkt == null) {
@@ -367,9 +399,34 @@ class DashSession(private val scope: CoroutineScope) {
                     continue
                 }
                 lastRxAtMs = System.currentTimeMillis()
-                dispatchIncoming(pkt, sock)
+                // Nothing downstream of here may escape: this coroutine's parent is the
+                // plugin-wide scope, so an uncaught throw would cancel every other dash
+                // coroutine with it and reach Android's default handler. Malformed or
+                // hostile input (e.g. an over-long SSID overflowing the RSA block in
+                // DashAuth.buildKeyPacket) must fail this session, not the whole engine.
+                try {
+                    dispatchIncoming(pkt, sock)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    DebugLog.e(TAG, { "Error handling incoming packet" }, e)
+                    fail("${e.javaClass.simpleName}: ${e.message}")
+                    break
+                }
             }
         }
+    }
+
+    /**
+     * Surfaces a link loss to [onError], unless the session is already IDLE — which means
+     * [disconnect] got there first and this is just the teardown being observed, not a drop.
+     */
+    private fun reportLinkLost() {
+        if (_state.value == DashState.IDLE) {
+            DebugLog.i(TAG) { "RX loop ended after an explicit disconnect — not reporting" }
+            return
+        }
+        onError?.invoke("Lost connection to dash")
     }
 
     private fun dispatchIncoming(pkt: ByteArray, sock: DashSocket) {
@@ -393,11 +450,11 @@ class DashSession(private val scope: CoroutineScope) {
                     }
                     AuthEvent.Confirmed -> { authConfirmed = true }
                     AuthEvent.Rejected -> {
-                        authRetries++
-                        DebugLog.w(TAG) { "Auth rejected — retry #$authRetries" }
-                        RideDiagnostics.log("auth", "REJECTED — retry #$authRetries")
+                        authRejectRetries++
+                        DebugLog.w(TAG) { "Auth rejected — retry #$authRejectRetries" }
+                        RideDiagnostics.log("auth", "REJECTED — retry #$authRejectRetries")
                         auth?.reset()
-                        if (authRetries <= 5) sock.send(DashCommands.authRequest())
+                        if (authRejectRetries <= 5) sock.send(DashCommands.authRequest())
                     }
                     else -> {}
                 }

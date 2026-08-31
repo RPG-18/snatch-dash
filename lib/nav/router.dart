@@ -19,9 +19,9 @@ import 'route.dart';
 /// computed [Maneuver.roundaboutClockwise] (see [_roundaboutClockwise])
 /// since Yandex's SDK doesn't expose rotation direction directly but the
 /// dash's glyph set needs it. Dash glyph bytes themselves (`Maneuver.dashCode`)
-/// come from the real Royal Enfield app's maneuver table — not yet
-/// hardware-verified against this port's dash beyond `0x0B`, see that
-/// getter's doc.
+/// come from the real Royal Enfield app's maneuver table, since verified
+/// against this port's dash for the plain turns and the clockwise roundabout
+/// row — see that getter's doc for what is still unconfirmed.
 ///
 /// The official SDK's router is listener-based, not `Future`-based like the
 /// old `yandex_mapkit` community plugin — [route] wraps

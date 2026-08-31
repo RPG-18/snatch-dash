@@ -7,7 +7,11 @@ import 'package:opendash_dash_engine/opendash_dash_engine.dart';
 /// `lib/nav/route.dart`'s `Maneuver.dashCode`): cycles the raw byte the K1G
 /// protocol writes into `activeNavPacket`'s `05 02` field, so its rendered
 /// icon can be read off a physical dash and matched to a [ManeuverType].
-/// Only `0x0B` (CONTINUE) is hardware-verified so far.
+/// Hardware-confirmed so far (2026-08-15 sweep): the plain straight/left/
+/// right/sharp/slight turns (`0x09`, `0x14`..`0x19`) and the whole clockwise
+/// roundabout row (`0x0A`..`0x13`, `0x46`..`0x4F`) — see `spec/glyph.md`.
+/// Note `0x0B` is "roundabout, clockwise, exit 1", NOT the neutral
+/// straight-ahead glyph the upstream open-dash project assumed it was.
 ///
 /// Reuses the existing `setDestination`/`setNavState` plugin API end to
 /// end — no native code needed, this just drives it with a throwaway
@@ -32,7 +36,7 @@ class ManeuverGlyphProbe extends StatefulWidget {
 }
 
 class _ManeuverGlyphProbeState extends State<ManeuverGlyphProbe> {
-  int _byte = 0x0B;
+  int _byte = 0x09; // straight ahead — the neutral glyph, a sane starting point
   bool _navStarted = false;
 
   Future<void> _startTestNav() async {

@@ -2,6 +2,7 @@ package com.opendash.opendash_dash_engine
 
 import androidx.annotation.NonNull
 import com.opendash.opendash_dash_engine.dash.map.GeoPoint
+import com.opendash.opendash_dash_engine.dash.protocol.DashCommands
 import com.opendash.opendash_dash_engine.util.DebugLog
 import io.flutter.embedding.engine.plugins.FlutterPlugin
 import io.flutter.plugin.common.EventChannel
@@ -9,9 +10,10 @@ import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import io.flutter.plugin.common.MethodChannel.MethodCallHandler
 import io.flutter.plugin.common.MethodChannel.Result
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 
@@ -46,8 +48,16 @@ class OpendashDashEnginePlugin : FlutterPlugin, MethodCallHandler, EventChannel.
         override fun onCancel(arguments: Any?) { logSink = null }
     }
 
-    private val job = Job()
-    private val scope = CoroutineScope(Dispatchers.Main + job)
+    // SupervisorJob + a handler, deliberately: with a plain Job a single uncaught throw in any
+    // dash coroutine cancels this scope for good — and a cancelled Job cannot be reused, so
+    // every later launch() silently no-ops and the engine is dead until the process restarts.
+    // The handler also keeps such a throw off Android's default handler, which would crash the
+    // app mid-ride.
+    private val job = SupervisorJob()
+    private val exceptionHandler = CoroutineExceptionHandler { _, e ->
+        DebugLog.e("DashEnginePlugin", { "Uncaught exception in dash coroutine" }, e)
+    }
+    private val scope = CoroutineScope(Dispatchers.Main + job + exceptionHandler)
     private var controller: DashEngineController? = null
 
     override fun onAttachedToEngine(binding: FlutterPlugin.FlutterPluginBinding) {
@@ -118,7 +128,7 @@ class OpendashDashEnginePlugin : FlutterPlugin, MethodCallHandler, EventChannel.
                 c.setNavState(
                     remainingMeters = call.argument<Double>("remainingMeters"),
                     nextTurnMeters = call.argument<Double>("nextTurnMeters"),
-                    maneuver = call.argument<Int>("maneuver") ?: 0x0B,
+                    maneuver = call.argument<Int>("maneuver") ?: DashCommands.NAV_MANEUVER_STRAIGHT,
                     etaHHMM = call.argument<String>("etaHHMM"),
                     isOffRoute = call.argument<Boolean>("offRoute") ?: false,
                     points = rawPoints.map { GeoPoint(it[0], it[1]) },

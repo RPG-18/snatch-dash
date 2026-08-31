@@ -6,6 +6,7 @@ import 'package:yandex_maps_mapkit/init.dart' as ymk;
 import 'package:yandex_maps_mapkit/mapkit_factory.dart' show mapkit;
 
 import 'l10n/app_localizations.dart';
+import 'nav/voice_manager.dart';
 import 'router/app_router.dart';
 import 'state/dash_button_controller.dart';
 import 'state/dash_connection_alert_controller.dart';
@@ -25,6 +26,10 @@ void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await attachPersistentLog();
   await initializeDateFormatting();
+  // Restores the saved voice mode. Without this the manager keeps its initial
+  // VoiceMode.chime forever — nothing else calls load() — so FULL (spoken
+  // turn-by-turn) and OFF were both unreachable no matter what was persisted.
+  await VoiceManager.instance.load();
   await ymk.initMapkit(apiKey: _yandexApiKey);
   // MapKit stays idle — search/routing requests never leave the device —
   // until onStart() is called, mirroring Activity.onStart()/onStop() on the

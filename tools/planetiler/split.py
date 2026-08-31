@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Режет скачанные .osm.pbf на extracts/*.osm.pbf.
 
-mode: subjects — запускает `osmium extract --strategy=smart -c <iso>-extracts.json`
-                 по конфигу, собранному build_extract_config.py.
+mode: subjects — по одному вызову `osmium extract --strategy=smart -p <полигон>`
+                 на каждый субъект из конфига, собранного build_extract_config.py
+                 (конфиг читается как список экстрактов, а не передаётся в -c —
+                 почему именно так, см. докстринг split_subjects).
 mode: whole     — нарезка не нужна вообще, скачанный файл копируется как есть
                  в extracts/<iso>.osm.pbf — Geofabrik уже обрезал его по стране.
 

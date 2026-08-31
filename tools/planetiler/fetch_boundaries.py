@@ -46,6 +46,20 @@ RETRY_DELAY_SECONDS = 5.0
 POLITE_DELAY_SECONDS = 1.0  # пауза между запросами по отдельным релациям — не долбить публичный Overpass
 
 
+class OverpassPartialResult(RuntimeError):
+    """Overpass отдал HTTP 200 с обрезанным ответом.
+
+    При таймауте/переполнении памяти Overpass не возвращает код ошибки: он
+    отдаёт 200 и синтаксически валидный JSON, где часть `elements` просто
+    отсутствует, а в поле `remark` лежит текст вроде «runtime error: Query
+    timed out». Без этой проверки такой ответ уезжает дальше по конвейеру как
+    нормальная граница: build_osm_xml пишет .osm из неполного набора путей,
+    osmium собирает из него рваный полигон, и субъект молча теряет часть
+    территории — города вместе с building/housenumber/place. Ровно так из
+    сборки 2026-08-31 выпал Курган; проверка на готовых паках — validate_packs.py.
+    """
+
+
 def query_overpass(query: str, url: str, timeout: int) -> dict[str, Any]:
     data = urllib.parse.urlencode({"data": query}).encode("utf-8")
     req = urllib.request.Request(url, data=data, headers={"User-Agent": "snatch-dash-planetiler/1.0"})
@@ -53,8 +67,12 @@ def query_overpass(query: str, url: str, timeout: int) -> dict[str, Any]:
     for attempt in range(1, REQUEST_RETRIES + 1):
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
-                return json.load(resp)
-        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+                result = json.load(resp)
+            remark = result.get("remark")
+            if remark:
+                raise OverpassPartialResult(remark)
+            return result
+        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OverpassPartialResult) as exc:
             last_error = exc
             log.warning("Overpass запрос неудачен (попытка %d/%d): %s", attempt, REQUEST_RETRIES, exc)
             if attempt < REQUEST_RETRIES:
@@ -195,7 +213,16 @@ def process_country(country: common.Country, overpass_url: str, out_dir: Path, f
             continue
 
         log.info("[%d/%d] Тяну границу %s (%s, релация %s)...", i, total, iso_code, name, rel["id"])
-        closure = fetch_relation_closure(rel["id"], overpass_url)
+        try:
+            closure = fetch_relation_closure(rel["id"], overpass_url)
+        except OverpassPartialResult as exc:
+            # Обрезанный ответ пережил все ретраи. Пропускаем регион целиком, а не
+            # пишем неполную границу: лучше отсутствующий субъект (его видно в
+            # итоговом счётчике и в validate_packs.py), чем субъект, тихо
+            # собранный по рваному полигону.
+            log.error("[%d/%d] %s (%s): Overpass отдал неполный ответ — %s. Пропускаю, перезапустите с --force", i, total, iso_code, name, exc)
+            skipped += 1
+            continue
         elements = closure.get("elements", [])
         if not elements:
             log.warning("Пустой ответ Overpass для релации %s (%s), пропускаю", rel["id"], name)

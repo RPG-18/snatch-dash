@@ -38,6 +38,29 @@ def require_osmium() -> str:
     return path
 
 
+# Ширина bbox, при которой считаем, что полигон/экстракт пересекает 180-й меридиан.
+# Мир в градусах долготы — 360; граница субъекта, которая тянется почти во всю
+# ширину (max_lon - min_lon > 350), на самом деле «заворачивается» через ±180
+# (например, Чукотка: 157°..180° и -180°..-169°). Обычный субъект РФ шире ~120°
+# не бывает, так что порог 350 надёжно отделяет антимеридиан от «просто широкого».
+ANTIMERIDIAN_WIDTH = 350.0
+
+
+def get_bbox(osmium_bin: str, path: Path) -> tuple[float, float, float, float]:
+    """bbox файла через `osmium fileinfo -e -g data.bbox` -> (min_lon, min_lat, max_lon, max_lat)."""
+    out = subprocess.run(
+        [osmium_bin, "fileinfo", "-e", "-g", "data.bbox", str(path)],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    # формат вывода: "(-180,59.3614294,180,77.112826)"
+    nums = out.strip("()").split(",")
+    return (float(nums[0]), float(nums[1]), float(nums[2]), float(nums[3]))
+
+
+def crosses_antimeridian(bbox: tuple[float, float, float, float]) -> bool:
+    return (bbox[2] - bbox[0]) > ANTIMERIDIAN_WIDTH
+
+
 def split_subjects(country: common.Country, extracts_dir: Path, osmium_bin: str, strategy: str) -> None:
     """Нарезает на субъекты по одному вызову `osmium extract -p` на каждый.
 
@@ -47,6 +70,11 @@ def split_subjects(country: common.Country, extracts_dir: Path, osmium_bin: str,
     обычной машине (см. MEMORY USAGE в `osmium help extract`). По одному экстракту
     на вызов — это `1 × (макс_ид/8) ≈ 1.5 ГБ`, но исходник перечитывается N раз
     (медленнее, зато работает). Возобновляемо: уже готовые `<output>` пропускаются.
+
+    Полигон, пересекающий 180-й меридиан (Чукотка), режется на две части по 0°
+    долготы — `<code>.osm.pbf` (запад) и `<code>-east.osm.pbf` (восток), иначе
+    planetiler увидел бы bbox шириной во весь мир и сгенерировал бы океанские тайлы
+    через все 360° долготы.
     """
     config_path = extracts_dir / f"{country.iso}-extracts.json"
     if not config_path.exists():
@@ -68,16 +96,48 @@ def split_subjects(country: common.Country, extracts_dir: Path, osmium_bin: str,
     for i, ex in enumerate(extracts, start=1):
         output = directory / ex["output"]
         polygon = Path(ex["polygon"]["file_name"])
-        if output.exists() and output.stat().st_size > 0:
-            log.info("[%d/%d] %s уже существует, пропускаю", i, total, output.name)
+
+        # Полигон, пересекающий 180-й меридиан (Чукотка), разрезается на две части:
+        # `<code>.osm.pbf` (запад, lon >= 0) и `<code>-east.osm.pbf` (восток, lon <= 0).
+        # Без разреза planetiler увидел бы bbox шириной во весь мир (-180..180) и
+        # сгенерировал бы тайлы через все 360° долготы — в основном пустой океан.
+        crosses = crosses_antimeridian(get_bbox(osmium_bin, polygon))
+        east_output = output.with_name(f"{output.stem}-east{output.suffix}")
+
+        expected = [output] + ([east_output] if crosses else [])
+        if all(p.exists() and p.stat().st_size > 0 for p in expected):
+            names = " + ".join(p.name for p in expected)
+            log.info("[%d/%d] %s уже существует, пропускаю", i, total, names)
             skipped += 1
             continue
-        log.info("[%d/%d] %s <- %s", i, total, output.name, polygon.name)
-        cmd = [
-            osmium_bin, "extract", f"--strategy={strategy}", "--progress", "--overwrite",
-            "-p", str(polygon), "-o", str(output), str(source),
-        ]
-        subprocess.run(cmd, check=True)
+
+        if not crosses:
+            log.info("[%d/%d] %s <- %s", i, total, output.name, polygon.name)
+            cmd = [
+                osmium_bin, "extract", f"--strategy={strategy}", "--progress", "--overwrite",
+                "-p", str(polygon), "-o", str(output), str(source),
+            ]
+            subprocess.run(cmd, check=True)
+        else:
+            log.info(
+                "[%d/%d] %s <- %s (пересекает 180-й меридиан, разрезаю на запад/восток)",
+                i, total, output.name, polygon.name,
+            )
+            tmp = output.with_name(f"{output.stem}.full{output.suffix}")
+            subprocess.run([
+                osmium_bin, "extract", f"--strategy={strategy}", "--progress", "--overwrite",
+                "-p", str(polygon), "-o", str(tmp), str(source),
+            ], check=True)
+            # Разрез по Гринвичу (0°): у антимеридианного субъекта данные только у ±180,
+            # поэтому 0° всегда лежит в «пустом» зазоре между западной и восточной частями.
+            # complete_ways, а не smart: smart дотащил бы целиком реляции, пересекающие
+            # антимеридиан, и снова раздул бы bbox до полной ширины мира.
+            for split_lon_range, dest in (("0,-90,180,90", output), ("-180,-90,0,90", east_output)):
+                subprocess.run([
+                    osmium_bin, "extract", "--strategy=complete_ways", "--overwrite",
+                    "-b", split_lon_range, "-o", str(dest), str(tmp),
+                ], check=True)
+            tmp.unlink(missing_ok=True)
         done += 1
     log.info("%s: готово — нарезано %d, пропущено (уже были) %d.", country.iso, done, skipped)
 

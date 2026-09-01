@@ -20,8 +20,24 @@ defaults:
   # если те не переопределили этот флаг ниже.
   languages: ru,en          # приложение двуязычное (RU/EN, см. lib/l10n/), иначе тянет name:* на всех языках
   maxzoom: 14               # потолок детализации схемы OpenMapTiles
-  simplify_tolerance: 0.1   # дефолт planetiler (в пикселях); завышается на крупных малонаселённых субъектах
-  # exclude_layers: [landcover]  # по умолчанию слой не отключается — раскомментировать, чтобы отключить глобально
+  simplify_tolerance: 0.1   # дефолт planetiler (в пикселях); поднимается до 0.5 на водных субъектах ниже
+
+  # Слои отключаются ГЛОБАЛЬНО, а не по субъектам (рекомендации 1 и 2
+  # minimization_ru.md по честной сборке 2026-09-01). Раньше этот список стоял
+  # у 16 крупнейших субъектов; на честных данных выяснилось, что для остальных
+  # 67 он такой же уместный, а не «мелочь, которой можно пренебречь»:
+  #   landcover — 20.5% байтов корпуса, слой №1. На экране дэша 526x300 это фон,
+  #     а не навигация: заливку фона даёт сам рендер.
+  #   housenumber — 1.7%. Номера домов на дэше нечитаемы при любом зуме.
+  #   water_name / mountain_peak — 3.8% вместе. Подписи озёр и вершин на дэше
+  #     бесполезны, а весят до 16.5% пака (ru-kc), 13.5% (ru-mur), 11% (ru-kk):
+  #     это не только тайга, но и Кавказ с Саянами, поэтому список глобальный.
+  # Вместе 22.2% несжатых байт. Пересборка 2026-09-01 (вечер) с этим списком и
+  # упрощением ниже дала -28.7%: 6.08 -> 4.34 ГиБ, 84/84 паков прошли проверку.
+  #
+  # ВАЖНО: списки не сливаются. Если субъекту понадобится свой exclude_layers,
+  # его придётся выписать целиком, вместе с этими четырьмя слоями.
+  exclude_layers: [landcover, housenumber, water_name, mountain_peak]
 
 # Переопределение для всей страны. Ключ = iso из regions.yaml (ru, by, …).
 # Пример:
@@ -32,146 +48,213 @@ countries: {}
 # Переопределение для отдельного субъекта. Ключ = код региона (ru-sa, ru-chu, …);
 # для стран mode: whole ключ — просто iso (by). Приоритет выше, чем у countries.
 #
-# Ниже заполнены все 16 субъектов, у которых сборка от 2026-08-30 дала .pmtiles
-# крупнее 70 МиБ — это было 2.20 ГиБ из 3.76 ГиБ всего корпуса. Что отключать,
-# выбрано не на глаз: доли байтов по слоям посчитаны прямо из собранных .pmtiles
-# (разбор PMTiles v3 + MVT), они и приведены в комментариях к каждому субъекту.
+# Слоёв здесь больше нет — они отключены глобально выше. Осталось упрощение
+# геометрии: единственный рычаг для субъектов, где вес делает вода, а её
+# отключать нельзя (рекомендация 3 minimization_ru.md).
 #
-# Цифры «было -> стало» — фактические, по пересборке от 2026-08-31 (не прогноз):
-# по этим 16 субъектам 2.20 -> 1.14 ГиБ (-48%), по всему корпусу 3.76 -> 2.71 ГиБ
-# (-28%, см. [`minimization_ru.md`](./minimization_ru.md)). Остальные 67 субъектов собраны с дефолтами и
-# совпали с прежними размерами до 0.1 МиБ.
-#
-# Почему именно эти флаги:
-#   exclude_layers — единственный крупный рычаг. `landcover` (лес/луг/болото,
-#     фоновая заливка) почти везде слой №1: 26-60% байтов файла. На экране дэша
-#     526x300 это фон, а не навигационная информация.
-#   `water`/`waterway` не отключаются нигде, хотя в Якутии это 66% веса, а на
-#     Чукотке 95%: озёра и реки — ориентиры, без них карта врёт.
-#   `housenumber` — номера домов; на дэше нечитаемы, в плотных субъектах до 6%.
-#   `water_name`/`mountain_peak` — подписи озёр и вершин: в тайге и на Алтае их
-#     тысячи (13% у ru-al), на дэше пользы нет.
 #   simplify_tolerance: 0.5 — работает ТОЛЬКО ниже maxzoom (в planetiler
 #     tolerance(z) = z >= maxzoom ? simplify_tolerance_at_max_zoom : simplify_tolerance),
-#     а z9-z13 — это 45-55% байтов. Замер Дугласом-Пекером по реальной геометрии
-#     (water/waterway/transportation/boundary): при 0.5 на z12 остаётся 45-57%
-#     вершин, на z13 — 54-85%. Полпикселя на обзорных зумах глазом не видно.
-#     На landcover/landuse/building этот флаг НЕ влияет — они зовут
-#     setPixelTolerance сами (org/openmaptiles/layers/*), но их мы и так режем.
-#   simplify_tolerance_at_max_zoom: 0.5 — только там, где вода даёт больше
-#     трети веса. Дефолт 0.0625 px planetiler держит «под оверзум»; при оверзуме
-#     с z14 до z17 полпикселя превращаются в 0.06 px, то есть незаметны.
-#     По факту пересборки оба флага упрощения вместе дали сверх отключения слоёв
-#     ещё 2-22% (медиана 8%): больше всего на Ленинградской области (22%) и
-#     Хабаровском крае (18%), меньше всего на Кировской (2%), где почти весь вес
-#     и так уносил landcover. То есть упрощение — добивка, рычаг всё равно
-#     exclude_layers.
+#     а z9-z13 — это 46% байтов корпуса. Замер Дугласом-Пекером по реальной
+#     геометрии: при 0.5 на z12 остаётся 45-57% вершин, на z13 — 54-85%.
+#     Полпикселя на обзорных зумах глазом не видно. Флаг действует на все слои,
+#     кроме landcover/landuse/building — только эти три зовут setPixelTolerance
+#     сами (проверено по org/openmaptiles/layers/* в planetiler.jar), но их мы и
+#     так режем.
+#   simplify_tolerance_at_max_zoom: 0.5 — дефолт 0.0625 px planetiler держит
+#     «под оверзум»; при оверзуме с z14 до z17 полпикселя превращаются в 0.06 px,
+#     то есть незаметны.
 #
+# Порог отбора — water + waterway > 40% веса пака ПОСЛЕ глобального
+# exclude_layers (на исходном составе доли несопоставимы: у уже настроенных
+# субъектов landcover был вырезан, у остальных нет). Проценты в комментариях —
+# именно эта доля, размер — файла сборки 2026-09-01 до чистки слоёв.
+
+subjects:
+  # --- Вода > 40% веса: оба флага упрощения ---
+
+  # Ненецкий АО: вода 90.2%, пак 95.4 МиБ
+  ru-nen:
+    simplify_tolerance: 0.5
+    simplify_tolerance_at_max_zoom: 0.5
+
+  # Чукотка, запад: вода 84.5%, пак 79.2 МиБ
+  ru-chu:
+    simplify_tolerance: 0.5
+    simplify_tolerance_at_max_zoom: 0.5
+
+  # Чукотка, восток: вода 78.9%, пак 41.3 МиБ
+  ru-chu-east:
+    simplify_tolerance: 0.5
+    simplify_tolerance_at_max_zoom: 0.5
+
+  # Мурманская: вода 78.2%, пак 140.0 МиБ
+  ru-mur:
+    simplify_tolerance: 0.5
+    simplify_tolerance_at_max_zoom: 0.5
+
+  # Ямало-Ненецкий АО: вода 77.4%, пак 146.5 МиБ
+  ru-yan:
+    simplify_tolerance: 0.5
+    simplify_tolerance_at_max_zoom: 0.5
+
+  # Якутия: вода 75.9%, пак 347.2 МиБ
+  ru-sa:
+    simplify_tolerance: 0.5
+    simplify_tolerance_at_max_zoom: 0.5
+
+  # Красноярский край: вода 70.3%, пак 357.1 МиБ
+  ru-kya:
+    simplify_tolerance: 0.5
+    simplify_tolerance_at_max_zoom: 0.5
+
+  # Камчатский край: вода 69.2%, пак 89.7 МиБ
+  ru-kam:
+    simplify_tolerance: 0.5
+    simplify_tolerance_at_max_zoom: 0.5
+
+  # Ханты-Мансийский АО: вода 66.5%, пак 198.0 МиБ
+  ru-khm:
+    simplify_tolerance: 0.5
+    simplify_tolerance_at_max_zoom: 0.5
+
+  # Карелия: вода 64.7%, пак 97.1 МиБ
+  ru-kr:
+    simplify_tolerance: 0.5
+    simplify_tolerance_at_max_zoom: 0.5
+
+  # Сахалинская: вода 63.9%, пак 71.1 МиБ
+  ru-sak:
+    simplify_tolerance: 0.5
+    simplify_tolerance_at_max_zoom: 0.5
+
+  # Хабаровский край: вода 63.3%, пак 93.1 МиБ
+  ru-kha:
+    simplify_tolerance: 0.5
+    simplify_tolerance_at_max_zoom: 0.5
+
+  # Магаданская: вода 63.1%, пак 47.8 МиБ
+  ru-mag:
+    simplify_tolerance: 0.5
+    simplify_tolerance_at_max_zoom: 0.5
+
+  # Архангельская: вода 58.0%, пак 235.3 МиБ
+  ru-ark:
+    simplify_tolerance: 0.5
+    simplify_tolerance_at_max_zoom: 0.5
+
+  # Республика Алтай: вода 56.0%, пак 38.6 МиБ
+  ru-al:
+    simplify_tolerance: 0.5
+    simplify_tolerance_at_max_zoom: 0.5
+
+  # Калининградская: вода 55.7%, пак 55.8 МиБ
+  ru-kgd:
+    simplify_tolerance: 0.5
+    simplify_tolerance_at_max_zoom: 0.5
+
+  # Коми: вода 54.8%, пак 86.4 МиБ
+  ru-ko:
+    simplify_tolerance: 0.5
+    simplify_tolerance_at_max_zoom: 0.5
+
+  # Еврейская АО: вода 49.7%, пак 14.7 МиБ
+  ru-yev:
+    simplify_tolerance: 0.5
+    simplify_tolerance_at_max_zoom: 0.5
+
+  # Тыва: вода 47.2%, пак 24.5 МиБ
+  ru-ty:
+    simplify_tolerance: 0.5
+    simplify_tolerance_at_max_zoom: 0.5
+
+  # Ленинградская: вода 46.3%, пак 120.3 МиБ
+  ru-len:
+    simplify_tolerance: 0.5
+    simplify_tolerance_at_max_zoom: 0.5
+
+  # Забайкальский край: вода 44.5%, пак 66.7 МиБ
+  ru-zab:
+    simplify_tolerance: 0.5
+    simplify_tolerance_at_max_zoom: 0.5
+
+  # Бурятия: вода 44.3%, пак 58.9 МиБ
+  ru-bu:
+    simplify_tolerance: 0.5
+    simplify_tolerance_at_max_zoom: 0.5
+
+  # Калмыкия: вода 44.2%, пак 20.1 МиБ
+  ru-kl:
+    simplify_tolerance: 0.5
+    simplify_tolerance_at_max_zoom: 0.5
+
+  # Томская: вода 43.2%, пак 65.0 МиБ
+  ru-tom:
+    simplify_tolerance: 0.5
+    simplify_tolerance_at_max_zoom: 0.5
+
+  # Амурская: вода 40.0%, пак 52.2 МиБ
+  ru-amu:
+    simplify_tolerance: 0.5
+    simplify_tolerance_at_max_zoom: 0.5
+
+  # Иркутская: вода 37.7%, пак 88.1 МиБ
+  # ниже порога (37.7%), но флаги стоят с 2026-08-31 — не снимаем, это работающая экономия
+  ru-irk:
+    simplify_tolerance: 0.5
+    simplify_tolerance_at_max_zoom: 0.5
+
+  # --- Вода ниже порога, но simplify_tolerance стоит с 2026-08-31 ---
+  # Это уже проверенная экономия на z9-z13, снимать её незачем;
+  # simplify_tolerance_at_max_zoom им не добавляем — на z14 у них вес
+  # делает не вода, а дороги и застройка, где полпикселя уже видно.
+
+  # Кировская: вода 37.3%, пак 63.5 МиБ
+  ru-kir:
+    simplify_tolerance: 0.5
+
+  # Алтайский край: вода 34.1%, пак 85.3 МиБ
+  ru-alt:
+    simplify_tolerance: 0.5
+
+  # Новосибирская: вода 22.2%, пак 53.4 МиБ
+  ru-nvs:
+    simplify_tolerance: 0.5
+
+  # Башкортостан: вода 19.7%, пак 88.0 МиБ
+  ru-ba:
+    simplify_tolerance: 0.5
+
+  # Татарстан: вода 18.5%, пак 68.3 МиБ
+  ru-ta:
+    simplify_tolerance: 0.5
+
+  # Ростовская: вода 17.9%, пак 61.9 МиБ
+  ru-ros:
+    simplify_tolerance: 0.5
+
+  # Краснодарский край: вода 16.3%, пак 83.7 МиБ
+  ru-kda:
+    simplify_tolerance: 0.5
+
+  # Воронежская: вода 15.2%, пак 42.2 МиБ
+  ru-vor:
+    simplify_tolerance: 0.5
+
 # Чего здесь намеренно нет:
+#   - `water`/`waterway` не отключаются нигде, хотя на честной сборке в Якутии
+#     это 74% веса, а на Чукотке 82%: озёра и реки — ориентиры, без них карта
+#     врёт. Именно поэтому водным субъектам достаётся упрощение, а не чистка.
 #   - `building`/`poi` не отключены нигде: заправки и силуэты кварталов — это
-#     ориентиры в городе. `building` (12.7% в ru-kda) — первый кандидат, если
-#     после пересборки Краснодар окажется всё ещё великоват.
-#   - maxzoom не понижается, хотя z14 — это 42-63% байтов: ниже 14 геометрия
-#     дорог для пошаговой навигации становится слишком грубой.
+#     ориентиры в городе. `building` (6.1% корпуса, 24% в ru-kda) — первый
+#     кандидат, если корпус придётся ужимать дальше, но это осознанная потеря
+#     городской ориентации, а не бесплатная экономия. Решение за UX.
+#   - maxzoom не понижается, хотя z14 — это 40-79% байтов пака (медиана 53%):
+#     ниже 14 геометрия дорог для пошаговой навигации становится слишком грубой.
 #   - min_feature_size_at_max_zoom не трогается: замер показал, что 99.7% байтов
 #     воды на z14 — объекты крупнее 2 px, срезать по размеру там просто нечего.
-subjects:
-  # --- Тайга/тундра: почти нет застройки, вес делают landcover, вода и реки ---
-
-  # Якутия: 437.4 -> 327.1 МиБ (-25%). Доли до чистки: water 46%, waterway 21%, landcover 11%.
-  ru-sa:
-    exclude_layers: [landcover, water_name, housenumber]
-    simplify_tolerance: 0.5
-    simplify_tolerance_at_max_zoom: 0.5
-
-  # Чукотка: 254.8 -> 24.0 МиБ на обе половины (-91%) — 12.4 запад + 11.6 восток.
-  # Основную часть тут дала не чистка слоёв, а фикс антимеридиана (коммит 9f14fc2):
-  # в старом файле 95% веса были океанскими тайлами через все 360° долготы. Слои
-  # оставлены отключёнными по той же логике, что и у соседей по группе.
-  ru-chu:
-    exclude_layers: [landcover, water_name, housenumber]
-    simplify_tolerance: 0.5
-    simplify_tolerance_at_max_zoom: 0.5
-
-  # Чукотка, восточная половина (lon -180..-156), собрана впервые: 11.6 МиБ.
-  ru-chu-east:
-    exclude_layers: [landcover, water_name, housenumber]
-    simplify_tolerance: 0.5
-    simplify_tolerance_at_max_zoom: 0.5
-
-  # Карелия: 121.7 -> 50.1 МиБ (-59%). Доли до чистки: landcover 43%, water 26%, water_name 9%.
-  ru-kr:
-    exclude_layers: [landcover, water_name, housenumber]
-    simplify_tolerance: 0.5
-    simplify_tolerance_at_max_zoom: 0.5
-
-  # Коми: 111.7 -> 58.0 МиБ (-48%). Доли до чистки: landcover 43%, waterway 23%.
-  ru-ko:
-    exclude_layers: [landcover, water_name, housenumber]
-    simplify_tolerance: 0.5
-    simplify_tolerance_at_max_zoom: 0.5
-
-  # Кировская область: 106.7 -> 40.6 МиБ (-62%). Доли до чистки: landcover 60% — рекорд по корпусу.
-  ru-kir:
-    exclude_layers: [landcover, water_name, housenumber]
-    simplify_tolerance: 0.5
-
-  # Республика Алтай: 82.8 -> 32.0 МиБ (-61%). Доли до чистки: landcover 44%, waterway 19%, mountain_peak 13%.
-  ru-al:
-    exclude_layers: [landcover, water_name, mountain_peak, housenumber]
-    simplify_tolerance: 0.5
-
-  # Иркутская область: 82.7 -> 54.5 МиБ (-34%). Доли до чистки: landcover 26%, waterway 19%, water 14%.
-  ru-irk:
-    exclude_layers: [landcover, water_name, housenumber]
-    simplify_tolerance: 0.5
-    simplify_tolerance_at_max_zoom: 0.5
-
-  # Хабаровский край: 74.0 -> 40.8 МиБ (-45%). Доли до чистки: landcover 30%, water 27%.
-  ru-kha:
-    exclude_layers: [landcover, water_name, housenumber]
-    simplify_tolerance: 0.5
-    simplify_tolerance_at_max_zoom: 0.5
-
-  # --- Населённые: landcover тоже слой №1, но города оставляем как есть ---
-
-  # Ленинградская область: 212.6 -> 110.0 МиБ (-48%). Доли до чистки: water 37%, landcover 34%.
-  ru-len:
-    exclude_layers: [landcover, housenumber]
-    simplify_tolerance: 0.5
-    simplify_tolerance_at_max_zoom: 0.5
-
-  # Башкортостан: 151.5 -> 84.7 МиБ (-44%). Доли до чистки: landcover 38%.
-  ru-ba:
-    exclude_layers: [landcover, housenumber]
-    simplify_tolerance: 0.5
-
-  # Алтайский край: 142.2 -> 70.8 МиБ (-50%). Доли до чистки: landcover 41%.
-  ru-alt:
-    exclude_layers: [landcover, housenumber]
-    simplify_tolerance: 0.5
-
-  # Краснодарский край: 114.1 -> 70.8 МиБ (-38%). Доли до чистки: landcover 27%, building 13%, housenumber 6%.
-  ru-kda:
-    exclude_layers: [landcover, housenumber]
-    simplify_tolerance: 0.5
-
-  # Татарстан: 112.9 -> 68.2 МиБ (-40%). Доли до чистки: landcover 33%.
-  ru-ta:
-    exclude_layers: [landcover, housenumber]
-    simplify_tolerance: 0.5
-
-  # Ростовская область: 90.3 -> 54.8 МиБ (-39%). Доли до чистки: landcover 32%.
-  ru-ros:
-    exclude_layers: [landcover, housenumber]
-    simplify_tolerance: 0.5
-
-  # Новосибирская область: 82.9 -> 42.2 МиБ (-49%). Доли до чистки: landcover 40%.
-  ru-nvs:
-    exclude_layers: [landcover, housenumber]
-    simplify_tolerance: 0.5
-
-  # Воронежская область: 71.3 -> 41.3 МиБ (-42%). Доли до чистки: landcover 38%.
-  ru-vor:
-    exclude_layers: [landcover, housenumber]
-    simplify_tolerance: 0.5
+#
+# История: до 2026-09-01 здесь стояли per-subject exclude_layers у 16 субъектов
+# и цифры «было -> стало» со сборок 2026-08-30/31. Те сборки собирались из
+# урезанных полигонов, их размеры занижены на порядок, а тогдашний «-28%» был
+# артефактом бага — поэтому цифры убраны, а не перенесены. Разбор — в
+# [`minimization_ru.md`](./minimization_ru.md), сами числа — в git history.

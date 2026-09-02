@@ -23,6 +23,7 @@
 | [`planetiler/planetiler.yaml`](./planetiler/planetiler.yaml) | **как** собираем: флаги planetiler на страну/субъект |
 | [`planetiler/minimization_ru.md`](./planetiler/minimization_ru.md) | журнал: какая правка настроек сколько дала по размеру |
 | [`planetiler/validate_packs.py`](./planetiler/validate_packs.py) | проверка готовых паков; там же — какие метрики проверки уже пробовали и почему не работают |
+| [`planetiler/todo.md`](./planetiler/todo.md) | отложенное: что решено сделать по конвейеру, но не сделано |
 | [`README.md`](./README.md) | установка Python / osmium-tool / Java |
 
 Что знать, прежде чем что-то менять:

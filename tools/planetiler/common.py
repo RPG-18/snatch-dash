@@ -1,7 +1,7 @@
 """Общие вещи для скриптов конвейера tools/planetiler/*.py.
 
 Держит только то, что реально переиспользуется несколькими скриптами
-(fetch_boundaries.py / build_extract_config.py / split.py / build_index.py):
+(fetch_boundaries.py / build_pmtiles.py / cut_packs.py / build_index.py):
 загрузку regions.yaml, пути каталогов конвейера, настройку логирования.
 Общая схема конвейера — см. tools/planetiler/README.md.
 """
@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parent
 REGIONS_YAML = ROOT / "regions.yaml"
 DOWNLOADS_DIR = ROOT / "downloads"  # сырые .osm.pbf с Geofabrik — кладутся вручную, не скачиваются скриптами
 POLYGONS_DIR = ROOT / "polygons"  # границы субъектов (.osm), см. fetch_boundaries.py
-EXTRACTS_DIR = ROOT / "extracts"  # промежуточные .osm.pbf по стране/субъекту
+FULL_DIR = ROOT / "full"  # сборка целиком по стране: full/<iso>.pmtiles, из неё режутся паки
 OUT_DIR = ROOT / "out"  # итоговые .pmtiles + index.json
 
 
@@ -31,11 +31,6 @@ class Country:
     source: Optional[str] = None
     subject_admin_level: Optional[int] = None
     note: Optional[str] = None
-
-    @property
-    def download_path(self) -> Path:
-        """Куда скрипты ожидают найти скачанный вручную .osm.pbf для этой страны."""
-        return DOWNLOADS_DIR / f"{self.iso}-latest.osm.pbf"
 
 
 def load_countries(path: Path = REGIONS_YAML) -> list[Country]:

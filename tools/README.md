@@ -9,17 +9,19 @@
 
 ## Окружение
 
-Три внешние вещи нужны, чтобы прогнать конвейер `tools/planetiler/*`
-целиком: **Python** (сами скрипты), **osmium-tool** (`split.py` режет
-`.osm.pbf` через него) и **Java + planetiler.jar** (`build_pmtiles.py`).
-Ниже — как поставить каждую на Linux/macOS/Windows. Версии, на которых
-конвейер реально прогонялся целиком: Python 3.14, osmium-tool 1.19.1,
-OpenJDK 21.0.12 (macOS 26.6, Apple M3 Pro).
+Четыре внешние вещи нужны, чтобы прогнать конвейер `tools/planetiler/*`
+целиком: **Python** (сами скрипты), **osmium-tool** (`cut_packs.py` переводит
+границу субъекта в GeoJSON через `osmium export`), **Java + planetiler.jar**
+(`build_pmtiles.py`) и **pmtiles CLI** (`cut_packs.py` вырезает им паки из
+сборки страны). Ниже — как поставить каждую на Linux/macOS/Windows. Версии, на
+которых конвейер реально прогонялся целиком: Python 3.14, osmium-tool 1.19.1,
+OpenJDK 21.0.12, pmtiles 1.31.2 (macOS 26.6, Apple M3 Pro).
 
 ### Python 3.9+
 
-Нужен для всех `.py`-скриптов (`fetch_boundaries.py`, `build_extract_config.py`,
-`split.py`, `build_index.py`) и один пакет из `requirements.txt` (PyYAML).
+Нужен для всех `.py`-скриптов (`fetch_boundaries.py`, `build_pmtiles.py`,
+`cut_packs.py`, `build_index.py`) и два пакета из `requirements.txt`: PyYAML и
+shapely (буфер вокруг границы субъекта перед нарезкой пака).
 
 - **Linux (Debian/Ubuntu)**:
   ```bash
@@ -43,11 +45,25 @@ cd tools/planetiler
 pip install -r requirements.txt
 ```
 
+В проекте уже есть venv в корне репозитория — ставьте зависимости конвейера
+туда и оттуда же запускайте скрипты:
+
+```bash
+../../.venv/bin/pip install -r requirements.txt
+../../.venv/bin/python cut_packs.py --only ru
+```
+
+Это не вкусовщина: на Homebrew, свежих Debian/Ubuntu и Fedora системный Python
+закрыт PEP 668, и `pip install` в него отвечает
+`error: externally-managed-environment`. Ломать систему
+`--break-system-packages` не нужно — для этого и venv.
+
 ### osmium-tool
 
-Нужен только `split.py` (шаг «Нарезка» в [README.md](planetiler/README.md)) —
-и только для стран с `mode: subjects` (сейчас — Россия). Проверить, что
-поставилось: `osmium --version`.
+Нужен только `cut_packs.py` (шаг «Паки субъектов» в
+[README.md](planetiler/README.md)), где `osmium export` собирает полигон границы
+из релации, — и только для стран с `mode: subjects` (сейчас — Россия). Проверить,
+что поставилось: `osmium --version`.
 
 - **Linux (Debian/Ubuntu 20.04+)** — есть в стандартных репозиториях:
   ```bash
@@ -131,11 +147,38 @@ Invoke-WebRequest -Uri "https://github.com/onthegomap/planetiler/releases/latest
 PLANETILER_JAR=/path/to/planetiler.jar python3 build_pmtiles.py
 ```
 
-**Память**: planetiler держит бо́льшую часть данных в памяти при сборке —
-ориентировочно нужно ~1 ГБ heap на 1 ГБ входного `.osm.pbf`. Для отдельных
-субъектов РФ хватит настроек по умолчанию, а для чего-то заметно крупнее
-может понадобиться `JAVA_TOOL_OPTIONS="-Xmx8g"` (или больше) перед запуском
-`build_pmtiles.py`.
+**Память и диск**: официальное требование planetiler —
+[не меньше 0.5× RAM от размера входного `.osm.pbf` и не меньше 10× диска](https://github.com/onthegomap/planetiler/blob/main/PLANET.md);
+то есть узкое место — диск, а не heap. По умолчанию planetiler держит данные не в памяти, а на диске
+(`storage=mmap`, `nodemap_type=sparsearray`, `nodemap_storage=mmap`) — в RAM
+остаётся только индекс. Замерено 2026-09-02: на входе 147 МБ пиковый RSS 3.0
+ГиБ; preflight на всей России (`ru-latest.osm.pbf`, 4.15 ГБ) просит 300 МБ RAM
+под индекс, 18–20 ГБ временных файлов и 6.9 ГБ под выход. То есть ограничение
+здесь дисковое, а не по heap: для субъектов РФ хватает настроек по умолчанию,
+а `JAVA_TOOL_OPTIONS="-Xmx…"` поднимают ради скорости тайлинга, а не чтобы
+влезть. Свои требования planetiler печатает в начале лога (уровень DEBUG) и
+предупреждает, если места не хватает.
+
+### pmtiles CLI
+
+Нужен `cut_packs.py`: паки субъектов вырезаются из сборки страны командой
+`pmtiles extract --region`. Один статический бинарник на Go, зависимостей нет.
+Проверить: `pmtiles --version`.
+
+- **macOS** — Homebrew:
+  ```bash
+  brew install pmtiles
+  ```
+- **Linux / Windows** — готовый бинарник со страницы релизов
+  [protomaps/go-pmtiles](https://github.com/protomaps/go-pmtiles/releases),
+  положить в любой каталог из `PATH`. Или, если стоит Go:
+  ```bash
+  go install github.com/protomaps/go-pmtiles@latest
+  ```
+
+Версия должна уметь `extract --region` (проверено на 1.31.2). Без региона
+`extract` умеет только bbox — этого мало: bbox субъекта захватывает соседей и,
+у Ленинградской области, пол-Балтики.
 
 ### Тюнинг под конкретную машину (пример: MacBook Pro M3 Pro, 18 ГБ)
 
@@ -149,13 +192,11 @@ JAVA_TOOL_OPTIONS="-Xmx10g" PLANETILER_THREADS=8 \
 ```
 
 - **`-Xmx10g`** — из 18 ГБ отдаём JVM чуть больше половины, остальное — macOS
-  и что там ещё открыто (браузер, IDE). Наш конвейер режет страну на субъекты
-  **до** planetiler (`osmium extract` в `split.py`) — по сравнению с
-  planet-scale/страна-целиком сборками, для которых обычно и пишут советы про
-  экономию памяти planetiler, каждый отдельный вызов здесь получает файл
-  размером с один регион, не с всю Россию сразу, так что 10 ГБ — с большим
-  запасом даже для самых крупных субъектов РФ. При нехватке — поднять
-  `-Xmx`, благо есть куда (до ~14-15 ГБ, оставляя системе минимум).
+  и что там ещё открыто (браузер, IDE). С 2026-09-02 planetiler получает на вход
+  всю страну сразу (4.15 ГБ по России), но heap это почти не трогает: временные
+  данные лежат в mmap-файлах, в RAM — 300 МБ индекса. Замер полного прогона по
+  России: пик RSS 8.6 ГБ при `-Xmx10g`. При нехватке — поднять `-Xmx`, благо
+  есть куда (до ~14-15 ГБ, оставляя системе минимум).
 - **`PLANETILER_THREADS=8`** — подтверждено (`sysctl -n hw.ncpu` → `12`,
   `hw.perflevel0/1.logicalcpu` → `6`/`6`): это 12-ядерная старшая
   конфигурация M3 Pro (6 производительных + 6 энергоэффективных). 8 — не все
@@ -164,9 +205,11 @@ JAVA_TOOL_OPTIONS="-Xmx10g" PLANETILER_THREADS=8 \
   ноутбук в этот момент не нужен ни для чего другого — можно смело убрать
   `PLANETILER_THREADS` вовсе (planetiler возьмёт все 12 ядер сам) или
   выставить его в `12` явно.
-**Проверено этими значениями**: 84 файла (83 субъекта РФ, Чукотка двумя
-половинами) собрались за 32 минуты, ~25 с на субъект вместе со стартом JVM,
-без OOM и без единой ошибки. Самый крупный вход — Краснодарский край, 107 МБ
+**Проверено этими значениями** (2026-09-02): вся Россия собралась одним
+прогоном за 11 мин 57 с (пик RSS 8.6 ГБ, ~20 ГБ временных файлов, выход 5.07 ГБ),
+затем 84 пака вырезались минуту. До перехода на эту схему тот же результат
+занимал 32 минуты на 84 прогона planetiler плюс 20 минут нарезки osmium.
+Прежний замер по отдельным субъектам: самый крупный вход — Краснодарский край, 107 МБ
 `.osm.pbf`.
 
 - Более тонкие флаги planetiler под экономию памяти (`--nodemap-type`,
@@ -183,4 +226,5 @@ JAVA_TOOL_OPTIONS="-Xmx10g" PLANETILER_THREADS=8 \
 python3 --version   # 3.9+
 osmium --version    # любая современная версия osmium-tool
 java -version       # 21 или новее
+pmtiles --version   # 1.31+ (нужен `extract --region`)
 ```

@@ -1,10 +1,23 @@
 #!/usr/bin/env python3
-"""extracts/*.osm.pbf -> out/<iso>/<код>.pmtiles через planetiler.
+"""downloads/<iso>-latest.osm.pbf -> full/<iso>.pmtiles через planetiler.
 
-Для каждого .osm.pbf в extracts/ запускает planetiler.jar с флагами, собранными
-из planetiler.yaml (приоритет на уровне флага: subjects > countries > defaults).
-Структурные флаги (--osm-path, --output), --download и --threads в YAML не
-выносятся — они не зависят от региона/железа, их знает только этот скрипт.
+Одна сборка на страну целиком, без предварительной нарезки OSM. Паки субъектов
+вырезаются из этого архива дальше — cut_packs.py.
+
+Почему так, а не 84 отдельных сборки (замеры 2026-09-02, Россия, M3 Pro/18 ГБ):
+
+  - быстрее в шесть раз: 8 мин 52 с против 55 (35 мин на 84 прогона planetiler
+    плюс 20 мин `osmium extract`, которого теперь нет вовсе);
+  - исчезает режим отказа, стоивший разбирательства 2026-08-31: кривая граница
+    из Overpass теперь влияет только на то, какие тайлы скопированы в пак, а не
+    на то, существуют ли данные вообще — ошибка видна сразу, а не запекается;
+  - память не мешает: planetiler по умолчанию держит данные в mmap-файлах
+    (`storage=mmap`, `nodemap_type=sparsearray`), в RAM у него 300 МБ индекса и
+    на России, и на одном субъекте. Ограничение дисковое: ~20 ГБ временных
+    плюс ~5 ГБ выхода на Россию, planetiler печатает свою оценку в начале лога.
+
+Чем платим: флаги planetiler теперь общие на страну, задать их отдельному
+субъекту нельзя — см. planetiler.yaml.
 
 Требует переменную окружения PLANETILER_JAR — путь к planetiler.jar
 (https://github.com/onthegomap/planetiler/releases). Память/потоки —
@@ -12,8 +25,7 @@
 PLANETILER_THREADS (см. tools/README.md), в YAML не выносится.
 
 На Python, а не shell — чтобы конвейер не зависел от bash/zsh и одинаково
-работал под Windows/macOS/Linux, и чтобы читать planetiler.yaml (см.
-tools/planetiler/README.md).
+работал под Windows/macOS/Linux (см. tools/planetiler/README.md).
 """
 from __future__ import annotations
 
@@ -23,7 +35,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import common
 import yaml
@@ -36,26 +48,23 @@ PLANETILER_YAML = common.ROOT / "planetiler.yaml"
 def load_tuning(path: Path) -> dict:
     """Читает planetiler.yaml; отсутствующий файл/секции — пустые словари."""
     if not path.exists():
-        return {"defaults": {}, "countries": {}, "subjects": {}}
+        return {"defaults": {}, "countries": {}}
     data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     return {
         "defaults": data.get("defaults") or {},
         "countries": data.get("countries") or {},
-        "subjects": data.get("subjects") or {},
     }
 
 
-def resolve_flags(tuning: dict, code: str) -> dict:
-    """Сливает defaults + countries[iso] + subjects[code] на уровне отдельного флага.
+def resolve_flags(tuning: dict, iso: str) -> dict:
+    """Сливает defaults + countries[iso] на уровне отдельного флага.
 
-    iso = code.split("-")[0]; для mode: whole (by) code == iso, так что
-    subjects-переопределение по iso тоже сработает. Переопределение заменяет
-    значение целиком (список у субъекта не дополняет список страны, а заменяет).
+    Переопределение заменяет значение целиком (список у страны не дополняет
+    список defaults, а заменяет). Уровня субъекта здесь больше нет: сборка одна
+    на страну, и разные флаги у соседних субъектов физически невыразимы.
     """
-    iso = code.split("-")[0]
     merged = dict(tuning["defaults"])
     merged.update(tuning["countries"].get(iso, {}))
-    merged.update(tuning["subjects"].get(code, {}))
     return merged
 
 
@@ -94,45 +103,53 @@ def require_jar() -> str:
     return jar
 
 
-def filter_files(files: list[Path], only: Optional[str]) -> list[Path]:
-    if not only:
-        return files
-    wanted = {i.strip().lower() for i in only.split(",") if i.strip()}
-    return [f for f in files if f.stem.split("-")[0] in wanted]
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--tuning", type=Path, default=PLANETILER_YAML, help="путь к planetiler.yaml")
-    parser.add_argument("--extracts-dir", type=Path, default=common.EXTRACTS_DIR)
-    parser.add_argument("--out-dir", type=Path, default=common.OUT_DIR)
+    parser.add_argument("--downloads-dir", type=Path, default=common.DOWNLOADS_DIR)
+    parser.add_argument("--full-dir", type=Path, default=common.FULL_DIR, help="куда класть сборку по стране")
     parser.add_argument("--only", help="ограничиться странами по iso, через запятую")
+    parser.add_argument("--dry-run", action="store_true", help="только напечатать команды planetiler")
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
 
     common.setup_logging(args.verbose)
 
-    jar = require_jar()
-    tuning = load_tuning(args.tuning)
-
-    files = filter_files(sorted(args.extracts_dir.glob("*.osm.pbf")), args.only)
-    if not files:
-        log.error("Нет .osm.pbf в %s — сначала запустить split.py", args.extracts_dir)
+    countries = common.filter_by_iso(common.enabled_countries(), args.only)
+    if not countries:
+        log.error("Нет стран с enabled: true (после фильтра --only) в regions.yaml")
         return 1
 
+    jar = require_jar() if not args.dry_run else "<PLANETILER_JAR>"
+    tuning = load_tuning(args.tuning)
     threads_arg = [f"--threads={os.environ['PLANETILER_THREADS']}"] if os.environ.get("PLANETILER_THREADS") else []
 
-    total = len(files)
-    for i, f in enumerate(files, start=1):
-        code = f.name.removesuffix(".osm.pbf")  # ru-mow.osm.pbf -> ru-mow ; by.osm.pbf -> by (Path.stem снял бы только .pbf)
-        iso = code.split("-")[0]  # ru-mow -> ru ; by -> by
-        dest_dir = args.out_dir / iso
-        dest_dir.mkdir(parents=True, exist_ok=True)
-        output = dest_dir / f"{code}.pmtiles"
-        cmd = ["java", "-jar", jar, f"--osm-path={f}", f"--output={output}", "--download", *flags_to_args(resolve_flags(tuning, code)), *threads_arg]
-        log.info("[%d/%d] %s -> %s", i, total, code, output)
+    args.full_dir.mkdir(parents=True, exist_ok=True)
+    total = len(countries)
+    for i, country in enumerate(countries, start=1):
+        source = args.downloads_dir / f"{country.iso}-latest.osm.pbf"
+        if not source.is_file():
+            log.error(
+                "%s: нет %s — скачать вручную по ссылке `source` из regions.yaml (см. README.md, шаг 0)",
+                country.iso, source,
+            )
+            return 1
+        output = args.full_dir / f"{country.iso}.pmtiles"
+        cmd = [
+            "java", "-jar", jar,
+            f"--osm-path={source}",
+            f"--output={output}",
+            "--download",
+            *flags_to_args(resolve_flags(tuning, country.iso)),
+            *threads_arg,
+        ]
+        log.info("[%d/%d] %s: %s -> %s", i, total, country.iso, source.name, output)
+        if args.dry_run:
+            print(" ".join(cmd))
+            continue
         subprocess.run(cmd, check=True)
 
+    log.info("Готово: %d стран(ы) в %s. Дальше — cut_packs.py", total, args.full_dir)
     return 0
 
 

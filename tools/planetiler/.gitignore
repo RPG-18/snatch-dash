@@ -2,8 +2,9 @@
 # пересобираются с нуля (см. README.md) — в git не нужны.
 /downloads/
 /polygons/
-/extracts/
+/full/
 /out/
 /data/
 /planetiler.jar
 *.tmp
+__pycache__/

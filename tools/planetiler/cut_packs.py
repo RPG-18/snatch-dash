@@ -23,6 +23,20 @@ GeoJSON через `osmium export`. Готовый полигон, отданн�
 длинной границей (`ru-ad` +66%, `ru-mow` +40%), дальние большие — почти ноль
 (`ru-sa` +0.8%).
 
+Состав паков задаёт common.pack_plan по regions.yaml: `exclude` убирает субъект
+из корпуса совсем, `merge` склеивает несколько в один пак. У склейки границы
+частей объединяются, буфер кладётся вокруг объединения, объединённая граница
+остаётся в polygons/<код группы>.geojson (по ней validate_packs проверяет города).
+Замер 2026-09-03, буфер 2 км:
+
+    пак              раздельно   склейкой   разница
+    ru-len-spe        128.8 МБ   113.1 МБ    -12.2%
+    ru-mos-mow        198.1 МБ   168.9 МБ    -14.7%
+
+Экономия — это перекрытие, которое при раздельной нарезке шло дважды: буфер по
+обе стороны общей границы плюс обзорные тайлы z11, накрывающие сразу обоих
+соседей. Райдеру она достаётся вся: раньше на агломерацию он качал оба пака.
+
 mode: whole — резать нечего, сборка страны и есть пак: full/<iso>.pmtiles
 копируется в out/<iso>/<iso>.pmtiles.
 
@@ -100,7 +114,12 @@ def split_at_antimeridian(geom: Any) -> list[tuple[str, Any]]:
     osmium export уже режет геометрию по антимеридиану и отдаёт куски по обе
     стороны, поэтому достаточно разложить их по знаку долготы. Суффикс `-east`
     у восточного куска — та же схема имён, что была до перехода на вырезы
-    (ru-chu + ru-chu-east), клиент про неё знает.
+    (ru-chu + ru-chu-east).
+
+    **Сейчас не срабатывает ни разу:** единственный такой субъект — Чукотка, а
+    она в `exclude` (см. regions.yaml). Код остаётся именно поэтому: без него
+    возврат Чукотки строкой в конфиге дал бы цельный пак с bbox во весь мир, и
+    сломалось бы это молча.
     """
     minx, _, maxx, _ = geom.bounds
     if (maxx - minx) <= ANTIMERIDIAN_WIDTH:
@@ -132,7 +151,7 @@ def buffer_km(geom: Any, km: float) -> Any:
     return transform(lambda x, y: (x / kx, y), grown).intersection(WORLD)
 
 
-def write_region(geom: Any, dest: Path) -> None:
+def write_geojson(geom: Any, dest: Path) -> None:
     dest.write_text(json.dumps({
         "type": "FeatureCollection",
         "features": [{"type": "Feature", "properties": {}, "geometry": mapping(geom)}],
@@ -147,17 +166,33 @@ def cut_subjects(country: common.Country, full: Path, out_dir: Path, polygons_di
                   country.iso, country.iso, polygons_dir)
         return 1
 
+    # ru-mow.osm -> ru-mow (не Path.stem: он бы дал ru-mow.osm на .osm.pbf)
+    by_code = {f.name.removesuffix(".osm"): f for f in polygon_files}
+    try:
+        plan = common.pack_plan(country, by_code.keys())
+    except ValueError as exc:
+        log.error("%s", exc)
+        return 1
+
     dest_dir = out_dir / country.iso
     dest_dir.mkdir(parents=True, exist_ok=True)
-    total = len(polygon_files)
+    total = len(plan)
     made = 0
-    for i, polygon_osm in enumerate(polygon_files, start=1):
-        code = polygon_osm.name.removesuffix(".osm")  # ru-mow.osm -> ru-mow
-        geom = export_polygon(osmium_bin, polygon_osm, polygons_dir / f"{code}.geojson")
+    for i, (code, parts) in enumerate(plan.items(), start=1):
+        geoms = [export_polygon(osmium_bin, by_code[p], polygons_dir / f"{p}.geojson") for p in parts]
+        if len(geoms) == 1:
+            geom = geoms[0]
+        else:
+            geom = unary_union(geoms)
+            # Склеенной границы в polygons/ иначе нет вовсе: осмиумовские
+            # <часть>.geojson лежат по отдельности, а validate_packs ищет
+            # polygons/<код пака>.geojson.
+            write_geojson(geom, polygons_dir / f"{code}.geojson")
+            log.info("[%d/%d] %s = %s", i, total, code, " + ".join(parts))
         for suffix, part in split_at_antimeridian(geom):
             name = f"{code}{suffix}"
             region = polygons_dir / f"{name}.region.geojson"
-            write_region(buffer_km(part, km), region)
+            write_geojson(buffer_km(part, km), region)
             output = dest_dir / f"{name}.pmtiles"
             log.info("[%d/%d] %s -> %s", i, total, name, output)
             subprocess.run(
@@ -165,12 +200,16 @@ def cut_subjects(country: common.Country, full: Path, out_dir: Path, polygons_di
                 check=True,
             )
             made += 1
-    log.info("%s: готово %d паков в %s", country.iso, made, dest_dir)
+    log.info("%s: готово %d паков из %d границ%s в %s", country.iso, made, len(by_code),
+             f" (исключено: {', '.join(country.exclude)})" if country.exclude else "", dest_dir)
     return 0
 
 
 def cut_whole(country: common.Country, full: Path, out_dir: Path) -> int:
     """mode: whole — резать нечего, Geofabrik уже обрезал страну по границе."""
+    if country.merge or country.exclude:
+        log.warning("%s: mode whole — `merge`/`exclude` в regions.yaml не применяются, "
+                    "субъектов тут нет", country.iso)
     dest_dir = out_dir / country.iso
     dest_dir.mkdir(parents=True, exist_ok=True)
     output = dest_dir / f"{country.iso}.pmtiles"

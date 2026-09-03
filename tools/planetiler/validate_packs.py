@@ -24,7 +24,9 @@ subarea-релации в файле полигона, см. fetch_boundaries.bu
      целиком, а эта — на каждую точку в отдельности, и порога тоже не требует.
      Проверено на заведомо битом паке: `ru-len`, обрезанный до восточной
      половины области, даёт «21 НП без дорог», здоровый — тишину.
-  4. **Комплектность.** Каждой границе polygons/<код>.osm соответствует пак.
+  4. **Комплектность.** Ожидаемый набор паков считает common.pack_plan по
+     границам polygons/<код>.osm и regions.yaml: склеенная группа (`merge`) —
+     один пак на всю группу, исключённый субъект (`exclude`) — ни одного.
      Ловит регион, молча выпавший из сборки: fetch_boundaries.py пропускает
      субъект, если Overpass так и не отдал целый ответ.
 
@@ -43,7 +45,7 @@ subarea-релации в файле полигона, см. fetch_boundaries.bu
     python3 validate_packs.py --cities off         # только структура/слои/комплектность
     python3 validate_packs.py --base-url https://storage.yandexcloud.net/snatch-dash-maps/
 
-Времена (корпус 84 пака, M3 Pro): структура и слои — секунды, с проверкой по
+Времена (корпус 80 паков, M3 Pro): структура и слои — секунды, с проверкой по
 городам — 1 мин 20 с. По HTTP проверка по городам выключена по умолчанию: это
 сотни range-запросов на пак вместо двух.
 
@@ -127,7 +129,7 @@ class HttpSource:
     """Тот же интерфейс, но кусками по HTTP Range — чтобы проверять опубликованное, не скачивая."""
 
     # Бакет изредка рвёт TLS-хендшейк при частых новых соединениях — на прогоне
-    # в 84 пака это поймаешь почти наверняка, поэтому ретраи здесь, а не
+    # в 80 паков это поймаешь почти наверняка, поэтому ретраи здесь, а не
     # «перезапустите проверку».
     RETRIES = 4
     RETRY_DELAY_SECONDS = 1.5
@@ -630,24 +632,43 @@ def check_cities(code: str, source, polygons_dir: Path) -> list[str]:
     return [f"{len(empty)} НП без дорог на z{pack.max_zoom}: {sample}{tail}"]
 
 
-def check_completeness(codes: set[str], polygons_dir: Path, iso: str) -> list[str]:
-    """Каждой границе — свой пак. Ловит субъект, молча выпавший из сборки."""
+def check_completeness(codes: set[str], polygons_dir: Path, country: common.Country) -> list[str]:
+    """Каждой границе — свой пак. Ловит субъект, молча выпавший из сборки.
+
+    Ожидаемый список — не сами границы, а паки, которые из них должны получиться
+    (common.pack_plan): склеенная группа (`merge`) — один пак, исключённый
+    субъект (`exclude`) — ни одного. Без этого проверка ругалась бы на код
+    группы как на лишний, а на её части и на исключённого — как на пропавших.
+    """
+    iso = country.iso
     if not polygons_dir.exists():
         log.debug("%s: нет %s — проверка комплектности пропущена", iso, polygons_dir)
         return []
-    expected = {p.name.removesuffix(".osm") for p in polygons_dir.glob(f"{iso}-*.osm")}
-    if not expected:
+    subjects = sorted(p.name.removesuffix(".osm") for p in polygons_dir.glob(f"{iso}-*.osm"))
+    if not subjects:
         return []
-    # Антимеридианный субъект даёт два пака из одной границы (ru-chu + ru-chu-east),
-    # поэтому лишним считается только пак, у которого нет границы и после снятия
-    # суффикса -east (см. split.py).
+    try:
+        expected = set(common.pack_plan(country, subjects))
+    except ValueError as exc:
+        return [str(exc)]
+    # Антимеридианный субъект дал бы два пака из одной границы (ru-chu +
+    # ru-chu-east), поэтому лишним считается только пак, у которого нет границы и
+    # после снятия суффикса -east. Сейчас таких субъектов нет — единственный
+    # (Чукотка) в exclude, — но снятие суффикса живёт вместе с
+    # cut_packs.split_at_antimeridian: они возвращаются только вдвоём.
     missing = sorted(expected - codes)
     extra = sorted(c for c in codes - expected if c.removesuffix("-east") not in expected)
     out = []
     if missing:
         out.append(f"нет паков для границ: {', '.join(missing)}")
     if extra:
-        out.append(f"паки без границы в polygons/: {', '.join(extra)}")
+        # Сюда попадает и пак субъекта, который с прошлой сборки уехал в группу
+        # merge или в exclude: cut_packs.py его не удаляет, а build_index.py
+        # возьмёт в манифест оба — и склейку, и осколок. Публиковать такое нельзя.
+        out.append(
+            "лишние паки (нет границы, либо субъект склеен в другой пак или исключён): "
+            + ", ".join(extra)
+        )
     return out
 
 
@@ -706,15 +727,17 @@ def main() -> int:
             else:
                 log.info("[%d/%d] %-14s OK", i, total, code)
 
-        for problem in check_completeness({c for c, _ in entries}, args.polygons_dir, country.iso):
+        for problem in check_completeness({c for c, _ in entries}, args.polygons_dir, country):
             log.error("%s: %s", country.iso, problem)
             failed += 1
 
     if failed:
         log.error(
-            "Проверено %d паков, проблем %d. Перечисленные субъекты пересобрать: удалить их "
+            "Проверено %d паков, проблем %d. Дырявый субъект пересобрать: удалить его "
             "polygons/<код>.osm, затем fetch_boundaries.py --code <код> и cut_packs.py --only <iso> "
-            "(пересобирать full/<iso>.pmtiles заново не нужно, если исходник не менялся).",
+            "(пересобирать full/<iso>.pmtiles заново не нужно, если исходник не менялся). "
+            "Лишний пак — просто удалить файл из out/<iso>/: границу он не трогает, а у "
+            "склеенного субъекта она ещё нужна группе.",
             checked, failed,
         )
         return 1

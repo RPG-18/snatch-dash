@@ -6,7 +6,8 @@
 здесь.
 
 Клиентская часть (стиль, глифы, скачивание паков на телефон) живёт отдельно —
-см. [`docs/offline_mode_ru.md`](../../docs/offline_mode_ru.md), §8.
+см. [`docs/offline_mode_ru.md`](../../docs/offline_mode_ru.md), §8, и
+[`spec/drawing_from_local_tiles.md`](../../spec/drawing_from_local_tiles.md).
 
 ## 1. Метрики покрытия — не опровергнуты, а не проверены
 

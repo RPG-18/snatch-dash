@@ -19,9 +19,6 @@ import com.opendash.opendash_dash_engine.dash.map.MapRenderer
 import com.opendash.opendash_dash_engine.dash.map.TileProvider
 import com.opendash.opendash_dash_engine.dash.protocol.DashCommands
 import com.opendash.opendash_dash_engine.dash.video.DashEncoder
-import com.opendash.opendash_dash_engine.dash.video.DashIdleRenderer
-import com.opendash.opendash_dash_engine.dash.video.DashWallpaperFit
-import com.opendash.opendash_dash_engine.dash.video.DashWallpaperKind
 import com.opendash.opendash_dash_engine.dash.video.NalProcessor
 import com.opendash.opendash_dash_engine.dash.video.RtpPacketizer
 import com.opendash.opendash_dash_engine.media.CallController
@@ -102,7 +99,6 @@ class DashEngineController(
     private val locationTracker = LocationTracker(context, scope)
     private val tileProvider = TileProvider(context, scope)
     private val mapRenderer = MapRenderer(tileProvider)
-    private val idleRenderer = DashIdleRenderer()
     private var toneGenerator: ToneGenerator? = null
     private val mediaInfo = MediaInfoProvider(context)
     private val callController = CallController(context)
@@ -157,14 +153,6 @@ class DashEngineController(
     @Volatile private var routeJam: List<Int> = emptyList()
     @Volatile private var remainingM: Double? = null
     @Volatile private var offRoute = false
-
-    // ── Idle wallpaper (shown when not navigating), pushed from Dart ──
-    @Volatile private var wallpaperPath: String? = null
-    @Volatile private var wallpaperKind: DashWallpaperKind? = null
-    @Volatile private var wallpaperFit: DashWallpaperFit = DashWallpaperFit.CROP
-    @Volatile private var wallpaperBiasX = 0f
-    @Volatile private var wallpaperBiasY = 0f
-    @Volatile private var wallpaperRevision = 0
 
     // ── Media/call info forwarded to the dash (and surfaced to Dart) ──
     @Volatile private var nowPlayingTitle: String? = null
@@ -370,10 +358,9 @@ class DashEngineController(
         navigating = lat != null && lng != null
         session.updateRouteCard(name ?: "OpenDash")
         if (lat != null && lng != null) tileProvider.prefetch(lat, lng)
-        // Dart's button dispatcher (idle-wallpaper vs nav-mode button mapping)
-        // reads [navigating] off the state stream — push immediately instead of
-        // waiting for the next frame-loop tick() so a button press right after
-        // "Send to Dash" sees the right mode.
+        // DashSession reads [navigating] off the state stream for its own
+        // chrome/nav-info decisions — push immediately instead of waiting for
+        // the next frame-loop tick() so "Send to Dash" takes effect at once.
         publishState()
     }
 
@@ -459,27 +446,6 @@ class DashEngineController(
         context.startActivity(MediaInfoProvider.accessSettingsIntent())
     }
 
-    /**
-     * Idle-mode dash background — rendered by [idleRenderer] whenever there's
-     * no active destination. [path] is a pre-rendered PNG (images) or the raw
-     * source file (GIF/video); Dart owns the picking/cropping (see
-     * `DashWallpaperStore`), this just displays whatever it produced.
-     */
-    fun setWallpaper(path: String?, kind: String?, fit: String?, biasX: Float, biasY: Float) {
-        wallpaperPath = path
-        wallpaperKind = kind?.let { runCatching { DashWallpaperKind.valueOf(it) }.getOrNull() }
-        wallpaperFit = fit?.let { runCatching { DashWallpaperFit.valueOf(it) }.getOrNull() }
-            ?: DashWallpaperFit.CROP
-        wallpaperBiasX = biasX
-        wallpaperBiasY = biasY
-        wallpaperRevision++
-        // DashIdleRenderer fails silent on a bad path (blank/near-black idle frame,
-        // no exception) — log what actually landed here so that failure mode shows
-        // up somewhere instead of only being inferrable from tiny H.264 keyframes.
-        val exists = path?.let { File(it).exists() }
-        DebugLog.i(TAG) { "setWallpaper: path=$path kind=$wallpaperKind fit=$wallpaperFit exists=$exists" }
-    }
-
     /** Turn-guidance chime for [VoiceMode.CHIME] — `ToneGenerator` has no Dart/Flutter
      *  equivalent, so this stays behind the plugin; ported from `VoiceManager.chime()`. */
     fun playChime() {
@@ -499,7 +465,6 @@ class DashEngineController(
     fun dispose() {
         disconnect()
         runCatching { toneGenerator?.release() }
-        idleRenderer.release()
         tileProvider // no explicit release needed; memory cache is GC'd
     }
 
@@ -655,10 +620,9 @@ class DashEngineController(
         // it is no longer this function's job to be their only supplier.
         publishState()
 
-        // EXPERIMENT (2026-08-28, unverified on hardware) — see tickIdle()'s doc for why this
-        // no longer branches there. [navigating] still gates everything ELSE that isn't frame
-        // content (DashButtonController's zoom-vs-wallpaper-cycle mapping, DashSession's own
-        // chrome/nav-info decisions) — only the render path changed here.
+        // The frame is always a live map — idle is just the map with no route or
+        // destination, never a separate mode (see spec/fsm.md). [navigating] still gates
+        // what isn't frame content: DashSession's chrome/nav-info decisions.
 
         val haveTarget = riderLat != null || (destLat != null && destLng != null)
         val targetLat = riderLat ?: destLat ?: camLat
@@ -700,44 +664,6 @@ class DashEngineController(
             lastSignature = sig
             lastRedrawAt = now
             redrawFrame(centerLat, centerLng, camHeading, riderLat != null, gpsWeak, gpsLost)
-        }
-    }
-
-    /**
-     * SUPERSEDED, no longer called from [tick] (2026-08-28) — kept for now as the fallback to
-     * revert to if the replacement doesn't pan out on hardware, not dead for its own sake.
-     *
-     * This rendered the wallpaper photo/GIF from [DashWallpaperStore] whenever idle. It always
-     * ran into the same wall documented on [DashSession.enterIdleProjectionMode] (also
-     * superseded, same date): the video plane never became visible without the dash's
-     * route-card chrome, and adding that chrome back only showed the chrome, not the video
-     * underneath. [tick] now takes the opposite approach — found in a sibling fork's source
-     * (`OpenMotoDash/NorthStar`, see spec/wifi_retry_policy.md's "Из живого форка" for how that
-     * fork was found): its dash session ALWAYS enters nav-mode chrome, idle or not, and idle
-     * itself is just a plain map with an empty route/destination rather than a distinct
-     * chrome-free mode. Adopted here as the same idea, but genuinely untested combination on
-     * THIS dash — the two prior on-hardware rounds both still fed static/faked content (a
-     * wallpaper bitmap, then a wallpaper bitmap + faked nav telemetry) through nav-mode chrome;
-     * neither tried what this does, a real live self-consistent map (no route, matching what the
-     * chrome now always says) as the video content. Whether that's what was actually missing, or
-     * this dash's firmware just never shows video without genuine turn-by-turn data flowing, is
-     * exactly what's unverified — needs an on-hardware ride to confirm either way.
-     *
-     * `DashWallpaperStore`/the Settings screen's wallpaper gallery still exist and still push
-     * `setWallpaper()` down here — they're just not read by anything right now. Left alone
-     * pending the hardware verification above, not a decision to remove the feature.
-     */
-    private fun tickIdle() {
-        camMoving = false
-        val sig = "idle:$wallpaperPath:$wallpaperKind:$wallpaperFit:$wallpaperBiasX:$wallpaperBiasY:$wallpaperRevision"
-        val now = System.currentTimeMillis()
-        if (sig != lastSignature || now - lastRedrawAt > FORCE_REDRAW_MS) {
-            lastSignature = sig
-            lastRedrawAt = now
-            val bmp = frameBitmap ?: return
-            idleRenderer.draw(
-                Canvas(bmp), wallpaperPath, wallpaperKind, wallpaperBiasX, wallpaperBiasY, wallpaperFit,
-            )
         }
     }
 
@@ -808,9 +734,9 @@ class DashEngineController(
                 "wifiStatus" to wifiManager.state.value.status.name,
                 "wifiSsid" to wifiManager.state.value.ssid,
                 "wifiError" to wifiManager.state.value.error,
-                // Idle-wallpaper vs active-navigation, per [setDestination]/[clearDestination] —
-                // the same source of truth the frame loop's tick()/tickIdle() branch on. Dart's
-                // button dispatcher needs this to replicate DashViewModel.isIdleWallpaperMode().
+                // Whether a destination is set, per [setDestination]/[clearDestination].
+                // Drives DashSession's chrome and the Dash screen's "exit navigation" FAB;
+                // the frame itself is a map either way.
                 "navigating" to navigating,
                 "hasGps" to (loc != null),
                 "riderLat" to loc?.latitude,

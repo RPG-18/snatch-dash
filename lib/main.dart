@@ -10,7 +10,6 @@ import 'nav/voice_manager.dart';
 import 'router/app_router.dart';
 import 'state/dash_button_controller.dart';
 import 'state/dash_connection_alert_controller.dart';
-import 'state/dash_wallpaper_store.dart';
 import 'theme/app_theme.dart';
 import 'util/app_logger.dart';
 
@@ -67,17 +66,10 @@ class OpenDashApp extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    // Eagerly build dashWallpaperStoreProvider here — it's otherwise only
-    // watched by the Settings screen's wallpaper gallery, so if a session
-    // never visits Settings before connecting to the dash, the Notifier's
-    // build() (which pushes the saved wallpaper to the native engine via
-    // DashEngine.setWallpaper) never runs and the dash idle screen stays
-    // blank/black despite wallpaper slots being configured.
-    ref.watch(dashWallpaperStoreProvider);
-    // Same reasoning for dashButtonControllerProvider: it only does anything
+    // Eagerly build dashButtonControllerProvider here: it only does anything
     // via its build()-time ref.listen, so it has to be watched from
     // somewhere alive for the whole app, or physical dash button presses
-    // (wallpaper cycling, zoom, call answer/reject, media skip) go nowhere.
+    // (zoom, call answer/reject, media skip) go nowhere.
     ref.watch(dashButtonControllerProvider);
     // Same reasoning again for dashConnectionAlertControllerProvider: it only
     // does anything via its own ref.listen, and the whole point is catching a

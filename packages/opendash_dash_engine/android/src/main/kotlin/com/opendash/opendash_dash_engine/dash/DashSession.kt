@@ -188,14 +188,11 @@ class DashSession(private val scope: CoroutineScope) {
     fun sendRtp(packet: ByteArray) { socket?.sendRtp(packet) }
 
     /**
-     * EXPERIMENT (2026-08-28, unverified on hardware) — chrome (route-card) used to be turned
-     * off entirely when idle (`name` blank/"OpenDash"), via a projectionStop/Off/Frame/On
-     * sequence, in an attempt to get a chrome-free wallpaper showing underneath. That never
-     * worked (see [enterIdleProjectionMode]'s doc) — chrome now always stays on, same as
-     * [enterNavMode] always being the entry sequence regardless of destination. Idle just means
-     * `name` is blank, so the card shows the "OpenDash" placeholder with no live nav figures
-     * (`navActive` stays false) — matching a sibling fork's approach of never having a distinct
-     * chrome-free mode at all (see [enterIdleProjectionMode]'s doc for where that was found).
+     * Chrome (the route-card) always stays on, matching [enterNavMode] being the entry
+     * sequence regardless of destination: the dash only opens its video decoder as part of
+     * nav mode. Idle just means `name` is blank, so the card shows the "OpenDash"
+     * placeholder with no live nav figures (`navActive` stays false), and the video plane
+     * carries a live map with no route. See spec/fsm.md.
      */
     fun updateRouteCard(name: String) {
         destinationName = name.ifBlank { "OpenDash" }
@@ -270,7 +267,8 @@ class DashSession(private val scope: CoroutineScope) {
             DebugLog.i(TAG) { "Authenticated ✓" }
             RideDiagnostics.log("auth", "authenticated (07 01 01) — entering nav mode")
 
-            // Always nav-mode entry now, idle or not — see enterIdleProjectionMode's doc.
+            // Always nav-mode entry, idle or not: the dash opens its video decoder only as
+            // part of nav mode, so there is no separate idle mode (see spec/fsm.md).
             enterNavMode(sock)
             // Cancellation is cooperative and [enterNavMode]'s last suspension point is a
             // delay() several synchronous sends before this line, so a disconnect() landing in
@@ -311,50 +309,6 @@ class DashSession(private val scope: CoroutineScope) {
         sock.send(DashCommands.navStart()); delay(40)                 // z2, ONCE
         sock.send(DashCommands.routeCard(destinationName, projectionOn = true))
         DebugLog.i(TAG) { "Nav mode kick sent" }
-    }
-
-    /**
-     * SUPERSEDED, no longer called (2026-08-28) — kept as the fallback to revert to if the
-     * replacement below doesn't pan out on hardware.
-     *
-     * This used to be idle-wallpaper mode: open projection without route-card/nav-start chrome,
-     * so a chrome-free wallpaper could show underneath while [enterNavMode] handled active
-     * navigation separately.
-     *
-     * KNOWN BROKEN (2026-08-15) — three on-hardware rounds, all failed:
-     *   1. projectionFrame/projectionOn only, no route-card/z2 — wallpaper
-     *      frames encode/send fine (RTP has zero failures) but never appear;
-     *      the dash just never opens its decoder.
-     *   2. Added [enterNavMode]'s exact pcap-verified entry (route-card ×4 →
-     *      projectionFrame → navPlaceholder → z2 → confirming route-card).
-     *      Decoder opened, but the dash rendered ONLY its route-card chrome
-     *      (title/glyph/distance bubble) full-screen on a blank background —
-     *      video plane never became visible.
-     *   3. Also faked `navActive = true` so `launchNavInfo` would stream
-     *      `activeNavPacket` telemetry too, on the theory that a route-card
-     *      with no live telemetry reads to the firmware as a static
-     *      route-preview screen. No change — same chrome, still no video.
-     *
-     * Rather than a 4th on-hardware round of guessing, checked a sibling fork of the same
-     * upstream (`OpenMotoDash/NorthStar` — a fork of the removed `adityadasika21/NorthStar`,
-     * found by searching for forks of it; see spec/wifi_retry_policy.md's "Из живого форка" for
-     * how it was found and its unrelated WiFi-retry findings). Its `DashSession` has no idle/nav
-     * split at all — `runSession` always enters nav-mode chrome, and its own dev notes
-     * (`context.md`) explicitly call the wallpaper idea a "fad" they deliberately skipped,
-     * showing a plain map with an empty route instead when idle. `runSession` now does the same
-     * (always [enterNavMode]), and [DashEngineController.tick] renders a live map with no
-     * route/destination when idle instead of calling into [DashEngineController.tickIdle].
-     *
-     * Genuinely different from attempts 2/3 above, not just a retry: those still fed a static
-     * wallpaper bitmap (attempt 3: + faked telemetry) through nav-mode chrome. This feeds a real,
-     * self-consistent live map (matching what the now-permanent chrome says: no destination) —
-     * untested whether THAT'S what was missing, or this firmware simply never shows video
-     * without genuine turn-by-turn data flowing. Needs an on-hardware ride to confirm either way.
-     */
-    private suspend fun enterIdleProjectionMode(sock: DashSocket) {
-        sock.send(DashCommands.projectionFrame()); delay(60)
-        sock.send(DashCommands.projectionOn()); delay(40)
-        DebugLog.i(TAG) { "Idle projection kick sent" }
     }
 
     private fun launchReceiveLoop(sock: DashSocket) {

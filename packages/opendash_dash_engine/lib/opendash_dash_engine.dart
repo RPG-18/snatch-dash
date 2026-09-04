@@ -90,16 +90,6 @@ class DashEngine {
   Future<void> updateCall(String? caller) =>
       OpendashDashEnginePlatform.instance.updateCall(caller);
 
-  Future<void> setWallpaper({
-    String? path,
-    String? kind,
-    String? fit,
-    double biasX = 0,
-    double biasY = 0,
-  }) =>
-      OpendashDashEnginePlatform.instance
-          .setWallpaper(path: path, kind: kind, fit: fit, biasX: biasX, biasY: biasY);
-
   Future<void> playChime() => OpendashDashEnginePlatform.instance.playChime();
 
   Future<bool> answerCall() => OpendashDashEnginePlatform.instance.answerCall();

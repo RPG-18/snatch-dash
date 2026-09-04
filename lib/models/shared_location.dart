@@ -1,22 +1,22 @@
-/// A location parsed out of a share-intent text/URL. Ported from the
-/// original app's `data/SharedLocation.kt`.
+/// The destination currently being previewed or navigated to. Ported from the
+/// original app's `data/SharedLocation.kt` — the name is inherited from that
+/// port (there it was filled from a share intent); here it is always resolved
+/// in-app, through Yandex search or a saved place.
 class SharedLocation {
   const SharedLocation({
     required this.name,
-    this.lat,
-    this.lng,
-    this.url,
-    this.needsExpansion = false,
+    required this.lat,
+    required this.lng,
   });
 
   final String name;
-  final double? lat;
-  final double? lng;
-  final String? url;
 
-  /// True when a short URL (maps.app.goo.gl, goo.gl/maps, …) still needs a
-  /// network resolve (`LocationParser.resolve`) before coordinates are known.
-  final bool needsExpansion;
+  /// Non-null by construction: a destination only ever comes from Yandex
+  /// search or a saved place, both of which resolve coordinates before this
+  /// object exists. "Destination without coordinates" was a share-intent
+  /// state (a short URL awaiting a network resolve) and no longer occurs.
+  final double lat;
+  final double lng;
 }
 
 /// A persisted destination the rider saved for later. Ported from

@@ -1,9 +1,6 @@
-import 'dart:io';
-
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
-import 'package:image_picker/image_picker.dart';
 import 'package:opendash_dash_engine/opendash_dash_engine.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -13,16 +10,15 @@ import '../state/app_update_controller.dart';
 import '../state/auto_update_settings.dart';
 import '../state/currency_settings.dart';
 import '../state/dash_engine_state.dart';
-import '../state/dash_wallpaper_store.dart';
 import '../state/map_tile_cache.dart';
 import '../state/update_channel_settings.dart';
 import '../util/app_logger.dart';
 import '../util/github_release.dart';
 
-/// "More" tab: dash connection/pairing, idle wallpaper, and currency. Ports
-/// `SettingsScreen.kt`'s connection section (`DashConfig` via the native
-/// engine's `getConfig`/`setSsid`/`setWifiPassword`/`forgetDash`) and the
-/// wallpaper gallery (`DashWallpaperStore`). No account/sign-in section —
+/// "More" tab: dash connection/pairing, offline maps, map theme and currency.
+/// Ports `SettingsScreen.kt`'s connection section (`DashConfig` via the native
+/// engine's `getConfig`/`setSsid`/`setWifiPassword`/`forgetDash`).
+/// No account/sign-in section —
 /// Firebase auth was dropped from this port. Voice guidance lives on the
 /// Route tab (matches the original's per-trip toggle placement); media/call
 /// notification access has a status tile here that deep-links to system
@@ -138,18 +134,6 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> with WidgetsBin
               ),
             ]),
           ),
-          // Idle-wallpaper gallery hidden (2026-08-15): on-hardware testing plus
-          // the better-dash reference (tripper_app_like_nav.py, which this
-          // protocol is ported from) both indicate the Tripper dash's video
-          // decoder only ever opens as part of active-navigation mode — there's
-          // no route-card-free path that shows plain video, so nothing picked
-          // here can ever actually appear on the dash. `DashWallpaperStore` and
-          // the native `setWallpaper` plumbing are left in place (harmless,
-          // and worth keeping in case a real idle-projection sequence is found
-          // later) — only this picker UI is hidden so it stops promising
-          // something the hardware can't currently do. See the investigation
-          // in the "не отобразились обои" conversation thread for the two
-          // failed on-hardware attempts (bare z2, z2 + faked activeNavPacket).
           const SizedBox(height: 16),
           Text(l10n.settingsCurrency, style: Theme.of(context).textTheme.labelLarge),
           const SizedBox(height: 8),
@@ -297,94 +281,6 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> with WidgetsBin
         ],
       ),
     );
-  }
-}
-
-/// Up to 5 wallpaper slots shown on the dash while idle (no active
-/// destination). Tap a thumbnail to make it active, long-press to remove it.
-/// Cropping is centered by default — the original's drag-to-reposition bias
-/// editor isn't ported yet; `updateCurrentOptions` on the store already
-/// supports it for whenever that lands.
-///
-/// Currently unreferenced — its call site in [SettingsScreen] is commented
-/// out (see the comment there) since the dash can't actually display idle
-/// wallpaper. Kept, not deleted, so restoring it is a one-line change if a
-/// working idle-projection sequence is ever found.
-// ignore: unused_element
-class _WallpaperGallery extends ConsumerWidget {
-  const _WallpaperGallery();
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final infos = ref.watch(dashWallpaperStoreProvider);
-    final notifier = ref.read(dashWallpaperStoreProvider.notifier);
-    final l10n = AppLocalizations.of(context)!;
-
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            SizedBox(
-              height: 72,
-              child: ListView(
-                scrollDirection: Axis.horizontal,
-                children: [
-                  for (final info in infos)
-                    Padding(
-                      padding: const EdgeInsets.only(right: 8),
-                      child: GestureDetector(
-                        onTap: () => notifier.selectSlot(info.slot),
-                        onLongPress: () => notifier.clearSlot(info.slot),
-                        child: ClipRRect(
-                          borderRadius: BorderRadius.circular(8),
-                          child: info.kind.name == 'image'
-                              ? Image.file(File(info.path), width: 96, height: 72, fit: BoxFit.cover)
-                              : Container(
-                                  width: 96,
-                                  height: 72,
-                                  color: Theme.of(context).colorScheme.surfaceContainerHighest,
-                                  alignment: Alignment.center,
-                                  child: const Icon(Icons.gif_box_outlined),
-                                ),
-                        ),
-                      ),
-                    ),
-                  GestureDetector(
-                    onTap: () => _pick(notifier),
-                    child: Container(
-                      width: 96,
-                      height: 72,
-                      decoration: BoxDecoration(
-                        border: Border.all(color: Theme.of(context).colorScheme.outlineVariant),
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      alignment: Alignment.center,
-                      child: const Icon(Icons.add_photo_alternate_outlined),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            if (infos.isNotEmpty)
-              Padding(
-                padding: const EdgeInsets.only(top: 8),
-                child: TextButton.icon(
-                  onPressed: notifier.clear,
-                  icon: const Icon(Icons.delete_outline),
-                  label: Text(l10n.settingsClearAll),
-                ),
-              ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Future<void> _pick(DashWallpaperStore notifier) async {
-    final files = await ImagePicker().pickMultiImage(limit: 5);
-    if (files.isNotEmpty) await notifier.saveManyFromXFiles(files);
   }
 }
 

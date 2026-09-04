@@ -172,10 +172,6 @@ class AppLocalizationsEn extends AppLocalizations {
   String get routeDestinationSaved => 'Destination saved';
 
   @override
-  String get routeShareLinkHint =>
-      'Paste a Google Maps share link, or geo:lat,lng';
-
-  @override
   String get routePreview => 'Preview';
 
   @override
@@ -185,20 +181,11 @@ class AppLocalizationsEn extends AppLocalizations {
   String get routeSendToDash => 'Send to Dash';
 
   @override
-  String get routeErrorNoCoordinates =>
-      'Couldn\'t find coordinates for that link';
-
-  @override
   String get routeErrorNoGpsFix => 'No GPS fix for route planning yet';
 
   @override
   String get routeErrorRoutingFailedConnection =>
       'Routing failed — check your connection';
-
-  @override
-  String routeErrorRoutingFailedDetail(String detail) {
-    return 'Routing failed: $detail';
-  }
 
   @override
   String get voiceModeOff => 'off';
@@ -426,9 +413,6 @@ class AppLocalizationsEn extends AppLocalizations {
   String get settingsForgetDashSub => 'Re-run prefix discovery on next connect';
 
   @override
-  String get settingsDashWallpaper => 'Dash wallpaper';
-
-  @override
   String get settingsCurrency => 'Currency';
 
   @override
@@ -566,9 +550,6 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get settingsPasswordLabel => 'Password';
-
-  @override
-  String get settingsClearAll => 'Clear all';
 
   @override
   String get currencyNameInr => 'Indian rupee';

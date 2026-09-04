@@ -2,5 +2,4 @@
 <paths xmlns:android="http://schemas.android.com/apk/res/android">
     <cache-path name="exports" path="exports/" />
     <cache-path name="updates" path="updates/" />
-    <files-path name="wallpaper" path="wallpaper/" />
 </paths>

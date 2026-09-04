@@ -43,8 +43,6 @@ dependencies:
   path_provider: ^2.1.6
   http: ^1.6.0
   share_plus: ^13.3.0
-  image_picker: ^1.2.3
-  image: ^4.9.1
   flutter_local_notifications: ^22.1.0
   flutter_tts: ^4.2.5
   yandex_maps_mapkit: ^4.41.0

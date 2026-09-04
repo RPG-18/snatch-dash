@@ -47,9 +47,9 @@ class DashEngineState {
 
   /// Mirrors the native `navigating` flag (set by `setDestination`/
   /// `clearDestination`) — true once a destination has actually been sent to
-  /// the dash, not just previewed on the Route screen. Idle-wallpaper mode is
-  /// `!navigating`; see `DashButtonController`, ported from the original
-  /// `DashViewModel.isIdleWallpaperMode()`.
+  /// the dash, not just previewed on the Route screen. The dash draws a map
+  /// either way; this only drives the route-card chrome and the Dash screen's
+  /// "exit navigation" FAB (see spec/fsm.md).
   final bool navigating;
   final bool hasGps;
   final double? riderLat;

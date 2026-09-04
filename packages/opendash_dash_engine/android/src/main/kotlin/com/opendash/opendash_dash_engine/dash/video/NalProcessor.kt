@@ -79,7 +79,7 @@ class NalProcessor(private val onNal: (ByteArray, Boolean) -> Unit) {
      *
      * Bundled into a single NAL only while the result still fits one RTP
      * packet — that keeps the historical, dash-verified single-packet shape
-     * for small keyframes (a near-static idle/wallpaper frame). Once it would
+     * for small keyframes (a near-static frame, e.g. a parked rider). Once it would
      * have to be fragmented the three NALs go out separately instead, because
      * FU-A cannot carry a multi-NAL bundle (see the class doc); SPS and PPS
      * are tens of bytes, so only the IDR is ever actually fragmented.

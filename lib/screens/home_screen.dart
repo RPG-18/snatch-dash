@@ -45,9 +45,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   }
 
   /// Tapping the status card connects to the dash (a no-op while already
-  /// connecting/connected). The native engine streams the configured idle
-  /// wallpaper as a static image as soon as the link comes up, before any
-  /// nav data is available — see `DashWallpaperStore`.
+  /// connecting/connected). The native engine starts streaming the map as
+  /// soon as the link comes up — with no destination set it is simply a map
+  /// with no route (see spec/fsm.md).
   Future<void> _connect(BuildContext context, DashStage stage) async {
     if (stage != DashStage.idle && stage != DashStage.error) return;
     if (!await ensureLocationPermission()) {

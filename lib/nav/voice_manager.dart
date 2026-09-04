@@ -116,7 +116,7 @@ class VoiceManager {
 
   /// Sustained dash-connection-loss alert — see `DashConnectionAlertController`,
   /// the sole caller. Unlike [maybeAnnounce], this fires regardless of active
-  /// navigation (idle-wallpaper mode included) since it's about the link to
+  /// navigation (with no destination set, too) since it's about the link to
   /// the dash itself, not a turn. Respects [VoiceMode.off] like everything
   /// else here; CHIME mode gets the chime (a full sentence would be
   /// pointless if the rider muted speech) rather than staying silent.

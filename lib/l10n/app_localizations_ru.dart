@@ -175,10 +175,6 @@ class AppLocalizationsRu extends AppLocalizations {
   String get routeDestinationSaved => 'Место сохранено';
 
   @override
-  String get routeShareLinkHint =>
-      'Вставьте ссылку Google Maps или geo:широта,долгота';
-
-  @override
   String get routePreview => 'Просмотр';
 
   @override
@@ -188,21 +184,12 @@ class AppLocalizationsRu extends AppLocalizations {
   String get routeSendToDash => 'Отправить на Dash';
 
   @override
-  String get routeErrorNoCoordinates =>
-      'Не удалось найти координаты по этой ссылке';
-
-  @override
   String get routeErrorNoGpsFix =>
       'Пока нет GPS-сигнала для построения маршрута';
 
   @override
   String get routeErrorRoutingFailedConnection =>
       'Не удалось построить маршрут — проверьте соединение';
-
-  @override
-  String routeErrorRoutingFailedDetail(String detail) {
-    return 'Не удалось построить маршрут: $detail';
-  }
 
   @override
   String get voiceModeOff => 'выкл';
@@ -430,9 +417,6 @@ class AppLocalizationsRu extends AppLocalizations {
       'Повторить поиск по префиксу при следующем подключении';
 
   @override
-  String get settingsDashWallpaper => 'Обои dash';
-
-  @override
   String get settingsCurrency => 'Валюта';
 
   @override
@@ -571,9 +555,6 @@ class AppLocalizationsRu extends AppLocalizations {
 
   @override
   String get settingsPasswordLabel => 'Пароль';
-
-  @override
-  String get settingsClearAll => 'Очистить всё';
 
   @override
   String get currencyNameInr => 'Индийская рупия';

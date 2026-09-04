@@ -164,17 +164,6 @@ class OpendashDashEnginePlugin : FlutterPlugin, MethodCallHandler, EventChannel.
                 result.success(null)
             }
             "updateCall" -> { c.updateCall(call.argument<String>("caller")); result.success(null) }
-
-            "setWallpaper" -> {
-                c.setWallpaper(
-                    call.argument<String>("path"),
-                    call.argument<String>("kind"),
-                    call.argument<String>("fit"),
-                    (call.argument<Double>("biasX") ?: 0.0).toFloat(),
-                    (call.argument<Double>("biasY") ?: 0.0).toFloat(),
-                )
-                result.success(null)
-            }
             "playChime" -> { c.playChime(); result.success(null) }
 
             "answerCall" -> result.success(c.answerCall())

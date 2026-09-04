@@ -374,12 +374,6 @@ abstract class AppLocalizations {
   /// **'Destination saved'**
   String get routeDestinationSaved;
 
-  /// No description provided for @routeShareLinkHint.
-  ///
-  /// In en, this message translates to:
-  /// **'Paste a Google Maps share link, or geo:lat,lng'**
-  String get routeShareLinkHint;
-
   /// No description provided for @routePreview.
   ///
   /// In en, this message translates to:
@@ -398,12 +392,6 @@ abstract class AppLocalizations {
   /// **'Send to Dash'**
   String get routeSendToDash;
 
-  /// No description provided for @routeErrorNoCoordinates.
-  ///
-  /// In en, this message translates to:
-  /// **'Couldn\'t find coordinates for that link'**
-  String get routeErrorNoCoordinates;
-
   /// No description provided for @routeErrorNoGpsFix.
   ///
   /// In en, this message translates to:
@@ -415,12 +403,6 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Routing failed — check your connection'**
   String get routeErrorRoutingFailedConnection;
-
-  /// No description provided for @routeErrorRoutingFailedDetail.
-  ///
-  /// In en, this message translates to:
-  /// **'Routing failed: {detail}'**
-  String routeErrorRoutingFailedDetail(String detail);
 
   /// No description provided for @voiceModeOff.
   ///
@@ -836,12 +818,6 @@ abstract class AppLocalizations {
   /// **'Re-run prefix discovery on next connect'**
   String get settingsForgetDashSub;
 
-  /// No description provided for @settingsDashWallpaper.
-  ///
-  /// In en, this message translates to:
-  /// **'Dash wallpaper'**
-  String get settingsDashWallpaper;
-
   /// No description provided for @settingsCurrency.
   ///
   /// In en, this message translates to:
@@ -1087,12 +1063,6 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Password'**
   String get settingsPasswordLabel;
-
-  /// No description provided for @settingsClearAll.
-  ///
-  /// In en, this message translates to:
-  /// **'Clear all'**
-  String get settingsClearAll;
 
   /// No description provided for @currencyNameInr.
   ///

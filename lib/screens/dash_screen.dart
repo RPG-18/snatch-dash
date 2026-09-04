@@ -12,10 +12,15 @@ import '../state/route_controller.dart';
 import '../util/location_permission.dart';
 import 'debug/maneuver_glyph_probe.dart';
 
-/// In-app preview of what's being streamed to the physical dash, plus
+/// Yandex map with the active route and rider position, plus
 /// connect/disconnect controls. Ports `DashViewModel` + `DashScreen.kt` —
 /// bound to the native engine's EventChannel (`dashEngineStateProvider`) and
-/// the `yandex_mapkit` preview map.
+/// the `yandex_mapkit` map.
+///
+/// **Not a mirror of the dash frame.** The dash renders MapLibre from a local
+/// pack; this screen renders Yandex over the network — different style, detail
+/// and offline behaviour. See spec/dash_screen.md's TODO about moving the
+/// in-app map to MapLibre once the offline-map MVP lands.
 class DashScreen extends ConsumerWidget {
   const DashScreen({super.key});
 
@@ -26,8 +31,8 @@ class DashScreen extends ConsumerWidget {
     final destination = ref.watch(routeControllerProvider).destination;
     final l10n = AppLocalizations.of(context)!;
 
-    final dest = destination?.lat != null && destination?.lng != null
-        ? GeoPoint(destination!.lat!, destination.lng!)
+    final dest = destination != null
+        ? GeoPoint(destination.lat, destination.lng)
         : null;
 
     return Scaffold(

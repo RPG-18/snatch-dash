@@ -56,6 +56,28 @@ class MapSnapshotProvider(private val context: Context) {
     /** Bumped by every [prepare]; see [currentGeneration]. */
     private var generation = 0L
 
+    /**
+     * What [prepare] was given, kept so [rebuild] can build the same snapshotter
+     * again. The style is assembled once per stream and never swapped (see
+     * [prepare]), so holding it costs one string for the length of the session.
+     */
+    private var styleJson: String? = null
+    private var frameWidth = 0
+    private var frameHeight = 0
+
+    /**
+     * Failures in a row, reset by any snapshot that lands.
+     *
+     * A single failure is a missed redraw. A run of them means the snapshotter
+     * itself is refusing work — the 2026-09-04 field mode where every `start()`
+     * answers `Map is currently rendering an image` — and no number of further
+     * requests will change that. See [rebuild].
+     */
+    private var consecutiveFailures = 0
+
+    /** Set from a callback; acted on at the top of the next [capture], on the main thread. */
+    private var needsRebuild = false
+
     /** Snapshots that missed their deadline. The frame loop moved on without them. */
     @Volatile var timeouts = 0L
         private set
@@ -93,6 +115,17 @@ class MapSnapshotProvider(private val context: Context) {
         private set
 
     /**
+     * Times the snapshotter had to be thrown away and built again — see [rebuild].
+     *
+     * Reported next to the others because it is the difference between "the map
+     * came back" and "the map was gone for the rest of the ride": nonzero here
+     * means the session hit the dead-snapshotter state and got out of it, and a
+     * rising count across a ride means it keeps happening.
+     */
+    @Volatile var rebuilds = 0L
+        private set
+
+    /**
      * Builds the snapshotter for one streaming session.
      *
      * The style arrives assembled and is never replaced: swapping it means a
@@ -104,17 +137,67 @@ class MapSnapshotProvider(private val context: Context) {
     suspend fun prepare(styleJson: String, width: Int, height: Int) = withContext(Dispatchers.Main) {
         releaseCurrent()
         generation++
+        this@MapSnapshotProvider.styleJson = styleJson
+        frameWidth = width
+        frameHeight = height
+        consecutiveFailures = 0
+        needsRebuild = false
         MapLibre.getInstance(context)
+        MapLibreLogBridge.install()
+        snapshotter = buildSnapshotter(styleJson, width, height)
+    }
+
+    /**
+     * A fresh snapshotter on the style this provider was [prepare]d with.
+     *
+     * Separate from [prepare] because it is also the recovery path: [rebuild]
+     * needs to build the same thing again without bumping [generation], which
+     * belongs to the stream, not to the object underneath it.
+     */
+    private fun buildSnapshotter(styleJson: String, width: Int, height: Int): MapSnapshotter {
         val options = MapSnapshotter.Options(width, height)
             // The frame is 526×300 device pixels exactly — there is no screen
             // density involved, the panel is on the other end of a video stream.
             .withPixelRatio(1f)
-            // Logo and attribution are left at their default (on) deliberately:
-            // whether the dash's round bezel crops them is an open MVP question
-            // (spec/drawing_from_local_tiles.md, «Что должен показать MVP», п. 7),
-            // and turning them off before looking would be a silent decision.
+            // Both default to ON, so both have to be turned off by name. Decided
+            // 2026-09-04 (review-spec.md, C6) without waiting for the hardware:
+            // on 526×300 under a round bezel they cost a visible share of the
+            // frame, and the attribution line repeats per active source — five
+            // installed packs would stack five identical «© OpenMapTiles».
+            // The licence obligation moves entirely onto the About card in
+            // Settings, which is why it is not optional there.
+            .withLogo(false)
+            .withAttribution(false)
             .withStyleBuilder(Style.Builder().fromJson(styleJson))
-        snapshotter = MapSnapshotter(context, options)
+        return MapSnapshotter(context, options)
+    }
+
+    /**
+     * Throws the snapshotter away and builds another one on the same style.
+     *
+     * The escape hatch for a snapshotter that will not take work any more. Field
+     * logs of 2026-09-04 (plan.md 1.5) show `cancel()` is not enough: after a
+     * wedged request was torn off, **468 consecutive** `start()` calls came back
+     * `Map is currently rendering an image`, and the map stayed blank for the
+     * rest of the session — 40 to 70 seconds of streaming with no map at all,
+     * ending only when the rider disconnected. Whatever `cancel()` releases, it
+     * is not the thing that makes the next `start()` legal.
+     *
+     * Costs a style re-parse (~50 layers per pack) on the main thread, which is
+     * why it is not the response to a single failure — but against a map that is
+     * gone for the whole ride, one stutter is not a price worth arguing about.
+     */
+    private fun rebuild(reason: String) {
+        val json = styleJson
+        needsRebuild = false
+        consecutiveFailures = 0
+        if (json == null) return // never prepared — nothing to rebuild from
+        rebuilds++
+        DebugLog.w(TAG) { "rebuilding the snapshotter: $reason" }
+        releaseCurrent()
+        snapshotter = runCatching { buildSnapshotter(json, frameWidth, frameHeight) }
+            .onFailure { DebugLog.e(TAG, { "snapshotter rebuild failed" }, it) }
+            .getOrNull()
     }
 
     /**
@@ -137,7 +220,6 @@ class MapSnapshotProvider(private val context: Context) {
         padding: IntArray,
         deadlineMs: Long,
     ): MapSnapshot? = withContext(Dispatchers.Main) {
-        val snapshotter = snapshotter ?: return@withContext null
         val now = System.currentTimeMillis()
         if (inFlight) {
             if (now - inFlightSince < WEDGED_MS) {
@@ -150,9 +232,14 @@ class MapSnapshotProvider(private val context: Context) {
             // Long past slow. Tear it off and take the leak: a frozen map is worse.
             abandoned++
             DebugLog.w(TAG) { "snapshot wedged for ${now - inFlightSince}ms — cancelling, its bitmap is lost" }
-            runCatching { snapshotter.cancel() }
+            snapshotter?.let { runCatching { it.cancel() } }
             inFlight = false
+            // And do not trust that cancel() gave the snapshotter back: in the
+            // field it did not, and every later start() failed. Replace it.
+            needsRebuild = true
         }
+        if (needsRebuild) rebuild("after ${abandoned + errors} snapshot failures")
+        val snapshotter = snapshotter ?: return@withContext null
         var failed = false
         snapshotter.setCameraPosition(camera)
         snapshotter.setPadding(padding[0], padding[1], padding[2], padding[3])
@@ -169,6 +256,7 @@ class MapSnapshotProvider(private val context: Context) {
                         snapshotter.start(
                             { snapshot ->
                                 inFlight = false
+                                consecutiveFailures = 0
                                 if (cont.isActive) {
                                     cont.resume(snapshot)
                                 } else {
@@ -180,6 +268,7 @@ class MapSnapshotProvider(private val context: Context) {
                             },
                             { reason ->
                                 inFlight = false
+                                noteFailure()
                                 // Only while the frame loop is still waiting on this one.
                                 // A failure that arrives after the deadline was already
                                 // counted as a timeout, and counting it twice made a single
@@ -198,6 +287,7 @@ class MapSnapshotProvider(private val context: Context) {
                         inFlight = false
                         failed = true
                         errors++
+                        noteFailure()
                         DebugLog.e(TAG, { "snapshotter.start() threw" }, e)
                         if (cont.isActive) cont.resume(null)
                     }
@@ -240,6 +330,19 @@ class MapSnapshotProvider(private val context: Context) {
         releaseCurrent()
     }
 
+    /**
+     * One more failure in a row; past [REBUILD_AFTER_FAILURES] the snapshotter is
+     * treated as dead rather than unlucky.
+     *
+     * Only raises a flag — the replacement happens at the top of the next
+     * [capture], because this runs from MapLibre's callback and [rebuild] must
+     * not run while the object it replaces is mid-callback.
+     */
+    private fun noteFailure() {
+        consecutiveFailures++
+        if (consecutiveFailures >= REBUILD_AFTER_FAILURES) needsRebuild = true
+    }
+
     private fun releaseCurrent() {
         snapshotter?.let { runCatching { it.cancel() } }
         snapshotter = null
@@ -256,9 +359,24 @@ class MapSnapshotProvider(private val context: Context) {
          * Missing a 500 ms deadline is a stutter and the request is left to finish
          * on its own. Missing this one means it is never coming, and holding the
          * only snapshotter hostage would freeze the map for the rest of the ride —
-         * so it gets cancelled, leaking its bitmap, which is the lesser harm.
+         * so it gets cancelled, leaking its bitmap, which is the lesser harm, and
+         * the snapshotter itself is replaced (see [rebuild]) because cancelling
+         * alone left it refusing every later request.
          */
         private const val WEDGED_MS = 5_000L
+
+        /**
+         * Failures in a row before the snapshotter is replaced rather than asked
+         * again.
+         *
+         * Three, not one: a genuine one-off (a tile that failed to open, a style
+         * resource that lost a race) costs a single redraw, and rebuilding on it
+         * would trade a stutter for a bigger stutter. Three in a row at 4 fps is
+         * under a second of wall clock, so the dead-snapshotter case is still
+         * caught long before a rider could notice — while in the field it produced
+         * 468 of them.
+         */
+        private const val REBUILD_AFTER_FAILURES = 3
 
         /**
          * Whether the snapshot came back with no map on it — every sampled pixel

@@ -94,10 +94,24 @@
        системные настройки) / ошибка проверки.
 9. **Карточка «О приложении»**: статичные заголовок «SnatchDash» и подзаголовок,
    не локализуются (название бренда — как и заголовок AppBar на Главной).
-   Карточка содердит ссылки:
-   - [Условия использования Яндекс Карт](https://yandex.ru/legal/maps_api)
-   - Участники [OpenStreetMap](https://openstreetmap.org/copyright)
+   Карточка содержит ссылки:
+   - [Условия использования Яндекс Карт](https://yandex.ru/legal/maps_api) —
+     относится к in-app карте;
+   - под подзаголовком «Карта на дэше», отделённым разделителем, — атрибуция
+     офлайн-корпуса: [OpenStreetMap contributors](https://www.openstreetmap.org/copyright)
+     (ODbL), [OpenMapTiles](https://openmaptiles.org/) (стиль и схема, CC BY 4.0),
+     [MapLibre GL Native](https://maplibre.org/) (BSD-2-Clause),
+     [Noto Sans](https://github.com/openmaptiles/fonts) (SIL OFL 1.1).
+
    Весь текст выравнен по иконке.
+
+   **Эти четыре строки обязательны.** Кадр дэша своей атрибуции не несёт —
+   логотип и строка MapLibre выключены в `MapSnapshotProvider`
+   (`review-spec.md`, C6), поэтому карточка остаётся единственным местом, где
+   названы источники данных. Убрать их отсюда можно только вместе с обратным
+   включением надписей на кадре. Разбор по файлам — в
+   [`ATTRIBUTION.md`](../packages/opendash_dash_engine/android/src/main/assets/ATTRIBUTION.md)
+   рядом с самими ассетами.
 
 ## Обновление приложения
 

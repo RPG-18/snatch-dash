@@ -101,5 +101,4 @@ dependencies {
     // `org.json` ships with Android but is stubbed in JVM unit tests; the real
     // implementation lets the style assembler be tested without a device.
     testImplementation("org.json:json:20240303")
-    testImplementation("org.mockito:mockito-core:5.0.0")
 }

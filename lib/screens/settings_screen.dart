@@ -236,23 +236,43 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> with WidgetsBin
                   title: Text(l10n.settingsAboutTitle),
                   subtitle: Text(l10n.settingsAboutSubtitle),
                 ),
-                ListTile(
-                  dense: true,
-                  // Empty leading matches the Icon above's footprint, so this
-                  // title lines up with the title/subtitle text instead of
-                  // starting flush with the card edge.
-                  leading: const SizedBox(width: 24, height: 24),
-                  title: Text(
-                    l10n.settingsAboutYandexTermsLink,
-                    style: TextStyle(
-                      color: Theme.of(context).colorScheme.primary,
-                      decoration: TextDecoration.underline,
+                _AboutLink(
+                  label: l10n.settingsAboutYandexTermsLink,
+                  url: 'https://yandex.ru/legal/maps_api',
+                ),
+                // The dash frame carries no attribution of its own: MapLibre's
+                // logo and attribution line are switched off in
+                // MapSnapshotProvider because at 526×300 under a round bezel
+                // they cost a visible share of the frame (review-spec.md, C6).
+                // That makes this card the only place the offline corpus is
+                // credited, so these rows are a licence requirement, not a
+                // courtesy — see plan.md 4.6.
+                const Divider(height: 1),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+                  child: Align(
+                    alignment: Alignment.centerLeft,
+                    child: Text(
+                      l10n.settingsAboutMapDataTitle,
+                      style: Theme.of(context).textTheme.labelLarge,
                     ),
                   ),
-                  onTap: () => launchUrl(
-                    Uri.parse('https://yandex.ru/legal/maps_api'),
-                    mode: LaunchMode.externalApplication,
-                  ),
+                ),
+                _AboutLink(
+                  label: l10n.settingsAboutOsmLink,
+                  url: 'https://www.openstreetmap.org/copyright',
+                ),
+                _AboutLink(
+                  label: l10n.settingsAboutOpenMapTilesLink,
+                  url: 'https://openmaptiles.org/',
+                ),
+                _AboutLink(
+                  label: l10n.settingsAboutMapLibreLink,
+                  url: 'https://maplibre.org/',
+                ),
+                _AboutLink(
+                  label: l10n.settingsAboutFontsLink,
+                  url: 'https://github.com/openmaptiles/fonts',
                 ),
               ],
             ),
@@ -321,6 +341,34 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> with WidgetsBin
           ),
         ],
       ),
+    );
+  }
+}
+
+/// One underlined, tappable line in the About card.
+///
+/// The empty [leading] matches the footprint of the icon on the card's first
+/// tile, so every line's text starts at the same left edge instead of flush
+/// with the card.
+class _AboutLink extends StatelessWidget {
+  const _AboutLink({required this.label, required this.url});
+
+  final String label;
+  final String url;
+
+  @override
+  Widget build(BuildContext context) {
+    return ListTile(
+      dense: true,
+      leading: const SizedBox(width: 24, height: 24),
+      title: Text(
+        label,
+        style: TextStyle(
+          color: Theme.of(context).colorScheme.primary,
+          decoration: TextDecoration.underline,
+        ),
+      ),
+      onTap: () => launchUrl(Uri.parse(url), mode: LaunchMode.externalApplication),
     );
   }
 }

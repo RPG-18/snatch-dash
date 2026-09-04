@@ -1088,6 +1088,36 @@ abstract class AppLocalizations {
   /// **'Yandex Maps terms of use'**
   String get settingsAboutYandexTermsLink;
 
+  /// No description provided for @settingsAboutMapDataTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Map on the dash'**
+  String get settingsAboutMapDataTitle;
+
+  /// No description provided for @settingsAboutOsmLink.
+  ///
+  /// In en, this message translates to:
+  /// **'© OpenStreetMap contributors (ODbL)'**
+  String get settingsAboutOsmLink;
+
+  /// No description provided for @settingsAboutOpenMapTilesLink.
+  ///
+  /// In en, this message translates to:
+  /// **'© OpenMapTiles — style and schema (CC BY 4.0)'**
+  String get settingsAboutOpenMapTilesLink;
+
+  /// No description provided for @settingsAboutMapLibreLink.
+  ///
+  /// In en, this message translates to:
+  /// **'MapLibre GL Native (BSD-2-Clause)'**
+  String get settingsAboutMapLibreLink;
+
+  /// No description provided for @settingsAboutFontsLink.
+  ///
+  /// In en, this message translates to:
+  /// **'Noto Sans (SIL Open Font License 1.1)'**
+  String get settingsAboutFontsLink;
+
   /// No description provided for @settingsUpdatesTitle.
   ///
   /// In en, this message translates to:

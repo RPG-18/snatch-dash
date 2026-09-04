@@ -564,6 +564,22 @@ class AppLocalizationsEn extends AppLocalizations {
   String get settingsAboutYandexTermsLink => 'Yandex Maps terms of use';
 
   @override
+  String get settingsAboutMapDataTitle => 'Map on the dash';
+
+  @override
+  String get settingsAboutOsmLink => '© OpenStreetMap contributors (ODbL)';
+
+  @override
+  String get settingsAboutOpenMapTilesLink =>
+      '© OpenMapTiles — style and schema (CC BY 4.0)';
+
+  @override
+  String get settingsAboutMapLibreLink => 'MapLibre GL Native (BSD-2-Clause)';
+
+  @override
+  String get settingsAboutFontsLink => 'Noto Sans (SIL Open Font License 1.1)';
+
+  @override
   String get settingsUpdatesTitle => 'Updates';
 
   @override

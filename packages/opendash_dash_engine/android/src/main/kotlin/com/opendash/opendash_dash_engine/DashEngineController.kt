@@ -635,6 +635,12 @@ class DashEngineController(
 
         session.startStreaming()
 
+        // The window belongs to this stream, not to the controller that outlives it:
+        // whatever the previous session did not live long enough to report would
+        // otherwise be counted against this one's freshly-zeroed period — see
+        // RenderStats.reset.
+        renderStats.reset()
+
         streamJob = scope.launch(Dispatchers.Default) {
             try {
                 var failures = 0
@@ -704,6 +710,7 @@ class DashEngineController(
                                     skipped = snapshots.skipped,
                                     abandoned = snapshots.abandoned,
                                     errors = snapshots.errors,
+                                    rebuilds = snapshots.rebuilds,
                                 ),
                             )
                         }

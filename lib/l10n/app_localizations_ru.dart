@@ -573,6 +573,22 @@ class AppLocalizationsRu extends AppLocalizations {
       'Условия использования Яндекс Карт';
 
   @override
+  String get settingsAboutMapDataTitle => 'Карта на дэше';
+
+  @override
+  String get settingsAboutOsmLink => '© OpenStreetMap contributors (ODbL)';
+
+  @override
+  String get settingsAboutOpenMapTilesLink =>
+      '© OpenMapTiles — стиль и схема (CC BY 4.0)';
+
+  @override
+  String get settingsAboutMapLibreLink => 'MapLibre GL Native (BSD-2-Clause)';
+
+  @override
+  String get settingsAboutFontsLink => 'Noto Sans (SIL Open Font License 1.1)';
+
+  @override
   String get settingsUpdatesTitle => 'Обновления';
 
   @override

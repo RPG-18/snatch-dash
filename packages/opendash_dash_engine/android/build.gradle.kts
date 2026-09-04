@@ -50,8 +50,9 @@ android {
 
     buildFeatures {
         // Still needed for BuildConfig.DEBUG, which DebugLog.kt gates all native
-        // logging on — MAPTILER_API_KEY used to be the other field here, before
-        // TileProvider.kt moved to the caching proxy (see /maptiler_proxy.conf).
+        // logging on. MAPTILER_API_KEY used to be the other field here, back when
+        // the dash frame was raster tiles from MapTiler; that whole path — key,
+        // proxy, TileProvider.kt — is gone, replaced by local `.pmtiles` packs.
         buildConfig = true
     }
 
@@ -83,6 +84,22 @@ dependencies {
     // DashConfig — encrypted storage for the dash WiFi SSID/password.
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
 
+    // Offscreen map rendering for the dash frame (spec/drawing_from_local_tiles.md).
+    //
+    // `-opengl`, not the plain `android-sdk`: since 13.0.0 the default artifact
+    // renders through Vulkan and OpenGL ES moved to this one. The snapshotter's
+    // path to a Bitmap goes through glReadPixels and is long-settled on OpenGL,
+    // and the frame loop runs in a background service on whatever phone the
+    // rider owns — the wrong place to be an early adopter of a new backend.
+    //
+    // Not the floor version either: `pmtiles://` needs 11.8.0, but
+    // MapSnapshotter's padding — which carries the rider's offset into the
+    // lower third — only arrived in 12.0.1.
+    implementation("org.maplibre.gl:android-sdk-opengl:13.6.0")
+
     testImplementation("org.jetbrains.kotlin:kotlin-test")
+    // `org.json` ships with Android but is stubbed in JVM unit tests; the real
+    // implementation lets the style assembler be tested without a device.
+    testImplementation("org.json:json:20240303")
     testImplementation("org.mockito:mockito-core:5.0.0")
 }

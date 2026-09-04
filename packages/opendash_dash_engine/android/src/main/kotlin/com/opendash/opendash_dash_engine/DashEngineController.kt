@@ -13,10 +13,15 @@ import com.opendash.opendash_dash_engine.dash.DashSession
 import com.opendash.opendash_dash_engine.dash.DashState
 import com.opendash.opendash_dash_engine.dash.DashWifiManager
 import com.opendash.opendash_dash_engine.dash.WifiConnStatus
+import com.opendash.opendash_dash_engine.dash.map.DashCamera
 import com.opendash.opendash_dash_engine.dash.map.GeoPoint
 import com.opendash.opendash_dash_engine.dash.map.LocationTracker
-import com.opendash.opendash_dash_engine.dash.map.MapRenderer
-import com.opendash.opendash_dash_engine.dash.map.TileProvider
+import com.opendash.opendash_dash_engine.dash.map.MapProjection
+import com.opendash.opendash_dash_engine.dash.map.MapSnapshotProvider
+import com.opendash.opendash_dash_engine.dash.map.MapStyleAssembler
+import com.opendash.opendash_dash_engine.dash.map.MapTheme
+import com.opendash.opendash_dash_engine.dash.map.OverlayRenderer
+import com.opendash.opendash_dash_engine.dash.map.RenderStats
 import com.opendash.opendash_dash_engine.dash.protocol.DashCommands
 import com.opendash.opendash_dash_engine.dash.video.DashEncoder
 import com.opendash.opendash_dash_engine.dash.video.NalProcessor
@@ -34,7 +39,9 @@ import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import java.io.File
+import kotlinx.coroutines.withContext
+import org.maplibre.android.camera.CameraPosition
+import org.maplibre.android.geometry.LatLng
 import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.exp
@@ -91,14 +98,55 @@ class DashEngineController(
         // means frames leave the phone but the dash never confirms them — two different bugs in
         // two different files, previously indistinguishable without hex-grepping raw TX dumps.
         private const val ENCODER_LOG_INTERVAL_MS = 60_000L
+
+        // ── Map camera (spec/drawing_from_local_tiles.md) ──
+        //
+        // Zoom is stored in MAPLIBRE units, not slippy ones: MapLibre renders a
+        // tile at 512 px, so its zoom Z frames what slippy Z+1 did. The whole
+        // ladder moved rather than being converted at the boundary — one place
+        // to be wrong instead of three. 16 here is the old default of 17.
+        //
+        // The floor is the pack corpus's `minzoom`: MapLibre asks for tile
+        // `floor(camera zoom)`, and below 11 that tile does not exist. Rendering
+        // does not build downwards, so a lower step is a blank screen, not a
+        // coarse map.
+        private const val ZOOM_MIN = 11
+        private const val ZOOM_MAX = 19
+        private const val ZOOM_DEFAULT = 16
+        // Perspective tilt for the heading-up view, in degrees (MapLibre clamps
+        // to 0..60). Left flat for now: the raster renderer's `setPolyToPoly`
+        // trapezoid was a fake with no camera model behind it, so it gives no
+        // starting angle, and a real tilt changes what falls off the edge of a
+        // pack (the camera looks further, so the 2 km cut buffer is eaten
+        // sooner). Picking the value is an MVP question to answer on the panel,
+        // not at the keyboard — see «Камера, а не поворот растра».
+        private const val NAV_TILT_DEG = 0.0
+        // How long the frame loop waits for a snapshot before giving up on it and
+        // keeping the previous frame. Two frame intervals at 4 fps; a snapshot
+        // slower than this is not "the map is behind", it is "the dash froze".
+        private const val SNAPSHOT_DEADLINE_MS = 500L
+        // The FIRST snapshot of a stream gets its own, much larger budget. It is
+        // not comparable to the rest: MapLibre loads the style on the first
+        // `start()`, not when the snapshotter is built, so that one pays for
+        // parsing ~45 layers times the number of packs, the sprite sheet, the
+        // glyph ranges and a header read on every `.pmtiles` file. Holding it to
+        // the steady-state deadline would fail it on principle and leave the dash
+        // without a frame at all — there is no previous one to keep.
+        private const val FIRST_SNAPSHOT_DEADLINE_MS = 8_000L
+        // How often the render budget is summarised into the ride log. Frequent
+        // enough to catch a stretch of the ride, rare enough that the sort behind
+        // the percentiles is free.
+        private const val RENDER_LOG_INTERVAL_MS = 30_000L
     }
 
     private val dashConfig = DashConfig.get(context)
     private val wifiManager = DashWifiManager(context, scope)
     private val session = DashSession(scope)
     private val locationTracker = LocationTracker(context, scope)
-    private val tileProvider = TileProvider(context, scope)
-    private val mapRenderer = MapRenderer(tileProvider)
+    private val styleAssembler = MapStyleAssembler(context)
+    private val snapshots = MapSnapshotProvider(context)
+    private val overlays = OverlayRenderer()
+    private val renderStats = RenderStats()
     private var toneGenerator: ToneGenerator? = null
     private val mediaInfo = MediaInfoProvider(context)
     private val callController = CallController(context)
@@ -149,7 +197,7 @@ class DashEngineController(
     @Volatile private var routePoints: List<GeoPoint> = emptyList()
     // Traffic-level code per geometry segment (index i covers routePoints[i]..[i+1]),
     // same encoding as Dart's `JamLevel.index` — see setNavState's doc. Empty means
-    // "no traffic data for this route", MapRenderer then falls back to a solid line.
+    // "no traffic data for this route", OverlayRenderer then falls back to a solid line.
     @Volatile private var routeJam: List<Int> = emptyList()
     @Volatile private var remainingM: Double? = null
     @Volatile private var offRoute = false
@@ -171,7 +219,7 @@ class DashEngineController(
     // nav fields above — otherwise a button press can go unseen by the frame
     // loop. The rest are touched only by the frame loop and by [startStream]
     // (which launches it, establishing happens-before), so plain fields.
-    @Volatile private var zoom = 17
+    @Volatile private var zoom = ZOOM_DEFAULT
     @Volatile private var panX = 0f
     @Volatile private var panY = 0f
     @Volatile private var headingUp = true
@@ -185,6 +233,13 @@ class DashEngineController(
     private var lastTickNs = 0L
     private var lastSignature = ""
     private var lastRedrawAt = 0L
+    // Whether [frameBitmap] holds a real frame yet, i.e. one snapshot has landed
+    // since [startStream]. Until then there is nothing to encode — see the gate in
+    // the frame loop.
+    private var haveFrame = false
+    // Which snapshotter this stream prepared, so [disconnect] releases that one
+    // and not whatever a later connection has since put in its place.
+    private var snapshotGeneration = 0L
 
     var onButton: ((Int) -> Unit)? = null
 
@@ -288,6 +343,13 @@ class DashEngineController(
         wifiManager.disconnect()
         locationTracker.stop()
         encoder?.release(); encoder = null
+        // The style — theme and set of packs — is read once per stream, so the
+        // snapshotter is per-stream too and goes away with it. By generation, not
+        // "whatever is current": this does not wait, and a fast reconnect could
+        // otherwise have it free the snapshotter the NEXT stream just prepared —
+        // after which every frame silently returns null and the map freezes.
+        val generation = snapshotGeneration
+        scope.launch { snapshots.release(generation) }
         DashKeepAliveService.stop(context)
         RideDiagnostics.stop("disconnect")
         // explicitDisconnect=true distinguishes this from every other publishState() call (all
@@ -357,7 +419,6 @@ class DashEngineController(
         destLng = lng
         navigating = lat != null && lng != null
         session.updateRouteCard(name ?: "OpenDash")
-        if (lat != null && lng != null) tileProvider.prefetch(lat, lng)
         // DashSession reads [navigating] off the state stream for its own
         // chrome/nav-info decisions — push immediately instead of waiting for
         // the next frame-loop tick() so "Send to Dash" takes effect at once.
@@ -393,9 +454,8 @@ class DashEngineController(
         if (points.isNotEmpty()) {
             routePoints = points
             // Mismatched length means stale/missing traffic data for this route —
-            // MapRenderer's solid-line fallback then kicks in (spec/yande_ruote.md).
+            // OverlayRenderer's solid-line fallback then kicks in (spec/yande_ruote.md).
             routeJam = if (jamSegments.size == points.size - 1) jamSegments else emptyList()
-            tileProvider.prefetchRoute(points)
         }
         if (remainingMeters != null && nextTurnMeters != null) {
             val (pv, pu) = toDashDistance(nextTurnMeters)
@@ -409,14 +469,23 @@ class DashEngineController(
         if (enabled) { panX = 0f; panY = 0f }
     }
 
+    /**
+     * Joystick pan, in frame pixels.
+     *
+     * Bounded, unlike before: pan reaches the camera as padding, and padding is
+     * taken out of the viewport it shifts within — see [DashCamera.MAX_PAN_FRACTION].
+     */
     fun panBy(dx: Float, dy: Float) {
         followMode = false
         lastManualPanAt = System.currentTimeMillis()
-        panX += dx; panY += dy
+        val maxX = DashEncoder.WIDTH * DashCamera.MAX_PAN_FRACTION
+        val maxY = DashEncoder.HEIGHT * DashCamera.MAX_PAN_FRACTION
+        panX = (panX + dx).coerceIn(-maxX, maxX)
+        panY = (panY + dy).coerceIn(-maxY, maxY)
     }
 
-    fun zoomIn() { zoom = (zoom + 1).coerceAtMost(20) }
-    fun zoomOut() { zoom = (zoom - 1).coerceAtLeast(11) }
+    fun zoomIn() { zoom = (zoom + 1).coerceAtMost(ZOOM_MAX) }
+    fun zoomOut() { zoom = (zoom - 1).coerceAtLeast(ZOOM_MIN) }
     fun toggleHeadingUp() { headingUp = !headingUp }
     fun recenter() { followMode = true; panX = 0f; panY = 0f }
 
@@ -465,7 +534,6 @@ class DashEngineController(
     fun dispose() {
         disconnect()
         runCatching { toneGenerator?.release() }
-        tileProvider // no explicit release needed; memory cache is GC'd
     }
 
     // ── Streaming / render loop ─────────────────────────────────────────
@@ -528,41 +596,91 @@ class DashEngineController(
         frameBitmap = Bitmap.createBitmap(DashEncoder.WIDTH, DashEncoder.HEIGHT, Bitmap.Config.ARGB_8888)
         lastSignature = ""
         camInit = false; lastTickNs = 0L
+        haveFrame = false
+
+        // Theme and the set of packs are read HERE and nowhere else for the rest
+        // of the ride. That is what makes a mid-ride style reload impossible by
+        // construction rather than by interface discipline: swapping the style
+        // means a full reparse — every source and layer dropped and rebuilt —
+        // and a blank map on the move (spec/drawing_from_local_tiles.md,
+        // «Сменить набор паков = перезагрузить стиль»). A pack downloaded or
+        // deleted mid-ride takes effect on the next connection.
+        // On IO: this lists the pack directory on external storage and reads the
+        // template out of the APK, and [startStream] is reached from the session
+        // collector on the main thread.
+        val style = withContext(Dispatchers.IO) { styleAssembler.assembleCurrent() }
+        overlays.darkMap = style.theme == MapTheme.DARK
+        snapshots.prepare(style.json, DashEncoder.WIDTH, DashEncoder.HEIGHT)
+        // Captured so [disconnect]'s release can only ever free THIS snapshotter,
+        // never one a later connection has since prepared.
+        snapshotGeneration = snapshots.currentGeneration()
+        RideDiagnostics.log(
+            "map",
+            "style ${style.theme} from ${style.packs} pack(s), ${style.json.length / 1024} KiB",
+        )
 
         session.startStreaming()
-        locationTracker.location.value?.let { tileProvider.prefetch(it.latitude, it.longitude) }
 
         streamJob = scope.launch(Dispatchers.Default) {
-            var lastPrefetch = 0L
             var failures = 0
             var lastEncoderLogAt = System.currentTimeMillis()
+            var lastRenderLogAt = lastEncoderLogAt
+            var lastFrameSentAt = 0L
             var loggedFrames = 0; var loggedIdr = 0; var loggedRtp = 0
-            // Declared outside the try/catch and assigned fresh right after tick() each
-            // iteration, so the trailing delay() below can reuse the SAME value the PTS advance
-            // used — both must agree on "how long is this frame", or the RTP timeline and the
-            // actual send cadence drift apart from each other. Starts at the conservative (idle)
-            // interval; only matters for a hypothetical exception inside tick() itself, before
-            // the real value below gets assigned.
+            // Declared outside the try/catch and assigned fresh once per iteration, so the
+            // trailing delay() below can reuse the SAME value the PTS advance used — both must
+            // agree on "how long is this frame", or the RTP timeline and the actual send cadence
+            // drift apart from each other. Starts at the conservative (idle) interval; only
+            // matters for a hypothetical exception inside tick() itself, before the real value
+            // below gets assigned.
             var frameIntervalMs = 1000L / FPS_IDLE
             while (isActive && session.state.value == DashState.STREAMING) {
                 try {
-                    tick()
+                    // Assigned BEFORE tick() now, not after: the interval is also this frame's
+                    // render budget, and tick() reports against it. The cost is that a
+                    // stopped/started transition uses the previous iteration's [camMoving] for
+                    // one frame — invisible next to the camera's own 350 ms smoothing.
                     frameIntervalMs = 1000L / (if (camMoving) FPS_MOVING else FPS_IDLE)
+                    tick(frameIntervalMs)
                     val bmp = frameBitmap
                     val enc = encoder
-                    if (bmp != null && enc != null) {
+                    // [haveFrame] gates the very first frames of a stream, and only
+                    // those. A freshly created bitmap is fully transparent, and the
+                    // overlay renderer no longer paints a background of its own (it
+                    // comes from the style, inside the snapshot) — so until one
+                    // snapshot has landed there is nothing in here worth encoding.
+                    // Sending it anyway put garbage on the dash for as long as the
+                    // first, most expensive snapshot took.
+                    if (bmp != null && enc != null && haveFrame) {
+                        val encodeStart = System.currentTimeMillis()
                         enc.renderFrame { canvas -> canvas.drawBitmap(bmp, 0f, 0f, null) }
                         // Advance the presentation clock by THIS frame's interval BEFORE
                         // draining, so the frame(s) pulled this iteration carry an
                         // evenly-spaced RTP timestamp — see videoPtsMs's own doc above.
                         videoPtsMs += frameIntervalMs
                         enc.drain()
+                        val sentAt = System.currentTimeMillis()
+                        renderStats.frameSent(
+                            intervalMs = if (lastFrameSentAt == 0L) 0L else sentAt - lastFrameSentAt,
+                            encodeMs = sentAt - encodeStart,
+                            intendedIntervalMs = frameIntervalMs,
+                        )
+                        lastFrameSentAt = sentAt
                     }
                     failures = 0
                     val now = System.currentTimeMillis()
-                    if (now - lastPrefetch > 20_000) {
-                        lastPrefetch = now
-                        locationTracker.location.value?.let { tileProvider.prefetch(it.latitude, it.longitude) }
+                    if (now - lastRenderLogAt > RENDER_LOG_INTERVAL_MS) {
+                        val elapsed = now - lastRenderLogAt
+                        lastRenderLogAt = now
+                        RideDiagnostics.log(
+                            "map",
+                            renderStats.drain(
+                                periodMs = elapsed,
+                                timeouts = snapshots.timeouts,
+                                abandoned = snapshots.abandoned,
+                                errors = snapshots.errors,
+                            ),
+                        )
                     }
                     if (now - lastEncoderLogAt > ENCODER_LOG_INTERVAL_MS) {
                         val dFrames = framesEncoded - loggedFrames
@@ -602,7 +720,15 @@ class DashEngineController(
         }
     }
 
-    private fun tick() {
+    /**
+     * One iteration of camera smoothing, plus a redraw when anything visible
+     * changed. Suspends because [redrawFrame] waits for MapLibre.
+     *
+     * [frameIntervalMs] is this frame's budget — passed down so telemetry can
+     * say how often the snapshot ate it, which is the number the "wait for the
+     * snapshot" decision stands or falls on (see «Телеметрия»).
+     */
+    private suspend fun tick(frameIntervalMs: Long) {
         if (!followMode && System.currentTimeMillis() - lastManualPanAt > MANUAL_IDLE_MS) {
             panX = 0f; panY = 0f; followMode = true
         }
@@ -661,24 +787,76 @@ class DashEngineController(
         }
         val now = System.currentTimeMillis()
         if (sig != lastSignature || now - lastRedrawAt > FORCE_REDRAW_MS) {
-            lastSignature = sig
-            lastRedrawAt = now
-            redrawFrame(centerLat, centerLng, camHeading, riderLat != null, gpsWeak, gpsLost)
+            // Committed only if the frame was actually redrawn. Recording the
+            // signature up front made a failed snapshot look like a drawn frame:
+            // the same signature would not be retried, so a parked rider — whose
+            // signature is stable — kept a stale frame until FORCE_REDRAW_MS, and
+            // the telemetry counted it as a deliberate reuse.
+            if (redrawFrame(
+                    centerLat, centerLng, camHeading, riderLat != null, gpsWeak, gpsLost,
+                    frameIntervalMs,
+                )
+            ) {
+                lastSignature = sig
+                lastRedrawAt = now
+            }
         }
     }
 
-    private fun redrawFrame(
+    /**
+     * The camera for one frame.
+     *
+     * Rotation and tilt live here rather than in a transform over the finished
+     * raster: turning a drawn map turns its labels with it, while MapLibre keeps
+     * them upright itself (spec/drawing_from_local_tiles.md, «Камера, а не
+     * поворот растра»).
+     */
+    private fun cameraFor(centerLat: Double, centerLng: Double, heading: Float): CameraPosition =
+        CameraPosition.Builder()
+            .target(LatLng(centerLat, centerLng))
+            .zoom(zoom.toDouble())
+            .bearing(if (headingUp) heading.toDouble() else 0.0)
+            .tilt(if (headingUp) NAV_TILT_DEG else 0.0)
+            .build()
+
+    /**
+     * Map first, overlays on top, into [frameBitmap]. True if the frame changed.
+     *
+     * A snapshot that failed or missed its deadline leaves the frame untouched —
+     * the dash keeps showing the last complete one — and returns false, so the
+     * caller knows not to record this frame as drawn. Redrawing overlays over a
+     * stale map is not an option: the route and the rider arrow would be a frame
+     * ahead of the roads under them.
+     */
+    private suspend fun redrawFrame(
         centerLat: Double, centerLng: Double, heading: Float,
         haveRider: Boolean, gpsWeak: Boolean, gpsLost: Boolean,
-    ) {
-        val bmp = frameBitmap ?: return
+        frameIntervalMs: Long,
+    ): Boolean {
+        val bmp = frameBitmap ?: return false
+
+        val snapshotStart = System.currentTimeMillis()
+        val snapshot = snapshots.capture(
+            cameraFor(centerLat, centerLng, heading),
+            DashCamera.padding(DashEncoder.WIDTH, DashEncoder.HEIGHT, headingUp, panX, panY),
+            if (haveFrame) SNAPSHOT_DEADLINE_MS else FIRST_SNAPSHOT_DEADLINE_MS,
+        ) ?: return false
+        val snapshotMs = System.currentTimeMillis() - snapshotStart
+
+        val overlayStart = System.currentTimeMillis()
+        val map = snapshot.bitmap
+        val blank = MapSnapshotProvider.isBlank(map)
         val canvas = Canvas(bmp)
-        val frame = MapRenderer.Frame(
-            centerLat = centerLat,
-            centerLng = centerLng,
-            zoom = zoom,
-            panX = panX,
-            panY = panY,
+        canvas.drawBitmap(map, 0f, 0f, null)
+        // Snapshot bitmaps are allocated natively and arrive one per redraw. Since
+        // API 26 their pixels live outside the Java heap, so the GC feels no
+        // pressure from them and would leave the free to a finalizer — at 631 KB a
+        // frame that is gigabytes an hour growing without ever raising a Java OOM.
+        // Safe to do here: the pipeline holds exactly one snapshot at a time and
+        // its contents are already copied above.
+        map.recycle()
+
+        val frame = OverlayRenderer.Frame(
             headingUp = headingUp,
             heading = heading,
             riderLat = if (haveRider) camLat else null,
@@ -691,7 +869,21 @@ class DashEngineController(
             gpsWeak = gpsWeak,
             gpsLost = gpsLost,
         )
-        mapRenderer.draw(canvas, frame)
+        // The projection comes off the snapshot that was just drawn, so overlays
+        // and map can never disagree about where a coordinate is.
+        overlays.draw(canvas, frame, MapProjection { lat, lng -> snapshot.pixelForLatLng(LatLng(lat, lng)) })
+
+        renderStats.mapDrawn(
+            snapshotMs = snapshotMs,
+            overlayMs = System.currentTimeMillis() - overlayStart,
+            budgetMs = frameIntervalMs,
+            blank = blank,
+        )
+        if (!haveFrame) {
+            haveFrame = true
+            RideDiagnostics.log("map", "first map frame ready in ${snapshotMs}ms (blank=$blank)")
+        }
+        return true
     }
 
     private fun toDashDistance(meters: Double): Pair<Int, Int> =

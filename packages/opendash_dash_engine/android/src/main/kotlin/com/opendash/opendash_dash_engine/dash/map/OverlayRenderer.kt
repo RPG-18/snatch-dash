@@ -2,31 +2,50 @@ package com.opendash.opendash_dash_engine.dash.map
 
 import android.graphics.Canvas
 import android.graphics.Color
-import android.graphics.ColorMatrix
-import android.graphics.ColorMatrixColorFilter
-import android.graphics.Matrix
 import android.graphics.Paint
 import android.graphics.Path
+import android.graphics.PointF
 import android.graphics.Rect
 import android.graphics.RectF
 import kotlin.math.cos
 
 /**
- * Draws the navigation frame for the Tripper Dash (526 × 300).
+ * Where a coordinate lands on the frame.
  *
- * Layers: map tiles (already dark-filtered by TileProvider) → road route polyline
- * → destination pin → rider marker → top banner (name + remaining) → maneuver chip.
- * Optional heading-up rotation. Paint/Path/Rect objects are reused across frames
- * to avoid per-frame allocation churn.
+ * Backed by the very `MapSnapshot` the overlays are drawn onto, so there is
+ * exactly one projection in the pipeline. The old renderer kept its own Mercator
+ * arithmetic alongside the tile layout; two sources of projection stay in step
+ * only until the first disagreement about a camera parameter, and then the route
+ * slides off the roads.
  */
-class MapRenderer(private val tiles: TileProvider) {
+fun interface MapProjection {
+    fun project(lat: Double, lng: Double): PointF
+}
+
+/**
+ * Draws everything the dash frame (526 × 300) carries **on top of** the map:
+ * the route with its traffic colours, the destination pin, the rider arrow, and
+ * the ETA/GPS pills.
+ *
+ * The map itself is a MapLibre snapshot already drawn into the frame before this
+ * runs (spec/drawing_from_local_tiles.md, «Конвейер кадра»). That is why nothing
+ * here decides *where* anything goes any more: no tile loop, no Mercator, no
+ * `canvas.rotate`, no perspective warp. Heading-up rotation and tilt are the
+ * camera's job — rotating a finished raster would rotate the labels with it,
+ * which MapLibre keeps upright itself.
+ *
+ * Paint/Path objects are reused across frames to avoid per-frame allocation
+ * churn; the projected route shares one growable FloatArray for the same reason.
+ */
+class OverlayRenderer {
 
     data class Frame(
-        val centerLat: Double,
-        val centerLng: Double,
-        val zoom: Int,
-        val panX: Float = 0f,
-        val panY: Float = 0f,
+        /**
+         * Whether the map turns with the rider. Kept even though the rotation
+         * itself moved to the camera: the rider arrow is drawn in screen space
+         * and has to point differently in the two modes — straight up when the
+         * map is already turned, at the true bearing when it is north-up.
+         */
         val headingUp: Boolean = false,
         val heading: Float = 0f,           // travel bearing, degrees
         val riderLat: Double? = null,
@@ -41,14 +60,19 @@ class MapRenderer(private val tiles: TileProvider) {
         val routeJam: List<Int> = emptyList(),
         val maneuverText: String? = null,  // e.g. "Turn left · 400 m"
         val remainingText: String? = null, // e.g. "186 km"
-        val tilt3d: Boolean = false,       // perspective 3D view (nav heading-up only)
         val etaPrimary: String? = null,    // big glance value, e.g. "24 min" (nav only)
         val etaSecondary: String? = null,  // smaller line, e.g. "18 km · 13:32"
         val gpsWeak: Boolean = false,
         val gpsLost: Boolean = false,
     )
 
-    private val bgColor   = Color.rgb(229, 227, 223) // Google Maps land colour, behind missing tiles
+    /**
+     * Which of the two styles is under the overlays. Only the standby text
+     * needs it — everything else is drawn in colours chosen to read against
+     * both. Set once per stream, alongside the style itself.
+     */
+    var darkMap: Boolean = false
+
     private val routeBlue = Color.rgb(66, 133, 244)  // Google Maps directions blue (#4285F4) — fallback when no jam data
     private val googleRed = Color.rgb(234, 67, 53)   // Google destination pin red (#EA4335)
 
@@ -63,11 +87,6 @@ class MapRenderer(private val tiles: TileProvider) {
         Color.rgb(0xA0, 0x00, 0x00), // 5 veryHard
     )
 
-    private val tilePaint  = Paint(Paint.FILTER_BITMAP_FLAG).apply {
-        // Gentle saturation nudge to help against the dash TFT's daylight wash-out. No
-        // brightness/contrast tricks (those flattened or clipped the map before).
-        colorFilter = ColorMatrixColorFilter(ColorMatrix().apply { setSaturation(1.2f) })
-    }
     private val routeCasing = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.WHITE; style = Paint.Style.STROKE
         strokeWidth = 11f; strokeCap = Paint.Cap.ROUND; strokeJoin = Paint.Join.ROUND
@@ -81,10 +100,7 @@ class MapRenderer(private val tiles: TileProvider) {
         strokeWidth = 3f; strokeJoin = Paint.Join.ROUND
     }
     private val dotPaint     = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val textPaint    = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE; textSize = 22f; isFakeBoldText = true }
-    private val subTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = routeBlue; textSize = 19f; isFakeBoldText = true }
-    private val bannerPaint  = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(215, 13, 15, 17) }
-    private val standbyPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.rgb(60, 64, 67); textSize = 22f; isFakeBoldText = true }
+    private val standbyPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { textSize = 22f; isFakeBoldText = true }
 
     // ETA pill (drawn in screen space, bottom-centre, inside the round safe zone)
     private val etaBgPaint     = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(232, 20, 22, 26) }
@@ -100,12 +116,11 @@ class MapRenderer(private val tiles: TileProvider) {
     // Reused across frames
     private val routePath = Path()
     private val riderPath = Path()
-    private val tmpRect = RectF()
     private val pillRect = RectF()
     private val textBounds = Rect()
-    private val tiltMatrix = Matrix()
-    private val tiltSrc = FloatArray(8)
-    private val tiltDst = FloatArray(8)
+    // Projected route, x/y interleaved. Grown, never shrunk: a route is a few
+    // hundred points and this is the one hot-loop buffer worth keeping.
+    private var projected = FloatArray(1024)
 
     /**
      * Nearest point on the route polyline to (lat, lng), as (segment index,
@@ -141,62 +156,32 @@ class MapRenderer(private val tiles: TileProvider) {
         return bestIdx to proj
     }
 
-    fun draw(canvas: Canvas, f: Frame) {
+    /**
+     * Projects the whole polyline once into [projected].
+     *
+     * Once, not per use: `pixelForLatLng` is an `external` call returning a
+     * fresh `PointF`, so every point is a JNI crossing plus an object. Drawing
+     * the casing and then each traffic-coloured segment used to re-derive the
+     * same coordinates four times over.
+     */
+    private fun projectRoute(route: List<GeoPoint>, projection: MapProjection) {
+        if (projected.size < route.size * 2) projected = FloatArray(route.size * 2)
+        for (i in route.indices) {
+            val p = projection.project(route[i].lat, route[i].lng)
+            projected[i * 2] = p.x
+            projected[i * 2 + 1] = p.y
+        }
+    }
+
+    /**
+     * Draws the overlays over whatever [canvas] already holds — the map
+     * snapshot. Nothing is cleared here: on a frame where the snapshot failed,
+     * the caller keeps the previous complete frame rather than handing us an
+     * empty one.
+     */
+    fun draw(canvas: Canvas, f: Frame, projection: MapProjection) {
         val w = canvas.width
         val h = canvas.height
-        canvas.drawColor(bgColor)
-
-        val rotate = f.headingUp
-        val tilt = rotate && f.tilt3d
-        // Nav view: bias the rider toward the lower third so the road AHEAD fills the
-        // screen (like Google Maps navigation). 3D pushes it lower still. North-up
-        // view keeps the rider centred.
-        val pivotY = if (rotate) (if (tilt) h * 0.74f else h * 0.66f) else h / 2f
-
-        val ts = Mercator.TILE_SIZE
-        val cx = Mercator.lngToTileX(f.centerLng, f.zoom) * ts + f.panX
-        val cy = Mercator.latToTileY(f.centerLat, f.zoom) * ts + f.panY
-        val left = cx - w / 2.0
-        val top  = cy - pivotY
-
-        fun sx(lng: Double) = (Mercator.lngToTileX(lng, f.zoom) * ts - left).toFloat()
-        fun sy(lat: Double) = (Mercator.latToTileY(lat, f.zoom) * ts - top).toFloat()
-
-        if (rotate) {
-            canvas.save()
-            if (tilt) {
-                // Perspective tilt: warp the flat frame into a trapezoid that converges
-                // toward the top, so the road ahead recedes into the distance (the
-                // Google-Maps 3D look). Near things (rider, bottom) stay ~undistorted;
-                // far things (dest, route ahead) shrink, which is exactly right.
-                val inset = w * 0.18f
-                tiltSrc[0] = 0f;          tiltSrc[1] = 0f
-                tiltSrc[2] = w.toFloat(); tiltSrc[3] = 0f
-                tiltSrc[4] = w.toFloat(); tiltSrc[5] = h.toFloat()
-                tiltSrc[6] = 0f;          tiltSrc[7] = h.toFloat()
-                tiltDst[0] = inset;          tiltDst[1] = 0f
-                tiltDst[2] = w - inset;      tiltDst[3] = 0f
-                tiltDst[4] = w.toFloat();    tiltDst[5] = h.toFloat()
-                tiltDst[6] = 0f;             tiltDst[7] = h.toFloat()
-                tiltMatrix.setPolyToPoly(tiltSrc, 0, tiltDst, 0, 4)
-                canvas.concat(tiltMatrix)
-            }
-            canvas.rotate(-f.heading, w / 2f, pivotY)
-        }
-
-        // ── Tiles (padded when rotating so corners are covered) ──
-        val pad = if (rotate) (maxOf(w, h) * 0.45).toInt() else 0
-        val txMin = Math.floorDiv((left - pad).toInt(), ts)
-        val tyMin = Math.floorDiv((top - pad).toInt(), ts)
-        val txMax = Math.floorDiv((left + w + pad).toInt(), ts)
-        val tyMax = Math.floorDiv((top + h + pad).toInt(), ts)
-        for (tx in txMin..txMax) for (ty in tyMin..tyMax) {
-            val bmp = tiles.get(f.zoom, tx, ty) ?: continue
-            val dstL = (tx * ts - left).toFloat()
-            val dstT = (ty * ts - top).toFloat()
-            tmpRect.set(dstL, dstT, dstL + ts, dstT + ts)
-            canvas.drawBitmap(bmp, null, tmpRect, tilePaint)
-        }
 
         // ── Road route polyline (casing, then traffic-coloured fill) ──
         // Trimmed to the road AHEAD: find the segment nearest the rider and start
@@ -215,9 +200,10 @@ class MapRenderer(private val tiles: TileProvider) {
             trimmed to trimmedJam
         }
         if (drawRoute.size >= 2) {
+            projectRoute(drawRoute, projection)
             routePath.reset()
-            routePath.moveTo(sx(drawRoute[0].lng), sy(drawRoute[0].lat))
-            for (i in 1 until drawRoute.size) routePath.lineTo(sx(drawRoute[i].lng), sy(drawRoute[i].lat))
+            routePath.moveTo(projected[0], projected[1])
+            for (i in 1 until drawRoute.size) routePath.lineTo(projected[i * 2], projected[i * 2 + 1])
             canvas.drawPath(routePath, routeCasing)
 
             val segCount = drawRoute.size - 1
@@ -227,8 +213,8 @@ class MapRenderer(private val tiles: TileProvider) {
                 for (i in 0 until segCount) {
                     routePaint.color = jamColors.getOrElse(drawJam[i]) { routeBlue }
                     canvas.drawLine(
-                        sx(drawRoute[i].lng), sy(drawRoute[i].lat),
-                        sx(drawRoute[i + 1].lng), sy(drawRoute[i + 1].lat),
+                        projected[i * 2], projected[i * 2 + 1],
+                        projected[i * 2 + 2], projected[i * 2 + 3],
                         routePaint,
                     )
                 }
@@ -241,22 +227,23 @@ class MapRenderer(private val tiles: TileProvider) {
 
         // ── Destination pin ──
         if (f.destLat != null && f.destLng != null) {
-            val dx = sx(f.destLng); val dy = sy(f.destLat)
+            val p = projection.project(f.destLat, f.destLng)
             // Google-style red destination pin (white ring + red fill).
-            dotPaint.color = Color.WHITE; canvas.drawCircle(dx, dy, 12f, dotPaint)
-            dotPaint.color = googleRed; canvas.drawCircle(dx, dy, 9f, dotPaint)
-            dotPaint.color = Color.WHITE; canvas.drawCircle(dx, dy, 3.5f, dotPaint)
+            dotPaint.color = Color.WHITE; canvas.drawCircle(p.x, p.y, 12f, dotPaint)
+            dotPaint.color = googleRed; canvas.drawCircle(p.x, p.y, 9f, dotPaint)
+            dotPaint.color = Color.WHITE; canvas.drawCircle(p.x, p.y, 3.5f, dotPaint)
         }
 
         // ── Rider marker: navigation arrow, oriented to travel heading ──
         // Same kite/dart silhouette as the app's `Icons.navigation_outlined` (Home
-        // screen's "Начать навигацию" tile) instead of a plain dot. Always drawn
-        // "pointing up" then rotated by [f.heading]: in heading-up mode that
-        // rotation cancels the map's own -heading rotation above, so the arrow
-        // stays pointing at the top of the screen ("forward"); in north-up mode
-        // there's no outer rotation, so it directly shows the true compass bearing.
+        // screen's "Начать навигацию" tile) instead of a plain dot. Drawn
+        // "pointing up" and then rotated only in north-up mode, where up is north
+        // and the arrow has to show the true compass bearing itself. In heading-up
+        // mode the camera has already turned the map, so the arrow stays pointing
+        // at the top of the frame — "forward" — with no rotation of its own.
         if (f.riderLat != null && f.riderLng != null) {
-            val rx = sx(f.riderLng); val ry = sy(f.riderLat)
+            val p = projection.project(f.riderLat, f.riderLng)
+            val rx = p.x; val ry = p.y
             val markerColor = when {
                 f.gpsLost -> Color.rgb(150, 154, 160)
                 f.gpsWeak -> Color.rgb(251, 188, 5)
@@ -270,7 +257,7 @@ class MapRenderer(private val tiles: TileProvider) {
             )
             canvas.drawCircle(rx, ry, 17f, dotPaint)
 
-            canvas.save(); canvas.rotate(f.heading, rx, ry)
+            canvas.save(); canvas.rotate(if (f.headingUp) 0f else f.heading, rx, ry)
             riderPath.reset()
             riderPath.moveTo(rx, ry - 13f)      // tip (front)
             riderPath.lineTo(rx + 9f, ry + 9f)  // right wing
@@ -282,9 +269,7 @@ class MapRenderer(private val tiles: TileProvider) {
             canvas.restore()
         }
 
-        if (rotate) canvas.restore()
-
-        // ── ETA pill (screen-space so it stays upright; bottom-centre safe zone) ──
+        // ── ETA pill (bottom-centre safe zone) ──
         // The dash is round, so it's kept narrow and centred. Shows ETA only (time +
         // arrival clock) — distance lives on the dash's own widget.
         f.etaPrimary?.let { primary ->
@@ -331,9 +316,12 @@ class MapRenderer(private val tiles: TileProvider) {
         // No other on-map text overlays — the dash's own widgets show name/turn, and the
         // round bezel clips anything near the top edge.
 
-        // ── Standby when nothing to show (dark text on the light map bg) ──
+        // ── Standby when nothing to show ──
+        // Colour follows the style: the light map's dark grey vanishes on Dark
+        // Matter's near-black background.
         if (f.riderLat == null && f.destLat == null) {
             val msg = "OpenDash · waiting for GPS"
+            standbyPaint.color = if (darkMap) Color.rgb(170, 174, 180) else Color.rgb(60, 64, 67)
             standbyPaint.getTextBounds(msg, 0, msg.length, textBounds)
             canvas.drawText(msg, (w - textBounds.width()) / 2f, h / 2f, standbyPaint)
         }

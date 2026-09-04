@@ -9,6 +9,7 @@ import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 import java.io.File
+import java.util.concurrent.Executors
 
 /**
  * Self-update install flow (see `lib/util/apk_installer.dart` / settings_screen.dart's
@@ -20,6 +21,13 @@ import java.io.File
  */
 class MainActivity : FlutterActivity() {
     private val channelName = "ru.snatchdash.app/updater"
+    private val mapsChannelName = "ru.snatchdash.app/maps"
+
+    private val downloader by lazy { MapPackDownloader(applicationContext) }
+
+    /** Single thread: sha256 over a large pack must never run on the main one,
+     *  and two reconciles racing over the same `.part` file help nobody. */
+    private val mapsWorker = Executors.newSingleThreadExecutor()
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -41,6 +49,93 @@ class MainActivity : FlutterActivity() {
                 }
                 else -> result.notImplemented()
             }
+        }
+
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, mapsChannelName)
+            .setMethodCallHandler { call, result -> handleMaps(call.method, call, result) }
+    }
+
+    override fun onDestroy() {
+        mapsWorker.shutdown()
+        super.onDestroy()
+    }
+
+    /**
+     * Offline map packs (see spec/offline_maps_screen.md). Same reasoning as the
+     * updater channel above: a handful of plain methods on the app's own channel.
+     *
+     * Downloading lives here rather than in `opendash_dash_engine` on purpose —
+     * it has nothing to do with the dash. The two sides meet only at the
+     * directory and the naming convention: Dart puts verified packs into
+     * the `maps` directory under their `.pmtiles` name, and the engine
+     * enumerates them there at stream start.
+     */
+    private fun handleMaps(method: String, call: io.flutter.plugin.common.MethodCall, result: MethodChannel.Result) {
+        when (method) {
+            "mapsDir" -> result.success(downloader.mapsDir().absolutePath)
+
+            "hasRoomFor" -> {
+                val bytes = call.argument<Number>("bytes")?.toLong()
+                if (bytes == null) result.error("NO_BYTES", "Missing 'bytes'", null)
+                else result.success(downloader.hasRoomFor(bytes))
+            }
+
+            "start" -> {
+                val code = call.argument<String>("code")
+                val url = call.argument<String>("url")
+                val sha256 = call.argument<String>("sha256")
+                if (code == null || url == null || sha256 == null) {
+                    result.error("BAD_ARGS", "Missing code/url/sha256", null)
+                    return
+                }
+                try {
+                    val id = downloader.start(
+                        code = code,
+                        url = url,
+                        sha256 = sha256,
+                        sizeBytes = call.argument<Number>("sizeBytes")?.toLong() ?: 0L,
+                        generatedAt = call.argument<String>("generatedAt") ?: "",
+                        title = call.argument<String>("title") ?: code,
+                    )
+                    result.success(id)
+                } catch (e: Exception) {
+                    // The system downloader can be disabled by the user, and then
+                    // enqueue throws. That's a state to show, not a crash.
+                    result.error("ENQUEUE_FAILED", e.message, null)
+                }
+            }
+
+            "cancel" -> {
+                val code = call.argument<String>("code")
+                if (code == null) result.error("NO_CODE", "Missing 'code'", null)
+                else {
+                    downloader.cancel(code)
+                    result.success(null)
+                }
+            }
+
+            "delete" -> {
+                val code = call.argument<String>("code")
+                if (code == null) result.error("NO_CODE", "Missing 'code'", null)
+                else result.success(downloader.delete(code))
+            }
+
+            "progress" -> result.success(downloader.progress())
+
+            "installedFiles" -> result.success(downloader.installedFiles())
+
+            // Hashing hundreds of megabytes — off the main thread, answer posted back.
+            "reconcile" -> mapsWorker.execute {
+                val outcomes = try {
+                    downloader.reconcile()
+                } catch (e: Exception) {
+                    runOnUiThread { result.error("RECONCILE_FAILED", e.message, null) }
+                    return@execute
+                }
+                runOnUiThread { result.success(outcomes) }
+            }
+
+            else -> result.notImplemented()
         }
     }
 

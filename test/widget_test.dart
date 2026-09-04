@@ -17,8 +17,10 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:snatch_dash/data/garage_repository.dart';
+import 'package:snatch_dash/data/installed_packs_repository.dart';
 import 'package:snatch_dash/data/saved_location_repository.dart';
 import 'package:snatch_dash/main.dart';
+import 'package:snatch_dash/state/offline_maps_controller.dart';
 import 'package:snatch_dash/state/garage_controller.dart';
 import 'package:snatch_dash/state/saved_destinations_controller.dart';
 
@@ -58,6 +60,10 @@ void main() {
         overrides: [
           garageRepositoryProvider.overrideWithValue(InMemoryGarageRepository()),
           savedLocationRepositoryProvider.overrideWithValue(InMemorySavedLocationRepository()),
+          // Home gates navigation on the pack registry, so booting it now
+          // touches sqlite — which widget tests have no binding for.
+          installedPacksRepositoryProvider
+              .overrideWithValue(InMemoryInstalledPacksRepository()),
         ],
         child: const OpenDashApp(),
       ),

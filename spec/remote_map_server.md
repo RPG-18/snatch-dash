@@ -89,7 +89,9 @@ Android 11.8.0 — обвязку писать не нужно.
 ```
 
 Подкаталог на страну. Базовый URL клиент подставляет сам — в манифесте лежат
-только относительные пути.
+только относительные пути. Боевая база:
+**`https://storage.yandexcloud.net/snatch-dash-maps/`** (константа
+`kMapServerBaseUrl` в [`lib/data/map_manifest_api.dart`](../lib/data/map_manifest_api.dart)).
 
 Что отдаёт хостинг (проверено на боевом бакете): `accept-ranges: bytes`,
 `content-type: application/octet-stream`, `ETag`, `Last-Modified`. Авторизации

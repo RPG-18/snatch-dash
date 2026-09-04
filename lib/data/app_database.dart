@@ -17,7 +17,9 @@ class AppDatabase {
   factory AppDatabase.forTesting(String path) => AppDatabase._(path);
 
   static const _dbName = 'opendash.db';
-  static const _dbVersion = 1;
+
+  /// v2 adds `installed_pack` (offline map registry).
+  static const _dbVersion = 2;
 
   final String? _testPath;
 
@@ -90,6 +92,7 @@ class AppDatabase {
             lng REAL NOT NULL
           )
         ''');
+        await db.execute(_createInstalledPack);
         await db.execute('''
           CREATE TABLE ride (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -107,8 +110,28 @@ class AppDatabase {
           )
         ''');
       },
+      onUpgrade: (db, oldVersion, newVersion) async {
+        if (oldVersion < 2) await db.execute(_createInstalledPack);
+      },
     );
   }
+
+  /// Registry of verified, installed tile packs. `code` is the primary key:
+  /// one pack per code, and re-installing an updated pack replaces the row.
+  ///
+  /// This is the truth the *interface* reads. The native engine has its own —
+  /// it enumerates `maps/*.pmtiles` at stream start — and the two cannot
+  /// disagree, because a file gets its `.pmtiles` name in the same atomic move
+  /// that writes the row here (spec/drawing_from_local_tiles.md).
+  static const _createInstalledPack = '''
+    CREATE TABLE installed_pack (
+      code TEXT PRIMARY KEY,
+      sha256 TEXT NOT NULL,
+      generated_at TEXT NOT NULL,
+      size_bytes INTEGER NOT NULL,
+      installed_at_ms INTEGER NOT NULL
+    )
+  ''';
 
   /// Test/dev helper — closes and clears the cached handle so a fresh
   /// `database` re-opens (used by repository tests with an in-memory DB).

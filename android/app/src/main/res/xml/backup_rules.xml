@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Auto Backup rules for Android 11 and below (`android:fullBackupContent`).
+  Android 12+ uses `data_extraction_rules.xml` instead — both are needed, and
+  both must exclude the same thing.
+
+  Offline map packs live in `getExternalFilesDir(null)/maps/` and run from 3 MB
+  to 356 MB each. Auto Backup's quota is 25 MB per app, and exceeding it makes
+  the system skip the backup *entirely* — silently. One median-sized pack would
+  therefore stop the expenses/rides/vehicles database from ever being backed up,
+  with nothing to tell the rider.
+
+  Packs are re-downloadable from index.json, so there is nothing of value to
+  back up here anyway. See spec/drawing_from_local_tiles.md, "Хранение паков".
+-->
+<full-backup-content>
+    <exclude domain="external" path="maps/" />
+</full-backup-content>

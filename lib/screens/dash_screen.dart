@@ -8,6 +8,7 @@ import '../l10n/app_localizations.dart';
 import '../map/opendash_map.dart';
 import '../nav/geo_point.dart';
 import '../state/dash_engine_state.dart';
+import '../state/offline_maps_controller.dart';
 import '../state/route_controller.dart';
 import '../util/location_permission.dart';
 import 'debug/maneuver_glyph_probe.dart';
@@ -29,6 +30,7 @@ class DashScreen extends ConsumerWidget {
     final engine = ref.watch(dashEngineStateProvider);
     final route = ref.watch(routeControllerProvider).route;
     final destination = ref.watch(routeControllerProvider).destination;
+    final hasMaps = ref.watch(hasInstalledPacksProvider);
     final l10n = AppLocalizations.of(context)!;
 
     final dest = destination != null
@@ -63,13 +65,31 @@ class DashScreen extends ConsumerWidget {
               right: 12,
               child: ManeuverGlyphProbe(riderLat: engine.riderLat, riderLng: engine.riderLng),
             ),
-          if (engine.gpsLost || engine.gpsWeak)
+          // Top-centre status chips, stacked so they can never overlap each
+          // other. The bottom of the screen is spoken for: the remaining-km
+          // pill sits at 96 and the media/call cards at 16, so a chip placed
+          // there would land on top of them in exactly the situation it is
+          // needed — connected without packs while music plays.
+          if (!hasMaps || engine.gpsLost || engine.gpsWeak)
             Positioned(
               top: 12,
               left: 0,
               right: 0,
-              child: Center(
-                child: Chip(label: Text(engine.gpsLost ? l10n.dashGpsLost : l10n.dashGpsWeak)),
+              child: Column(
+                children: [
+                  if (engine.gpsLost || engine.gpsWeak)
+                    Chip(label: Text(engine.gpsLost ? l10n.dashGpsLost : l10n.dashGpsWeak)),
+                  // Connecting without packs is allowed (media, calls and the
+                  // link itself don't need maps), so the dash shows an empty
+                  // frame. This chip is the only place that says why — without
+                  // it a blank instrument cluster reads as a failure.
+                  if (!hasMaps)
+                    ActionChip(
+                      avatar: const Icon(Icons.map_outlined, size: 18),
+                      label: Text(l10n.dashNoOfflineMaps),
+                      onPressed: () => context.push('/more/offline-maps'),
+                    ),
+                ],
               ),
             ),
           if (engine.remainingKm != null)

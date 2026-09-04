@@ -382,6 +382,99 @@ class AppLocalizationsEn extends AppLocalizations {
   }
 
   @override
+  String get offlineMapsTitle => 'Offline maps';
+
+  @override
+  String get offlineMapsSearchHint => 'Search regions';
+
+  @override
+  String get offlineMapsDownloadedSection => 'Downloaded';
+
+  @override
+  String get offlineMapsNothingDownloaded => 'No maps downloaded';
+
+  @override
+  String get offlineMapsNothingDownloadedSub =>
+      'Without maps the dash cannot show navigation';
+
+  @override
+  String get offlineMapsServerUnavailable => 'Map server unavailable';
+
+  @override
+  String get offlineMapsRetry => 'Retry';
+
+  @override
+  String get offlineMapsStaleCache => 'Couldn\'t check for updates';
+
+  @override
+  String get offlineMapsAppTooOld => 'Update the app to keep using maps';
+
+  @override
+  String get offlineMapsNoResults => 'Nothing found';
+
+  @override
+  String get offlineMapsCancelTitle => 'Cancel download';
+
+  @override
+  String get offlineMapsUpdateAvailable => 'Update available';
+
+  @override
+  String get offlineMapsDeleteAction => 'Delete';
+
+  @override
+  String offlineMapsDeleteTitle(String name) {
+    return 'Delete $name?';
+  }
+
+  @override
+  String get offlineMapsExitNavigationFirst => 'Exit navigation mode first';
+
+  @override
+  String get offlineMapsNoSpace => 'Not enough space on the device';
+
+  @override
+  String get offlineMapsEnqueueFailed => 'The system downloader is unavailable';
+
+  @override
+  String get offlineMapsDownloadFailed => 'Couldn\'t download the map';
+
+  @override
+  String get settingsOfflineMapsTitle => 'Offline maps';
+
+  @override
+  String settingsOfflineMapsSubtitle(num count, String size) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count maps, $size',
+      one: '$count map, $size',
+      zero: 'Nothing downloaded',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String get settingsMapTheme => 'Map theme';
+
+  @override
+  String get settingsMapThemeLight => 'Light';
+
+  @override
+  String get settingsMapThemeDark => 'Dark';
+
+  @override
+  String get homeNoOfflineMaps => 'You have no downloaded maps';
+
+  @override
+  String get homeNoOfflineMapsSub => 'Download a region to enable navigation';
+
+  @override
+  String get homeNeedMapsForNavigation => 'Downloaded maps required';
+
+  @override
+  String get dashNoOfflineMaps => 'No maps downloaded';
+
+  @override
   String get settingsTitle => 'More';
 
   @override

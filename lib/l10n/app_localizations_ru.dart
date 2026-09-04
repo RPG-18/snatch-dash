@@ -385,6 +385,103 @@ class AppLocalizationsRu extends AppLocalizations {
   }
 
   @override
+  String get offlineMapsTitle => 'Оффлайн-карты';
+
+  @override
+  String get offlineMapsSearchHint => 'Поиск регионов';
+
+  @override
+  String get offlineMapsDownloadedSection => 'Загруженные';
+
+  @override
+  String get offlineMapsNothingDownloaded => 'Нет скачанных карт';
+
+  @override
+  String get offlineMapsNothingDownloadedSub =>
+      'Без карт дэш не покажет навигацию';
+
+  @override
+  String get offlineMapsServerUnavailable => 'Сервер карт не доступен';
+
+  @override
+  String get offlineMapsRetry => 'Повторить';
+
+  @override
+  String get offlineMapsStaleCache => 'Не удалось проверить обновления';
+
+  @override
+  String get offlineMapsAppTooOld =>
+      'Обновите приложение, чтобы работать с картами';
+
+  @override
+  String get offlineMapsNoResults => 'Ничего не найдено';
+
+  @override
+  String get offlineMapsCancelTitle => 'Отменить загрузку';
+
+  @override
+  String get offlineMapsUpdateAvailable => 'Есть обновление';
+
+  @override
+  String get offlineMapsDeleteAction => 'Удалить';
+
+  @override
+  String offlineMapsDeleteTitle(String name) {
+    return 'Удалить $name?';
+  }
+
+  @override
+  String get offlineMapsExitNavigationFirst => 'Выйдите из режима навигации';
+
+  @override
+  String get offlineMapsNoSpace => 'Недостаточно места на устройстве';
+
+  @override
+  String get offlineMapsEnqueueFailed => 'Системный загрузчик недоступен';
+
+  @override
+  String get offlineMapsDownloadFailed => 'Не удалось скачать карту';
+
+  @override
+  String get settingsOfflineMapsTitle => 'Оффлайн-карты';
+
+  @override
+  String settingsOfflineMapsSubtitle(num count, String size) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count карты, $size',
+      many: '$count карт, $size',
+      few: '$count карты, $size',
+      one: '$count карта, $size',
+      zero: 'Ничего не скачано',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String get settingsMapTheme => 'Тема карты';
+
+  @override
+  String get settingsMapThemeLight => 'Светлая';
+
+  @override
+  String get settingsMapThemeDark => 'Тёмная';
+
+  @override
+  String get homeNoOfflineMaps => 'У вас нет скаченных карт';
+
+  @override
+  String get homeNoOfflineMapsSub =>
+      'Скачайте карту региона, чтобы включить навигацию';
+
+  @override
+  String get homeNeedMapsForNavigation => 'Нужны скачанные карты';
+
+  @override
+  String get dashNoOfflineMaps => 'Нет скачанных карт';
+
+  @override
   String get settingsTitle => 'Ещё';
 
   @override

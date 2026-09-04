@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Android 12+ (`android:dataExtractionRules`). The Android 11-and-below twin is
+  `backup_rules.xml`; keep the two in step.
+
+  Both sections matter, for different reasons:
+
+  - `cloud-backup` — the 25 MB quota. Exceeding it makes the system skip the
+    whole backup silently, so one map pack would cost us the database.
+  - `device-transfer` — has no quota at all, so without this exclusion moving to
+    a new phone would drag gigabytes of packs along. They are re-downloadable
+    from the tile server, which is faster than transferring them.
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="external" path="maps/" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="external" path="maps/" />
+    </device-transfer>
+</data-extraction-rules>

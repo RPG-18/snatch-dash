@@ -10,9 +10,12 @@ import '../state/app_update_controller.dart';
 import '../state/auto_update_settings.dart';
 import '../state/currency_settings.dart';
 import '../state/dash_engine_state.dart';
+import '../state/map_theme_settings.dart';
 import '../state/map_tile_cache.dart';
+import '../state/offline_maps_controller.dart';
 import '../state/update_channel_settings.dart';
 import '../util/app_logger.dart';
+import '../util/byte_size.dart';
 import '../util/github_release.dart';
 
 /// "More" tab: dash connection/pairing, offline maps, map theme and currency.
@@ -91,6 +94,8 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> with WidgetsBin
   Widget build(BuildContext context) {
     final engine = ref.watch(dashEngineStateProvider);
     final currency = ref.watch(currencySettingsProvider);
+    final installedPacks = ref.watch(installedPacksProvider);
+    final mapTheme = ref.watch(mapThemeSettingsProvider);
     final l10n = AppLocalizations.of(context)!;
 
     return Scaffold(
@@ -133,6 +138,42 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> with WidgetsBin
                 },
               ),
             ]),
+          ),
+          const SizedBox(height: 16),
+          Card(
+            child: ListTile(
+              leading: const Icon(Icons.download_for_offline_outlined),
+              title: Text(l10n.settingsOfflineMapsTitle),
+              subtitle: Text(l10n.settingsOfflineMapsSubtitle(
+                installedPacks.length,
+                formatByteSize(l10n, installedPacks.fold(0, (sum, p) => sum + p.sizeBytes)),
+              )),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => context.push('/more/offline-maps'),
+            ),
+          ),
+          const SizedBox(height: 16),
+          Text(l10n.settingsMapTheme, style: Theme.of(context).textTheme.labelLarge),
+          const SizedBox(height: 8),
+          Card(
+            child: RadioGroup<MapTheme>(
+              groupValue: mapTheme,
+              onChanged: (v) {
+                if (v != null) ref.read(mapThemeSettingsProvider.notifier).select(v);
+              },
+              child: Column(
+                children: [
+                  RadioListTile<MapTheme>(
+                    value: MapTheme.light,
+                    title: Text(l10n.settingsMapThemeLight),
+                  ),
+                  RadioListTile<MapTheme>(
+                    value: MapTheme.dark,
+                    title: Text(l10n.settingsMapThemeDark),
+                  ),
+                ],
+              ),
+            ),
           ),
           const SizedBox(height: 16),
           Text(l10n.settingsCurrency, style: Theme.of(context).textTheme.labelLarge),
@@ -307,7 +348,7 @@ class _MapCacheCard extends ConsumerWidget {
         subtitle: cache.status == MapTileCacheStatus.error
             ? Text(l10n.settingsMapCacheUnknown)
             : cache.sizeBytes != null
-                ? Text(l10n.settingsMapCacheSize(_formatCacheSize(l10n, cache.sizeBytes!)))
+                ? Text(l10n.settingsMapCacheSize(formatByteSize(l10n, cache.sizeBytes!)))
                 : null,
         trailing: busy
             ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))
@@ -318,17 +359,6 @@ class _MapCacheCard extends ConsumerWidget {
       ),
     );
   }
-}
-
-const _cacheKb = 1024;
-const _cacheMb = _cacheKb * 1024;
-const _cacheGb = _cacheMb * 1024;
-
-String _formatCacheSize(AppLocalizations l10n, int bytes) {
-  if (bytes >= _cacheGb) return '${(bytes / _cacheGb).toStringAsFixed(1)} ${l10n.settingsMapCacheUnitGb}';
-  if (bytes >= _cacheMb) return '${(bytes / _cacheMb).toStringAsFixed(1)} ${l10n.settingsMapCacheUnitMb}';
-  if (bytes >= _cacheKb) return '${(bytes / _cacheKb).toStringAsFixed(0)} ${l10n.settingsMapCacheUnitKb}';
-  return '$bytes ${l10n.settingsMapCacheUnitBytes}';
 }
 
 /// Self-update card: current version, stable/nightly channel toggle, and the

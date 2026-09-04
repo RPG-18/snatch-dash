@@ -324,18 +324,18 @@ class DashSession(private val scope: CoroutineScope) {
                     // crashing the app; DashWifiManager handles reconnect.
                     DebugLog.w(TAG) { "RX loop stopped — socket error: ${e.message}" }
                     RideDiagnostics.log("error", "RX loop stopped — socket error: ${e.message}")
-                    // A deliberate disconnect() closes the socket out from under this blocking
-                    // receive(), so this exception is the EXPECTED way the loop ends there.
-                    // Reporting it would republish state with the explicitDisconnect flag back
-                    // to false and leave a "Lost connection" error hanging after a clean stop.
-                    reportLinkLost()
+                    // Full teardown, exactly as the watchdog path below: reporting the error
+                    // alone would leave the session in STREAMING with a dead socket, and the
+                    // state guard in connect() would then refuse every reconnect until the
+                    // rider disconnected by hand.
+                    endLink(sock)
                     break
                 }
                 if (pkt == null) {
                     // Timeout — not itself a problem (see DashSocket.RECV_TIMEOUT_MS), but
                     // repeated timeouts during STREAMING with no real packet in between mean
-                    // the dash has gone silent (see RX_IDLE_TIMEOUT_MS's doc). Mirrors the
-                    // socket-error path above: tear down the session so a fresh `connect()`
+                    // the dash has gone silent (see RX_IDLE_TIMEOUT_MS's doc). Same teardown as
+                    // the socket-error path above: tear down the session so a fresh `connect()`
                     // isn't blocked by the stale-socket state guard.
                     if (_state.value == DashState.STREAMING &&
                         System.currentTimeMillis() - lastRxAtMs > RX_IDLE_TIMEOUT_MS
@@ -343,11 +343,7 @@ class DashSession(private val scope: CoroutineScope) {
                         DebugLog.w(TAG) { "RX loop stopped — no data from dash for over ${RX_IDLE_TIMEOUT_MS}ms" }
                         val silentS = (System.currentTimeMillis() - lastRxAtMs) / 1000
                         RideDiagnostics.log("error", "RX watchdog: dash silent ${silentS}s → link lost")
-                        heartbeatJob?.cancel(); projHbJob?.cancel(); routeCardJob?.cancel()
-                        navInfoJob?.cancel(); mediaInfoJob?.cancel()
-                        sock.close(); socket = null
-                        setState(DashState.IDLE)
-                        onError?.invoke("Lost connection to dash")
+                        endLink(sock)
                         break
                     }
                     continue
@@ -372,15 +368,39 @@ class DashSession(private val scope: CoroutineScope) {
     }
 
     /**
-     * Surfaces a link loss to [onError], unless the session is already IDLE — which means
-     * [disconnect] got there first and this is just the teardown being observed, not a drop.
+     * Ends the link the RX loop was serving: the periodic senders that write to
+     * [sock], the socket itself, the session state, and the error report.
+     *
+     * Both ways the loop can end need every one of these. Reporting without the
+     * teardown — which is what the socket-error path used to do — leaves the
+     * session in STREAMING holding a dead socket: [onError] only publishes an
+     * error message, it does not touch session state, and the give-up timer is
+     * already cancelled by the time streaming starts. The stream loop then keeps
+     * pushing RTP into a closed socket, and the `!= IDLE && != ERROR` guard in
+     * [connect] refuses every reconnect until the rider disconnects by hand.
+     *
+     * [rxJob] is deliberately not cancelled here: the only callers are inside it,
+     * and they break out of their own loop on return.
      */
-    private fun reportLinkLost() {
-        if (_state.value == DashState.IDLE) {
+    private fun endLink(sock: DashSocket) {
+        // Read before the teardown below sets IDLE itself: a deliberate disconnect()
+        // closes the socket out from under the blocking receive(), so an exception
+        // there is the EXPECTED way this loop ends and must not republish state with
+        // explicitDisconnect back to false — that would leave a "Lost connection"
+        // error hanging after a clean stop.
+        val deliberate = _state.value == DashState.IDLE
+        heartbeatJob?.cancel(); projHbJob?.cancel(); routeCardJob?.cancel()
+        navInfoJob?.cancel(); mediaInfoJob?.cancel(); ackCounterJob?.cancel()
+        runCatching { sock.close() }
+        // Only if it is still ours: a reconnect that already replaced the field must
+        // not have its live socket nulled out by the previous session's loop.
+        if (socket === sock) socket = null
+        setState(DashState.IDLE)
+        if (deliberate) {
             DebugLog.i(TAG) { "RX loop ended after an explicit disconnect — not reporting" }
-            return
+        } else {
+            onError?.invoke("Lost connection to dash")
         }
-        onError?.invoke("Lost connection to dash")
     }
 
     private fun dispatchIncoming(pkt: ByteArray, sock: DashSocket) {

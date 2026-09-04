@@ -99,11 +99,20 @@ class RenderStats {
      * window, divided into its length. A window of mixed riding and standing gets
      * an expectation in between, which is the honest answer.
      *
-     * [timeouts], [abandoned] and [errors] are cumulative counters owned by
-     * [MapSnapshotProvider], reported as running totals on purpose — any of them
-     * being nonzero at all is the signal.
+     * [timeouts], [skipped], [abandoned] and [errors] are cumulative counters owned
+     * by [MapSnapshotProvider], reported as running totals on purpose — any of them
+     * being nonzero at all is the signal. [skipped] is the one to read for "how
+     * often did the map stand still": the deadline bounds the wait, not the freeze,
+     * so a run of skipped frames is what a wedged-but-not-yet-abandoned snapshotter
+     * looks like from here.
      */
-    fun drain(periodMs: Long, timeouts: Long, abandoned: Long, errors: Long): String {
+    fun drain(
+        periodMs: Long,
+        timeouts: Long,
+        skipped: Long,
+        abandoned: Long,
+        errors: Long,
+    ): String {
         val expected =
             if (frames == 0 || intendedTotalMs == 0L) "?"
             else (periodMs * frames / intendedTotalMs).toString()
@@ -111,7 +120,7 @@ class RenderStats {
             "(reused=${frames - redraws}) snapshot=${snapshotMs.drain()} " +
             "overlay=${overlayMs.drain()} encode=${encodeMs.drain()} " +
             "interval=${sendIntervalMs.drain()} late=$lateSnapshots blank=$blankMaps " +
-            "timeouts=$timeouts wedged=$abandoned snapErr=$errors"
+            "timeouts=$timeouts skipped=$skipped wedged=$abandoned snapErr=$errors"
         frames = 0
         redraws = 0
         lateSnapshots = 0

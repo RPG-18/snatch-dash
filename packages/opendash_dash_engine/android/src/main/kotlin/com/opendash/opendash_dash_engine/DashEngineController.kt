@@ -174,6 +174,8 @@ class DashEngineController(
     // encoder) — @Volatile so neither side works off a cached reference.
     // [startStream] additionally joins the old loop before touching either, so
     // a released MediaCodec/recycled bitmap can never be in use concurrently.
+    // The encoder is released by the frame loop itself, in its finally: nothing
+    // else can know that the last renderFrame/drain has returned.
     @Volatile private var encoder: DashEncoder? = null
     @Volatile private var frameBitmap: Bitmap? = null
     private var streamJob: Job? = null
@@ -342,7 +344,16 @@ class DashEngineController(
         session.disconnect()
         wifiManager.disconnect()
         locationTracker.stop()
-        encoder?.release(); encoder = null
+        // The encoder is NOT released here. cancel() above is cooperative — the frame
+        // loop runs on Dispatchers.Default and only stops at its next suspension point,
+        // so releasing from this thread raced with renderFrame/drain on a dead
+        // MediaCodec: an IllegalStateException storm, and at failures >= 3 the loop
+        // would rebuild an encoder nobody owns any more. [startStream] already fixed
+        // its half of that race with cancelAndJoin(); this half is fixed by ownership
+        // instead — the loop releases the encoder in its own finally as it unwinds,
+        // which is the one place where "nothing is drawing into it" is guaranteed.
+        // Joining from here is not an option: this runs on the main thread and the
+        // loop can be suspended inside a snapshot, which needs that same thread.
         // The style — theme and set of packs — is read once per stream, so the
         // snapshotter is per-stream too and goes away with it. By generation, not
         // "whatever is current": this does not wait, and a fast reconnect could
@@ -539,12 +550,14 @@ class DashEngineController(
     // ── Streaming / render loop ─────────────────────────────────────────
 
     /**
-     * Suspends rather than fire-and-forget so the previous frame loop can be
-     * *joined* before the encoder it is drawing into is released — cancelling
-     * it afterwards (as this used to) left the old loop calling `renderFrame`/
-     * `drain` on a dead MediaCodec for one more frame, which surfaced as an
-     * IllegalStateException storm and a pointless encoder rebuild. Only called
-     * from the [sessionWatchJob] collector, which is already a suspend context.
+     * Suspends rather than fire-and-forget so the previous frame loop is *joined*
+     * before this one installs a new encoder and frame bitmap — cancelling it
+     * afterwards (as this used to) left the old loop calling `renderFrame`/`drain`
+     * on a dead MediaCodec for one more frame, which surfaced as an
+     * IllegalStateException storm and a pointless encoder rebuild. The join also
+     * guarantees the old loop's finally has already released and cleared the
+     * encoder field by the time the assignment below runs. Only called from the
+     * [sessionWatchJob] collector, which is already a suspend context.
      */
     private suspend fun startStream() {
         RideDiagnostics.log("stream", "startStream — encoder up, RTP→dash beginning")
@@ -590,7 +603,8 @@ class DashEngineController(
         streamJob?.cancelAndJoin()
         streamJob = null
 
-        encoder?.release()
+        // No release() needed first: the joined loop released its own encoder and
+        // nulled the field on the way out (see its finally below).
         encoder = DashEncoder(onEncoded).also { it.prepare() }
 
         frameBitmap = Bitmap.createBitmap(DashEncoder.WIDTH, DashEncoder.HEIGHT, Bitmap.Config.ARGB_8888)
@@ -622,100 +636,124 @@ class DashEngineController(
         session.startStreaming()
 
         streamJob = scope.launch(Dispatchers.Default) {
-            var failures = 0
-            var lastEncoderLogAt = System.currentTimeMillis()
-            var lastRenderLogAt = lastEncoderLogAt
-            var lastFrameSentAt = 0L
-            var loggedFrames = 0; var loggedIdr = 0; var loggedRtp = 0
-            // Declared outside the try/catch and assigned fresh once per iteration, so the
-            // trailing delay() below can reuse the SAME value the PTS advance used — both must
-            // agree on "how long is this frame", or the RTP timeline and the actual send cadence
-            // drift apart from each other. Starts at the conservative (idle) interval; only
-            // matters for a hypothetical exception inside tick() itself, before the real value
-            // below gets assigned.
-            var frameIntervalMs = 1000L / FPS_IDLE
-            while (isActive && session.state.value == DashState.STREAMING) {
-                try {
-                    // Assigned BEFORE tick() now, not after: the interval is also this frame's
-                    // render budget, and tick() reports against it. The cost is that a
-                    // stopped/started transition uses the previous iteration's [camMoving] for
-                    // one frame — invisible next to the camera's own 350 ms smoothing.
-                    frameIntervalMs = 1000L / (if (camMoving) FPS_MOVING else FPS_IDLE)
-                    tick(frameIntervalMs)
-                    val bmp = frameBitmap
-                    val enc = encoder
-                    // [haveFrame] gates the very first frames of a stream, and only
-                    // those. A freshly created bitmap is fully transparent, and the
-                    // overlay renderer no longer paints a background of its own (it
-                    // comes from the style, inside the snapshot) — so until one
-                    // snapshot has landed there is nothing in here worth encoding.
-                    // Sending it anyway put garbage on the dash for as long as the
-                    // first, most expensive snapshot took.
-                    if (bmp != null && enc != null && haveFrame) {
-                        val encodeStart = System.currentTimeMillis()
-                        enc.renderFrame { canvas -> canvas.drawBitmap(bmp, 0f, 0f, null) }
-                        // Advance the presentation clock by THIS frame's interval BEFORE
-                        // draining, so the frame(s) pulled this iteration carry an
-                        // evenly-spaced RTP timestamp — see videoPtsMs's own doc above.
-                        videoPtsMs += frameIntervalMs
-                        enc.drain()
-                        val sentAt = System.currentTimeMillis()
-                        renderStats.frameSent(
-                            intervalMs = if (lastFrameSentAt == 0L) 0L else sentAt - lastFrameSentAt,
-                            encodeMs = sentAt - encodeStart,
-                            intendedIntervalMs = frameIntervalMs,
-                        )
-                        lastFrameSentAt = sentAt
-                    }
-                    failures = 0
-                    val now = System.currentTimeMillis()
-                    if (now - lastRenderLogAt > RENDER_LOG_INTERVAL_MS) {
-                        val elapsed = now - lastRenderLogAt
-                        lastRenderLogAt = now
-                        RideDiagnostics.log(
-                            "map",
-                            renderStats.drain(
-                                periodMs = elapsed,
-                                timeouts = snapshots.timeouts,
-                                abandoned = snapshots.abandoned,
-                                errors = snapshots.errors,
-                            ),
-                        )
-                    }
-                    if (now - lastEncoderLogAt > ENCODER_LOG_INTERVAL_MS) {
-                        val dFrames = framesEncoded - loggedFrames
-                        val dIdr = idrFramesEncoded - loggedIdr
-                        val dRtp = rtpPacketsSent - loggedRtp
-                        loggedFrames = framesEncoded; loggedIdr = idrFramesEncoded; loggedRtp = rtpPacketsSent
-                        lastEncoderLogAt = now
-                        val intervalS = ENCODER_LOG_INTERVAL_MS / 1_000
-                        val thermal = thermalLabel()
-                        if (dFrames == 0) {
-                            DebugLog.w(TAG) {
-                                "Encoder output: 0 frames in the last ${intervalS}s while STREAMING " +
-                                    "— render/encode loop itself stalled (nothing to even send) — thermal=$thermal"
-                            }
-                        } else {
-                            DebugLog.i(TAG) {
-                                "Encoder output: frames=$dFrames (idr=$dIdr) rtp=$dRtp thermal=$thermal in the last ${intervalS}s"
+            try {
+                var failures = 0
+                var lastEncoderLogAt = System.currentTimeMillis()
+                var lastRenderLogAt = lastEncoderLogAt
+                var lastFrameSentAt = 0L
+                var loggedFrames = 0; var loggedIdr = 0; var loggedRtp = 0
+                // Declared outside the try/catch and assigned fresh once per iteration, so the
+                // trailing delay() below can reuse the SAME value the PTS advance used — both must
+                // agree on "how long is this frame", or the RTP timeline and the actual send
+                // cadence drift apart from each other. Starts at the conservative (idle)
+                // interval; only matters for a hypothetical exception inside tick() itself,
+                // before the real value below gets assigned.
+                var frameIntervalMs = 1000L / FPS_IDLE
+                while (isActive && session.state.value == DashState.STREAMING) {
+                    // Top of the iteration, so the trailing delay() can pace to a DEADLINE
+                    // rather than sleep a whole interval on top of the work: the body waits
+                    // for a snapshot (up to the interval itself), and adding the full
+                    // interval after it made the real period `interval + latency`. At 4 fps
+                    // with a 100 ms snapshot that is ~2.9 fps, and it sagged exactly under
+                    // the load that makes snapshots slow. The spec asks for
+                    // `max(interval, latency)` (drawing_from_local_tiles.md, «Цикл ждёт
+                    // снапшот»), which is what the deadline gives.
+                    val iterationStartMs = System.currentTimeMillis()
+                    try {
+                        // Assigned BEFORE tick() now, not after: the interval is also this frame's
+                        // render budget, and tick() reports against it. The cost is that a
+                        // stopped/started transition uses the previous iteration's [camMoving] for
+                        // one frame — invisible next to the camera's own 350 ms smoothing.
+                        frameIntervalMs = 1000L / (if (camMoving) FPS_MOVING else FPS_IDLE)
+                        tick(frameIntervalMs)
+                        val bmp = frameBitmap
+                        val enc = encoder
+                        // [haveFrame] gates the very first frames of a stream, and only
+                        // those. A freshly created bitmap is fully transparent, and the
+                        // overlay renderer no longer paints a background of its own (it
+                        // comes from the style, inside the snapshot) — so until one
+                        // snapshot has landed there is nothing in here worth encoding.
+                        // Sending it anyway put garbage on the dash for as long as the
+                        // first, most expensive snapshot took.
+                        if (bmp != null && enc != null && haveFrame) {
+                            val encodeStart = System.currentTimeMillis()
+                            enc.renderFrame { canvas -> canvas.drawBitmap(bmp, 0f, 0f, null) }
+                            // Advance the presentation clock by THIS frame's interval BEFORE
+                            // draining, so the frame(s) pulled this iteration carry an
+                            // evenly-spaced RTP timestamp — see videoPtsMs's own doc above.
+                            videoPtsMs += frameIntervalMs
+                            enc.drain()
+                            val sentAt = System.currentTimeMillis()
+                            renderStats.frameSent(
+                                intervalMs = if (lastFrameSentAt == 0L) 0L else sentAt - lastFrameSentAt,
+                                encodeMs = sentAt - encodeStart,
+                                intendedIntervalMs = frameIntervalMs,
+                            )
+                            lastFrameSentAt = sentAt
+                        }
+                        failures = 0
+                        val now = System.currentTimeMillis()
+                        if (now - lastRenderLogAt > RENDER_LOG_INTERVAL_MS) {
+                            val elapsed = now - lastRenderLogAt
+                            lastRenderLogAt = now
+                            RideDiagnostics.log(
+                                "map",
+                                renderStats.drain(
+                                    periodMs = elapsed,
+                                    timeouts = snapshots.timeouts,
+                                    skipped = snapshots.skipped,
+                                    abandoned = snapshots.abandoned,
+                                    errors = snapshots.errors,
+                                ),
+                            )
+                        }
+                        if (now - lastEncoderLogAt > ENCODER_LOG_INTERVAL_MS) {
+                            val dFrames = framesEncoded - loggedFrames
+                            val dIdr = idrFramesEncoded - loggedIdr
+                            val dRtp = rtpPacketsSent - loggedRtp
+                            loggedFrames = framesEncoded; loggedIdr = idrFramesEncoded; loggedRtp = rtpPacketsSent
+                            lastEncoderLogAt = now
+                            val intervalS = ENCODER_LOG_INTERVAL_MS / 1_000
+                            val thermal = thermalLabel()
+                            if (dFrames == 0) {
+                                DebugLog.w(TAG) {
+                                    "Encoder output: 0 frames in the last ${intervalS}s while STREAMING " +
+                                        "— render/encode loop itself stalled (nothing to even send) — thermal=$thermal"
+                                }
+                            } else {
+                                DebugLog.i(TAG) {
+                                    "Encoder output: frames=$dFrames (idr=$dIdr) rtp=$dRtp thermal=$thermal in the last ${intervalS}s"
+                                }
                             }
                         }
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        failures++
+                        DebugLog.e(TAG, { "Frame loop error #$failures" }, e)
+                        if (failures >= 3) {
+                            runCatching { encoder?.release() }
+                            encoder = runCatching { DashEncoder(onEncoded).also { it.prepare() } }
+                                .onFailure { DebugLog.e(TAG, { "Encoder rebuild failed" }, it) }
+                                .getOrNull()
+                            lastSignature = ""
+                            failures = 0
+                        }
                     }
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    failures++
-                    DebugLog.e(TAG, { "Frame loop error #$failures" }, e)
-                    if (failures >= 3) {
-                        runCatching { encoder?.release() }
-                        encoder = runCatching { DashEncoder(onEncoded).also { it.prepare() } }
-                            .onFailure { DebugLog.e(TAG, { "Encoder rebuild failed" }, it) }
-                            .getOrNull()
-                        lastSignature = ""
-                        failures = 0
-                    }
+                    // Whatever is left of this frame's budget. Overrunning it is not made up
+                    // for by shortening the next frame: the loop falls behind by the overrun
+                    // and shows up as `frames=X/expected` plus `late=` in the render log,
+                    // which is the honest reading — videoPtsMs advances by the nominal
+                    // interval, and that stays truthful for as long as the budget is kept.
+                    delay((frameIntervalMs - (System.currentTimeMillis() - iterationStartMs)).coerceAtLeast(0L))
                 }
-                delay(frameIntervalMs)
+            } finally {
+                // The loop is the last thing that draws into this encoder, so it is the only
+                // place that can free it without racing renderFrame/drain — see the note in
+                // [disconnect]. Runs on cancellation too (nothing here suspends), which is
+                // what makes "cancel the loop" a complete teardown on its own.
+                runCatching { encoder?.release() }
+                encoder = null
             }
         }
     }

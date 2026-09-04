@@ -39,7 +39,7 @@ class RenderStatsTest {
         stats.mapDrawn(snapshotMs = 300, overlayMs = 4, budgetMs = 250, blank = false)
         stats.mapDrawn(snapshotMs = 120, overlayMs = 4, budgetMs = 250, blank = false)
 
-        assertTrue(stats.drain(periodMs = 30_000, timeouts = 0, abandoned = 0, errors = 0).contains("late=1"))
+        assertTrue(stats.drain(periodMs = 30_000, timeouts = 0, skipped = 0, abandoned = 0, errors = 0).contains("late=1"))
     }
 
     @Test
@@ -48,7 +48,7 @@ class RenderStatsTest {
         repeat(10) { stats.frameSent(intervalMs = 250, encodeMs = 6, intendedIntervalMs = 250) }
         repeat(3) { stats.mapDrawn(snapshotMs = 90, overlayMs = 4, budgetMs = 250, blank = false) }
 
-        val line = stats.drain(periodMs = 30_000, timeouts = 0, abandoned = 0, errors = 0)
+        val line = stats.drain(periodMs = 30_000, timeouts = 0, skipped = 0, abandoned = 0, errors = 0)
 
         // Ten frames left the phone; only three of them redrew the map. That gap
         // IS the frame-signature cache doing its job, and losing sight of it is
@@ -69,7 +69,7 @@ class RenderStatsTest {
         repeat(60) { stats.frameSent(intervalMs = 500, encodeMs = 6, intendedIntervalMs = 500) }
         repeat(60) { stats.frameSent(intervalMs = 250, encodeMs = 6, intendedIntervalMs = 250) }
 
-        val line = stats.drain(periodMs = 30_000, timeouts = 0, abandoned = 0, errors = 0)
+        val line = stats.drain(periodMs = 30_000, timeouts = 0, skipped = 0, abandoned = 0, errors = 0)
 
         // 120 frames intending 45 s of pacing, squeezed into a 30 s window → 80.
         assertTrue(line.contains("frames=120/80"), line)
@@ -79,7 +79,7 @@ class RenderStatsTest {
     fun `an empty window admits it rather than inventing a target`() {
         val stats = RenderStats()
 
-        assertTrue(stats.drain(periodMs = 30_000, timeouts = 0, abandoned = 0, errors = 0).contains("frames=0/?"))
+        assertTrue(stats.drain(periodMs = 30_000, timeouts = 0, skipped = 0, abandoned = 0, errors = 0).contains("frames=0/?"))
     }
 
     @Test
@@ -87,9 +87,9 @@ class RenderStatsTest {
         val stats = RenderStats()
         stats.frameSent(intervalMs = 250, encodeMs = 6, intendedIntervalMs = 250)
         stats.mapDrawn(snapshotMs = 400, overlayMs = 4, budgetMs = 250, blank = true)
-        stats.drain(periodMs = 30_000, timeouts = 2, abandoned = 1, errors = 1)
+        stats.drain(periodMs = 30_000, timeouts = 2, skipped = 3, abandoned = 1, errors = 1)
 
-        val second = stats.drain(periodMs = 30_000, timeouts = 2, abandoned = 1, errors = 1)
+        val second = stats.drain(periodMs = 30_000, timeouts = 2, skipped = 3, abandoned = 1, errors = 1)
         assertTrue(second.contains("redraws=0"), second)
         assertTrue(second.contains("blank=0"), second)
         assertFalse(second.contains("late=1"), second)
@@ -98,6 +98,17 @@ class RenderStatsTest {
         assertTrue(second.contains("frames=0/?"), second)
         // Owned by MapSnapshotProvider and reported as running totals: any of them
         // being nonzero at all is the signal.
-        assertTrue(second.contains("timeouts=2 wedged=1 snapErr=1"), second)
+        assertTrue(second.contains("timeouts=2 skipped=3 wedged=1 snapErr=1"), second)
+    }
+
+    @Test
+    fun `frames skipped because the snapshotter was busy are reported apart from timeouts`() {
+        val stats = RenderStats()
+        stats.frameSent(intervalMs = 250, encodeMs = 6, intendedIntervalMs = 250)
+        // What a wedged-but-not-yet-abandoned snapshotter looks like from the log:
+        // the frame loop never waited (so nothing timed out) and never redrew.
+        val line = stats.drain(periodMs = 30_000, timeouts = 0, skipped = 42, abandoned = 0, errors = 0)
+        assertTrue(line.contains("skipped=42"), line)
+        assertTrue(line.contains("timeouts=0"), line)
     }
 }

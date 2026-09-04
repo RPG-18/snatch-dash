@@ -29,7 +29,11 @@ import org.maplibre.android.snapshotter.MapSnapshotter
  *   construction — and lets the overlays borrow this snapshot's own projection.
  * - **The wait has a deadline.** Waiting without one means a single snapshot
  *   that never completes freezes the dash, which a rider cannot tell apart from
- *   a dropped link.
+ *   a dropped link. Note what the deadline does and does not bound: the frame
+ *   loop stops waiting, but the snapshotter still owes us that request and takes
+ *   no other until it lands or [WEDGED_MS] tears it off, so the map itself can
+ *   stand still for far longer than one deadline. [skipped] counts exactly those
+ *   frames — read it before deciding this design holds.
  * - **Everything here runs on the main thread.** `MapSnapshotter` checks for it
  *   in debug builds and delivers both callbacks through a main-looper `Handler`
  *   regardless, so this is where the object already lives.
@@ -54,6 +58,23 @@ class MapSnapshotProvider(private val context: Context) {
 
     /** Snapshots that missed their deadline. The frame loop moved on without them. */
     @Volatile var timeouts = 0L
+        private set
+
+    /**
+     * Frames that never even asked for a snapshot because the previous request was
+     * still out — i.e. the map on the dash did not move for that frame.
+     *
+     * This is the number the "wait for the snapshot" design is actually judged on,
+     * and it is NOT [timeouts]: the deadline bounds how long the frame loop waits,
+     * not how long the map stands still. A snapshot that overruns its deadline
+     * keeps the snapshotter (one request at a time) until it lands or [WEDGED_MS]
+     * tears it off, and every frame in between comes back null here. Counted
+     * separately so the threshold for moving MapLibre into a SurfaceTexture
+     * (spec/drawing_from_local_tiles.md) can be taken from measurements instead of
+     * from an argument — timeouts=0 with skipped in the hundreds is exactly the
+     * pattern that would otherwise look healthy in the log.
+     */
+    @Volatile var skipped = 0L
         private set
 
     /**
@@ -123,6 +144,7 @@ class MapSnapshotProvider(private val context: Context) {
                 // Still out, but not for long enough to call it dead. Skip this
                 // frame rather than pile a second request on a busy snapshotter —
                 // `start()` throws while a callback is pending.
+                skipped++
                 return@withContext null
             }
             // Long past slow. Tear it off and take the leak: a frozen map is worse.
@@ -139,26 +161,46 @@ class MapSnapshotProvider(private val context: Context) {
         try {
             val snapshot = withTimeoutOrNull(deadlineMs) {
                 suspendCancellableCoroutine { cont ->
-                    snapshotter.start(
-                        { snapshot ->
-                            inFlight = false
-                            if (cont.isActive) {
-                                cont.resume(snapshot)
-                            } else {
-                                // Arrived after the frame loop gave up on it. Nobody
-                                // will draw this one, so free it here — see the note
-                                // on the native heap above.
-                                runCatching { snapshot.bitmap.recycle() }
-                            }
-                        },
-                        { reason ->
-                            inFlight = false
-                            failed = true
-                            errors++
-                            DebugLog.w(TAG) { "snapshot failed: $reason" }
-                            if (cont.isActive) cont.resume(null)
-                        },
-                    )
+                    // A synchronous throw out of start() means no callback is coming, and
+                    // leaving [inFlight] set would silently skip every frame until
+                    // WEDGED_MS — the exact freeze this class is built to avoid, minus
+                    // even a log line.
+                    try {
+                        snapshotter.start(
+                            { snapshot ->
+                                inFlight = false
+                                if (cont.isActive) {
+                                    cont.resume(snapshot)
+                                } else {
+                                    // Arrived after the frame loop gave up on it. Nobody
+                                    // will draw this one, so free it here — see the note
+                                    // on the native heap above.
+                                    runCatching { snapshot.bitmap.recycle() }
+                                }
+                            },
+                            { reason ->
+                                inFlight = false
+                                // Only while the frame loop is still waiting on this one.
+                                // A failure that arrives after the deadline was already
+                                // counted as a timeout, and counting it twice made a single
+                                // slow-then-failed snapshot read as two separate problems.
+                                if (cont.isActive) {
+                                    failed = true
+                                    errors++
+                                    DebugLog.w(TAG) { "snapshot failed: $reason" }
+                                    cont.resume(null)
+                                } else {
+                                    DebugLog.w(TAG) { "snapshot failed after its deadline: $reason" }
+                                }
+                            },
+                        )
+                    } catch (e: Exception) {
+                        inFlight = false
+                        failed = true
+                        errors++
+                        DebugLog.e(TAG, { "snapshotter.start() threw" }, e)
+                        if (cont.isActive) cont.resume(null)
+                    }
                 }
             }
             if (snapshot == null && !failed) {

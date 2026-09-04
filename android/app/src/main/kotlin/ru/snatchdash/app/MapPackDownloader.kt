@@ -6,6 +6,7 @@ import android.net.Uri
 import android.os.storage.StorageManager
 import android.util.Log
 import java.io.File
+import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 import java.security.MessageDigest
@@ -135,43 +136,88 @@ class MapPackDownloader(private val context: Context) {
     fun reconcile(): List<Map<String, Any?>> {
         val results = mutableListOf<Map<String, Any?>>()
         for (code in pendingCodes()) {
-            val id = pending.getLong(keyId(code), -1L)
-            if (id < 0) {
+            // One pack's failure must not take the batch with it. Without this,
+            // an IOException out of Files.move or sha256Of threw away `results`
+            // whole — including codes already renamed and forgotten, whose
+            // INSTALLED never reached Dart. The file is then on disk and drawn by
+            // the engine while the registry and the navigation gate deny it
+            // exists, and the culprit's pending entry throws again on every poll
+            // tick, 700 ms apart, forever.
+            results += try {
+                reconcileOne(code)
+            } catch (e: Exception) {
+                Log.w(TAG, "reconcile failed for $code: ${e.message}", e)
+                // Give up on this pack completely, not just on its bookkeeping.
+                // Dropping only the pending entry would strand the `.part` file —
+                // up to a few hundred megabytes that nothing ever looks at again,
+                // since `reconcile` walks pending codes — and leave a finished
+                // DownloadManager row behind it.
+                runCatching { partFile(code).delete() }
+                val strandedId = pending.getLong(keyId(code), -1L)
+                if (strandedId >= 0) runCatching { dm.remove(strandedId) }
                 forget(code)
-                continue
-            }
-            val status = queryStatus(id)
-            if (status == null) {
-                // The row is gone — the rider cleared it from the system downloads
-                // UI, or it was never really enqueued. Nothing left to finish.
-                partFile(code).delete()
-                forget(code)
-                results += result(code, Outcome.CANCELLED, null)
-                continue
-            }
-
-            when (status.first) {
-                DownloadManager.STATUS_SUCCESSFUL -> results += install(code, id)
-                DownloadManager.STATUS_FAILED -> {
-                    val reason = status.second
-                    val outcome =
-                        if (reason == DownloadManager.ERROR_CANNOT_RESUME) Outcome.CONFLICT else Outcome.FAILED
-                    Log.w(TAG, "download failed $code reason=$reason -> $outcome")
-                    partFile(code).delete()
-                    dm.remove(id)
-                    forget(code)
-                    results += result(code, outcome, "reason=$reason")
-                }
-                else -> Unit // still pending/running/paused — nothing to finish yet
+                listOf(result(code, Outcome.FAILED, e.message))
             }
         }
         return results
+    }
+
+    /** One pending code; see [reconcile] for why this is separable. */
+    private fun reconcileOne(code: String): List<Map<String, Any?>> {
+        val id = pending.getLong(keyId(code), -1L)
+        if (id < 0) {
+            forget(code)
+            return emptyList()
+        }
+        val status = queryStatus(id)
+        if (status == null) {
+            // The row is gone — the rider cleared it from the system downloads
+            // UI, or it was never really enqueued. Nothing left to finish.
+            partFile(code).delete()
+            forget(code)
+            return listOf(result(code, Outcome.CANCELLED, null))
+        }
+
+        return when (status.first) {
+            DownloadManager.STATUS_SUCCESSFUL -> listOf(install(code, id))
+            DownloadManager.STATUS_FAILED -> {
+                val reason = status.second
+                val outcome =
+                    if (reason == DownloadManager.ERROR_CANNOT_RESUME) Outcome.CONFLICT else Outcome.FAILED
+                Log.w(TAG, "download failed $code reason=$reason -> $outcome")
+                partFile(code).delete()
+                dm.remove(id)
+                forget(code)
+                listOf(result(code, outcome, "reason=$reason"))
+            }
+            else -> emptyList() // still pending/running/paused — nothing to finish yet
+        }
     }
 
     private fun install(code: String, id: Long): Map<String, Any?> {
         val part = partFile(code)
         val expected = pending.getString(keySha(code), null)
         if (!part.exists() || expected == null) {
+            val installed = packFile(code)
+            // The `.part` can be missing because the move already happened and the
+            // process was killed before forget() — the install is two writes, and
+            // only the first one is atomic. Reporting FAILED here put a "couldn't
+            // download the map" in front of the rider on a launch where the pack is
+            // present and about to be drawn.
+            if (expected != null && installed.exists()) {
+                val size = installed.length()
+                val generatedAt = pending.getString(keyGeneratedAt(code), "") ?: ""
+                dm.remove(id)
+                forget(code)
+                Log.i(TAG, "install of $code had already completed ($size B) — finishing its bookkeeping")
+                return mapOf(
+                    "code" to code,
+                    "outcome" to Outcome.INSTALLED.name,
+                    "sha256" to expected,
+                    "generatedAt" to generatedAt,
+                    "sizeBytes" to size,
+                )
+            }
             dm.remove(id)
             forget(code)
             return result(code, Outcome.FAILED, "part file missing")
@@ -183,21 +229,50 @@ class MapPackDownloader(private val context: Context) {
             // downloaded. Dart re-reads the manifest and decides (see the optimistic
             // locking in spec/remote_map_server.md).
             Log.w(TAG, "sha256 mismatch for $code: expected $expected got $actual")
+            // Read before forget() wipes it. Dart needs the manifest generation
+            // this download was started against to tell "the corpus was rebuilt
+            // under us" (retry) from "the object in the bucket is corrupt" (do not
+            // retry — see spec/remote_map_server.md, «Порядок скачивания», п. 5).
+            val startedAgainst = pending.getString(keyGeneratedAt(code), "") ?: ""
             part.delete()
             dm.remove(id)
             forget(code)
-            return result(code, Outcome.CHECKSUM_MISMATCH, actual)
+            return mapOf(
+                "code" to code,
+                "outcome" to Outcome.CHECKSUM_MISMATCH.name,
+                "detail" to actual,
+                "generatedAt" to startedAgainst,
+            )
         }
 
-        // Atomic and within one directory, so it is a rename and not a copy of
-        // hundreds of megabytes. `renameTo` would return a bare false; this reports
-        // why, and promises atomicity that `renameTo` does not.
-        Files.move(
-            part.toPath(),
-            packFile(code).toPath(),
-            StandardCopyOption.ATOMIC_MOVE,
-            StandardCopyOption.REPLACE_EXISTING,
-        )
+        // Belt and braces against the interleaving in MainActivity.onMapsWorker:
+        // everything now runs on one thread, so `start()` cannot have replaced this
+        // download while we hashed — but if that ever stops being true, renaming
+        // someone else's half-written file into the final name is the one mistake
+        // here that reaches the rider as a corrupt map. Cheap to rule out.
+        val idNow = pending.getLong(keyId(code), -1L)
+        if (idNow != id) {
+            Log.w(TAG, "pending id for $code changed under install ($id -> $idNow) — not installing")
+            return result(code, Outcome.CONFLICT, "download restarted")
+        }
+
+        // Within one directory, so it is a rename and not a copy of hundreds of
+        // megabytes. `renameTo` would return a bare false; this reports why, and
+        // promises atomicity that `renameTo` does not.
+        try {
+            Files.move(
+                part.toPath(),
+                packFile(code).toPath(),
+                StandardCopyOption.ATOMIC_MOVE,
+                StandardCopyOption.REPLACE_EXISTING,
+            )
+        } catch (e: AtomicMoveNotSupportedException) {
+            // Not every filesystem an external volume can be formatted with offers
+            // one; the pack is verified either way, and a non-atomic rename inside
+            // one directory still beats refusing to install.
+            Log.w(TAG, "atomic move unavailable for $code, falling back: ${e.message}")
+            Files.move(part.toPath(), packFile(code).toPath(), StandardCopyOption.REPLACE_EXISTING)
+        }
         val size = packFile(code).length()
         val generatedAt = pending.getString(keyGeneratedAt(code), "") ?: ""
         // Only now that the file is in place under its final name: remove() would

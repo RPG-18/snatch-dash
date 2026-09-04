@@ -91,22 +91,6 @@ class RenderStats {
     }
 
     /**
-     * One line for the ride log, then the window resets.
-     *
-     * The `frames=sent/expected` pair is the number the whole "the loop waits for
-     * the snapshot" decision rests on, so `expected` is derived from what the
-     * frames in THIS window were pacing to: the mean intended interval over the
-     * window, divided into its length. A window of mixed riding and standing gets
-     * an expectation in between, which is the honest answer.
-     *
-     * [timeouts], [skipped], [abandoned] and [errors] are cumulative counters owned
-     * by [MapSnapshotProvider], reported as running totals on purpose — any of them
-     * being nonzero at all is the signal. [skipped] is the one to read for "how
-     * often did the map stand still": the deadline bounds the wait, not the freeze,
-     * so a run of skipped frames is what a wedged-but-not-yet-abandoned snapshotter
-     * looks like from here.
-     */
-    /**
      * Starts a fresh window, throwing away whatever the previous stream left.
      *
      * Called at the top of each stream because the window and the frame loop have
@@ -130,6 +114,26 @@ class RenderStats {
         intendedTotalMs = 0
     }
 
+    /**
+     * One line for the ride log, then the window resets.
+     *
+     * The `frames=sent/expected` pair is the number the whole "the loop waits for
+     * the snapshot" decision rests on, so `expected` is derived from what the
+     * frames in THIS window were pacing to: the mean intended interval over the
+     * window, divided into its length. A window of mixed riding and standing gets
+     * an expectation in between, which is the honest answer.
+     *
+     * **Two different clocks share this line.** Everything computed here covers
+     * one window, reset by [reset] at the start of each stream. [timeouts],
+     * [skipped], [abandoned], [errors] and [rebuilds] are cumulative counters
+     * owned by [MapSnapshotProvider] and deliberately NOT reset per session:
+     * any of them being nonzero at all is the signal, and a session that only
+     * ever shows its own would hide a snapshotter that has been degrading all
+     * ride. [skipped] is the one to read for "how often did the map stand still":
+     * the deadline bounds the wait, not the freeze, so a run of skipped frames is
+     * what a wedged-but-not-yet-abandoned snapshotter looks like from here.
+     * [rebuilds] says the provider had to throw a snapshotter away and carry on.
+     */
     fun drain(
         periodMs: Long,
         timeouts: Long,

@@ -153,6 +153,8 @@
   "offlineMapsNoSpace": "Not enough space on the device",
   "offlineMapsEnqueueFailed": "The system downloader is unavailable",
   "offlineMapsDownloadFailed": "Couldn't download the map",
+  "offlineMapsPackCorrupt": "The map on the server is damaged — try again later",
+  "offlineMapsDeleteFailed": "Couldn't delete the map",
   "settingsOfflineMapsTitle": "Offline maps",
   "settingsOfflineMapsSubtitle": "{count, plural, =0{Nothing downloaded} one{{count} map, {size}} other{{count} maps, {size}}}",
   "@settingsOfflineMapsSubtitle": {"placeholders": {"count": {"type": "num"}, "size": {"type": "String"}}},

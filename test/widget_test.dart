@@ -11,6 +11,8 @@
 // the actual FFI-backed database isn't necessary, or reliably fast, inside a
 // full widget-tree smoke test).
 
+import 'dart:io';
+
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -23,6 +25,12 @@ import 'package:snatch_dash/main.dart';
 import 'package:snatch_dash/state/offline_maps_controller.dart';
 import 'package:snatch_dash/state/garage_controller.dart';
 import 'package:snatch_dash/state/saved_destinations_controller.dart';
+
+const mapsChannel = MethodChannel('ru.snatchdash.app/maps');
+
+/// Methods the offline-maps controller reached for during the boot, so the test
+/// can tell "the startup reconcile ran" from "nothing instantiated it".
+final mapsCalls = <String>[];
 
 void main() {
   setUp(() {
@@ -43,6 +51,27 @@ void main() {
     const eventChannel = MethodChannel('opendash_dash_engine/state');
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(eventChannel, (call) async => null);
+
+    // The offline-maps controller is now watched from OpenDashApp itself (its
+    // build() carries the startup reconcile), so booting the app reaches the
+    // downloader channel whether or not the maps screen is ever opened.
+    mapsCalls.clear();
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(mapsChannel, (call) async {
+      mapsCalls.add(call.method);
+      return switch (call.method) {
+        'mapsDir' => Directory.systemTemp.createTempSync('maps_test').path,
+        'hasRoomFor' => true,
+        'progress' => <Map<String, Object?>>[],
+        // A list of rows, matching the channel contract (`invokeListMethod`) —
+        // a bare map here throws a cast error inside the bootstrap, which the
+        // controller now catches, leaving the test green while the drift check
+        // it is meant to cover never ran.
+        'installedFiles' => <Map<String, Object?>>[],
+        'reconcile' => <Map<String, Object?>>[],
+        _ => null,
+      };
+    });
   });
 
   tearDown(() {
@@ -52,6 +81,8 @@ void main() {
     const eventChannel = MethodChannel('opendash_dash_engine/state');
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(eventChannel, null);
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(mapsChannel, null);
   });
 
   testWidgets('App boots to Home tab', (WidgetTester tester) async {
@@ -72,5 +103,28 @@ void main() {
 
     expect(find.text('SnatchDash'), findsOneWidget);
     expect(find.text('Home'), findsOneWidget);
+  });
+
+  testWidgets('the startup reconcile runs without opening the maps screen', (tester) async {
+    // What the system downloader was chosen for: the app is killed mid-download,
+    // DownloadManager finishes the pack, and the next launch must install it.
+    // That work lives in offlineMapsControllerProvider.build(), and the provider
+    // is lazy — before it was watched from OpenDashApp, nothing instantiated it
+    // until the rider opened «Офлайн-карты» by hand, so the navigation gate on
+    // Home stayed shut over a map that was already on disk.
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          garageRepositoryProvider.overrideWithValue(InMemoryGarageRepository()),
+          savedLocationRepositoryProvider.overrideWithValue(InMemorySavedLocationRepository()),
+          installedPacksRepositoryProvider
+              .overrideWithValue(InMemoryInstalledPacksRepository()),
+        ],
+        child: const OpenDashApp(),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(mapsCalls, contains('reconcile'));
   });
 }

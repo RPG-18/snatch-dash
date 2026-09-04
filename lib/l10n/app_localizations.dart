@@ -872,6 +872,18 @@ abstract class AppLocalizations {
   /// **'Couldn\'t download the map'**
   String get offlineMapsDownloadFailed;
 
+  /// No description provided for @offlineMapsPackCorrupt.
+  ///
+  /// In en, this message translates to:
+  /// **'The map on the server is damaged — try again later'**
+  String get offlineMapsPackCorrupt;
+
+  /// No description provided for @offlineMapsDeleteFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Couldn\'t delete the map'**
+  String get offlineMapsDeleteFailed;
+
   /// No description provided for @settingsOfflineMapsTitle.
   ///
   /// In en, this message translates to:

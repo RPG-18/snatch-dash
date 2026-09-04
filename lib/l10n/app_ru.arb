@@ -139,6 +139,8 @@
   "offlineMapsNoSpace": "Недостаточно места на устройстве",
   "offlineMapsEnqueueFailed": "Системный загрузчик недоступен",
   "offlineMapsDownloadFailed": "Не удалось скачать карту",
+  "offlineMapsPackCorrupt": "Карта на сервере повреждена — попробуйте позже",
+  "offlineMapsDeleteFailed": "Не удалось удалить карту",
   "settingsOfflineMapsTitle": "Оффлайн-карты",
   "settingsOfflineMapsSubtitle": "{count, plural, =0{Ничего не скачано} one{{count} карта, {size}} few{{count} карты, {size}} many{{count} карт, {size}} other{{count} карты, {size}}}",
   "settingsMapTheme": "Тема карты",

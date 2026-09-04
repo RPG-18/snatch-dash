@@ -10,6 +10,7 @@ import 'nav/voice_manager.dart';
 import 'router/app_router.dart';
 import 'state/dash_button_controller.dart';
 import 'state/dash_connection_alert_controller.dart';
+import 'state/offline_maps_controller.dart';
 import 'theme/app_theme.dart';
 import 'util/app_logger.dart';
 
@@ -77,6 +78,20 @@ class OpenDashApp extends ConsumerWidget {
     // off) screen — so it must be alive for the whole session, not just while
     // the Dash screen happens to be open.
     ref.watch(dashConnectionAlertControllerProvider);
+    // And once more for offlineMapsControllerProvider: its build() is where the
+    // startup reconcile lives — the step that turns a download the system
+    // finished while the app was dead into an installed pack. Left lazy, that
+    // only ran when the rider happened to open the offline-maps screen, so the
+    // navigation gate on Home stayed shut over a map that was sitting on disk,
+    // fully downloaded. That scenario is the reason the system downloader was
+    // chosen at all.
+    // `.notifier`, not the state: the notifier instance is stable for the life
+    // of the provider, while the state is replaced on every poll tick — and
+    // OfflineMapsState has no value equality, so watching it would rebuild the
+    // whole router (every page on the stack) about 1.4 times a second for as
+    // long as any download is running. All that is needed here is that the
+    // provider exists.
+    ref.watch(offlineMapsControllerProvider.notifier);
     return MaterialApp.router(
       title: 'SnatchDash',
       debugShowCheckedModeBanner: false,

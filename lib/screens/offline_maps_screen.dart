@@ -82,6 +82,11 @@ class OfflineMapsScreen extends ConsumerWidget {
   static String _errorText(AppLocalizations l10n, String code) => switch (code) {
         'noSpace' => l10n.offlineMapsNoSpace,
         'enqueueFailed' => l10n.offlineMapsEnqueueFailed,
+        // Its own line rather than the generic failure: this one will not fix
+        // itself by trying again, and the rider needs to know not to burn
+        // another few hundred megabytes on it.
+        'packCorrupt' => l10n.offlineMapsPackCorrupt,
+        'deleteFailed' => l10n.offlineMapsDeleteFailed,
         _ => l10n.offlineMapsDownloadFailed,
       };
 }

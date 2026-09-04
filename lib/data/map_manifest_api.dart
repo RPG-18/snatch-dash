@@ -91,9 +91,14 @@ class MapManifestApi {
   /// is treated as absent — it is a cache, and a corrupt cache should not be a
   /// dead end.
   Future<MapManifest?> readLocal() async {
-    final file = File(p.join((await mapsDir()).path, _fileName));
-    if (!file.existsSync()) return null;
     try {
+      // Inside the try, not before it: resolving the directory is itself IO and
+      // can throw (an unmounted volume; anything non-Android, where
+      // getExternalStorageDirectory is unsupported). Outside, that throw left
+      // the only caller — the controller's bootstrap microtask — with nothing to
+      // catch it, and the startup reconcile died with it.
+      final file = File(p.join((await mapsDir()).path, _fileName));
+      if (!file.existsSync()) return null;
       return parse(await file.readAsString());
     } on ManifestVersionUnsupported {
       rethrow; // an app-too-old manifest is a real answer, not a broken cache
@@ -102,9 +107,17 @@ class MapManifestApi {
     }
   }
 
+  /// Writes via a temporary file and renames.
+  ///
+  /// In place, a write cut short — process killed, storage full — would leave a
+  /// truncated `index.json` where a perfectly good one used to be. Parsing
+  /// failures are already survivable ([readLocal] treats them as "no cache"),
+  /// but only because the file that fails to parse was never the last good copy.
   Future<void> _saveLocal(String raw) async {
-    final file = File(p.join((await mapsDir()).path, _fileName));
-    await file.writeAsString(raw, flush: true);
+    final dir = (await mapsDir()).path;
+    final tmp = File(p.join(dir, '$_fileName.tmp'));
+    await tmp.writeAsString(raw, flush: true);
+    await tmp.rename(p.join(dir, _fileName));
   }
 
   /// Pure parse — no IO, so the contract below is directly testable.

@@ -439,6 +439,13 @@ class AppLocalizationsEn extends AppLocalizations {
   String get offlineMapsDownloadFailed => 'Couldn\'t download the map';
 
   @override
+  String get offlineMapsPackCorrupt =>
+      'The map on the server is damaged — try again later';
+
+  @override
+  String get offlineMapsDeleteFailed => 'Couldn\'t delete the map';
+
+  @override
   String get settingsOfflineMapsTitle => 'Offline maps';
 
   @override

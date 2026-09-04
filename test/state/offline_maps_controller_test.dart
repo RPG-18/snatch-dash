@@ -272,6 +272,105 @@ void main() {
       expect(downloader.started, isEmpty);
       expect(container.read(offlineMapsControllerProvider).lastError, isNull);
     });
+
+    test('a pack on disk with no registry row is adopted at startup', () async {
+      // The install is a native rename plus a sqlite write, two operations across
+      // a channel. Killed in between, the file is there and the row is not: the
+      // engine draws that pack while the interface says nothing is installed and
+      // the navigation gate stays shut over a working map.
+      final downloader = _FakeDownloader()..filesOnDisk = const {'ru-ad': 4096};
+      final container = _container(
+        api: _FakeApi(remote: _manifest()),
+        downloader: downloader,
+        repo: InMemoryInstalledPacksRepository(),
+      );
+
+      container.read(offlineMapsControllerProvider);
+      await _settle();
+      await _settle();
+
+      final packs = container.read(installedPacksProvider);
+      expect(packs.map((p) => p.code), ['ru-ad']);
+      expect(packs.single.sizeBytes, 4096);
+      expect(container.read(hasInstalledPacksProvider), isTrue);
+      expect(container.read(offlineMapsControllerProvider.notifier).hasUpdate('ru-ad'), isTrue,
+          reason: 'its build is unknown, so it must offer an update rather than claim to be current');
+    });
+
+    test('a checksum mismatch against an unchanged manifest is not retried', () async {
+      // The protocol's own distinction (spec/remote_map_server.md, «Порядок
+      // скачивания», п. 5): the manifest still promises exactly what it promised
+      // when the download started, so the object in the bucket really is corrupt.
+      // Retrying would pull hundreds of megabytes over mobile data to fail the
+      // same way — Yakutia is 356 MB.
+      final api = _FakeApi(remote: _manifest(generatedAt: 'T1'));
+      final downloader = _FakeDownloader()
+        ..harvests.add([
+          const PackDownloadResult(
+            code: 'ru-ad',
+            outcome: PackOutcome.checksumMismatch,
+            generatedAt: 'T1',
+            detail: 'got zzz',
+          ),
+        ]);
+      final container = _container(api: api, downloader: downloader);
+
+      container.read(offlineMapsControllerProvider);
+      await _settle();
+      await _settle();
+
+      expect(downloader.started, isEmpty, reason: 'the same bytes would arrive again');
+      expect(container.read(offlineMapsControllerProvider).lastError, 'packCorrupt');
+    });
+
+    test('a checksum mismatch is not blamed on the server when the manifest came from cache',
+        () async {
+      // The cached manifest is very often the exact generation the download
+      // started against, so comparing against it would "prove" corruption on
+      // every mismatch that happens while the network is down — and stop
+      // retrying for good. Only a manifest that actually reached the server can
+      // settle this.
+      final api = _FakeApi(remoteThrows: Exception('offline'), local: _manifest(generatedAt: 'T1'));
+      final downloader = _FakeDownloader()
+        ..harvests.add([
+          const PackDownloadResult(
+            code: 'ru-ad',
+            outcome: PackOutcome.checksumMismatch,
+            generatedAt: 'T1',
+          ),
+        ]);
+      final container = _container(api: api, downloader: downloader);
+
+      container.read(offlineMapsControllerProvider);
+      await _settle();
+      await _settle();
+
+      expect(container.read(offlineMapsControllerProvider).lastError, isNot('packCorrupt'));
+      expect(downloader.started, ['ru-ad'], reason: 'treated as an ordinary stale download');
+    });
+
+    test('a checksum mismatch across a manifest change is retried', () async {
+      // Same outcome from the platform, opposite meaning: the corpus was rebuilt
+      // while we downloaded, so the hash we checked against is simply stale.
+      final api = _FakeApi(remote: _manifest(generatedAt: 'T2', sha: 'bbb'));
+      final downloader = _FakeDownloader()
+        ..harvests.add([
+          const PackDownloadResult(
+            code: 'ru-ad',
+            outcome: PackOutcome.checksumMismatch,
+            generatedAt: 'T1',
+            detail: 'got aaa',
+          ),
+        ]);
+      final container = _container(api: api, downloader: downloader);
+
+      container.read(offlineMapsControllerProvider);
+      await _settle();
+      await _settle();
+
+      expect(downloader.started, ['ru-ad']);
+      expect(container.read(offlineMapsControllerProvider).lastError, isNull);
+    });
   });
 
   group('regressions fixed after review', () {
@@ -307,6 +406,36 @@ void main() {
           [controller.pollForTest(), controller.pollForTest(), controller.pollForTest()]);
 
       expect(reconciles - before, 1, reason: 'the re-entrancy guard drops the overlapping ticks');
+    });
+
+    test('a download started during a tick does not lose its watcher', () async {
+      // The "last tick" race. A tick that finds nothing in flight clears
+      // `progress` and then awaits `_harvest()`; a download started inside that
+      // window finds the timer still alive, so `_startPolling()` is a no-op, and
+      // then the tick resumes, sees an empty `progress` and cancels the timer.
+      // Nothing would ever look at the new download again — the provider is not
+      // autoDispose, so nothing rebuilds until the app restarts, and the pack
+      // finishes downloading only to sit there as a `.part` file.
+      var progressCalls = 0;
+      final downloader = _RacingDownloader(() => progressCalls++);
+      final container = _container(api: _FakeApi(remote: _manifest()), downloader: downloader);
+      final controller = container.read(offlineMapsControllerProvider.notifier);
+      await _settle();
+      await _settle();
+
+      // A tick with nothing in flight, and a download started while it is inside
+      // `_harvest()` — exactly the interleaving above.
+      final tick = controller.pollForTest();
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+      await controller.download(_manifest().regions.first, 'Адыгея');
+      await tick;
+
+      final before = progressCalls;
+      // Longer than one poll interval (700 ms): a live timer polls again here, a
+      // cancelled one never does.
+      await Future<void>.delayed(const Duration(milliseconds: 900));
+      expect(progressCalls, greaterThan(before),
+          reason: 'the poller must survive a download started mid-tick');
     });
 
     test('the same failure twice in a row is reported twice', () async {
@@ -419,6 +548,27 @@ class _SlowReconcileDownloader extends _FakeDownloader {
   Future<List<PackDownloadResult>> reconcile() async {
     onReconcile();
     await Future<void>.delayed(const Duration(milliseconds: 20));
+    return const [];
+  }
+}
+
+/// Nothing in flight, a slow `reconcile()`, and a count of how often the poller
+/// asked for progress — enough to catch a timer that was cancelled when it
+/// should not have been.
+class _RacingDownloader extends _FakeDownloader {
+  _RacingDownloader(this.onProgress);
+  final void Function() onProgress;
+
+  @override
+  Future<List<PackProgress>> progress() async {
+    onProgress();
+    return const [];
+  }
+
+  @override
+  Future<List<PackDownloadResult>> reconcile() async {
+    // Wide enough for the test to start a download inside the await.
+    await Future<void>.delayed(const Duration(milliseconds: 40));
     return const [];
   }
 }

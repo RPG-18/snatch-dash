@@ -78,6 +78,13 @@ class MapSnapshotProvider(private val context: Context) {
     /** Set from a callback; acted on at the top of the next [capture], on the main thread. */
     private var needsRebuild = false
 
+    /**
+     * Which snapshotter a pending request was issued to — bumped per request and
+     * whenever the snapshotter is replaced, so a callback can tell whether it
+     * still speaks for the current one. See its use in [capture].
+     */
+    private var snapshotterIssue = 0L
+
     /** Snapshots that missed their deadline. The frame loop moved on without them. */
     @Volatile var timeouts = 0L
         private set
@@ -191,6 +198,9 @@ class MapSnapshotProvider(private val context: Context) {
         val json = styleJson
         needsRebuild = false
         consecutiveFailures = 0
+        // Anything still owed to us by the outgoing snapshotter now speaks for
+        // nobody — see the note where this is captured in [capture].
+        snapshotterIssue++
         if (json == null) return // never prepared — nothing to rebuild from
         rebuilds++
         DebugLog.w(TAG) { "rebuilding the snapshotter: $reason" }
@@ -245,6 +255,14 @@ class MapSnapshotProvider(private val context: Context) {
         snapshotter.setPadding(padding[0], padding[1], padding[2], padding[3])
         inFlight = true
         inFlightSince = now
+        // Which snapshotter this request belongs to. A callback carries no
+        // identity of its own, and a torn-off request can still fire after its
+        // snapshotter was replaced — we already know cancel() does not reliably
+        // stop one. Without this check that late callback would clear [inFlight]
+        // and [consecutiveFailures] belonging to the REPLACEMENT's request,
+        // letting the next frame call start() on a snapshotter that is still
+        // busy: straight back into "Map is currently rendering an image".
+        val issue = ++snapshotterIssue
         try {
             val snapshot = withTimeoutOrNull(deadlineMs) {
                 suspendCancellableCoroutine { cont ->
@@ -255,6 +273,12 @@ class MapSnapshotProvider(private val context: Context) {
                     try {
                         snapshotter.start(
                             { snapshot ->
+                                if (issue != snapshotterIssue) {
+                                    // Belongs to a snapshotter we have since thrown away.
+                                    DebugLog.w(TAG) { "snapshot from a replaced snapshotter — dropping" }
+                                    runCatching { snapshot.bitmap.recycle() }
+                                    return@start
+                                }
                                 inFlight = false
                                 consecutiveFailures = 0
                                 if (cont.isActive) {
@@ -267,6 +291,10 @@ class MapSnapshotProvider(private val context: Context) {
                                 }
                             },
                             { reason ->
+                                if (issue != snapshotterIssue) {
+                                    DebugLog.w(TAG) { "failure from a replaced snapshotter: $reason" }
+                                    return@start
+                                }
                                 inFlight = false
                                 noteFailure()
                                 // Only while the frame loop is still waiting on this one.

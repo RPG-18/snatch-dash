@@ -44,9 +44,14 @@ class MapManifest {
 
 /// A pack that passed sha256 verification and was renamed into place. The
 /// registry of these is what the UI trusts; the engine instead enumerates
-/// `maps/*.pmtiles` on the disk (see spec/drawing_from_local_tiles.md). The two
-/// cannot disagree: a file gets its `.pmtiles` name in the same atomic move
-/// that puts it in this registry.
+/// `maps/*.pmtiles` on the disk (see spec/drawing_from_local_tiles.md).
+///
+/// **The two can disagree, and the code has to expect it.** The rename is atomic
+/// and the sqlite write is durable, but they are two operations either side of a
+/// method channel, not one: a process killed between them leaves a file with no
+/// row (the engine draws a map the interface denies) or, if a row survives a file
+/// that went away with the volume, the reverse. Both directions are repaired at
+/// startup — see `OfflineMapsController._reconcileRegistryAgainstDisk`.
 class InstalledPack {
   const InstalledPack({
     required this.code,

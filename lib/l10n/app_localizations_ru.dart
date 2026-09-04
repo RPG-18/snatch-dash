@@ -443,6 +443,13 @@ class AppLocalizationsRu extends AppLocalizations {
   String get offlineMapsDownloadFailed => 'Не удалось скачать карту';
 
   @override
+  String get offlineMapsPackCorrupt =>
+      'Карта на сервере повреждена — попробуйте позже';
+
+  @override
+  String get offlineMapsDeleteFailed => 'Не удалось удалить карту';
+
+  @override
   String get settingsOfflineMapsTitle => 'Оффлайн-карты';
 
   @override

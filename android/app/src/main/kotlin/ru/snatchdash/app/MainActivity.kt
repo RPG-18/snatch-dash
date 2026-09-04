@@ -72,12 +72,12 @@ class MainActivity : FlutterActivity() {
      */
     private fun handleMaps(method: String, call: io.flutter.plugin.common.MethodCall, result: MethodChannel.Result) {
         when (method) {
-            "mapsDir" -> result.success(downloader.mapsDir().absolutePath)
+            "mapsDir" -> onMapsWorker(result, "MAPS_DIR_FAILED") { downloader.mapsDir().absolutePath }
 
             "hasRoomFor" -> {
                 val bytes = call.argument<Number>("bytes")?.toLong()
                 if (bytes == null) result.error("NO_BYTES", "Missing 'bytes'", null)
-                else result.success(downloader.hasRoomFor(bytes))
+                else onMapsWorker(result, "ROOM_CHECK_FAILED") { downloader.hasRoomFor(bytes) }
             }
 
             "start" -> {
@@ -88,54 +88,71 @@ class MainActivity : FlutterActivity() {
                     result.error("BAD_ARGS", "Missing code/url/sha256", null)
                     return
                 }
-                try {
-                    val id = downloader.start(
-                        code = code,
-                        url = url,
-                        sha256 = sha256,
-                        sizeBytes = call.argument<Number>("sizeBytes")?.toLong() ?: 0L,
-                        generatedAt = call.argument<String>("generatedAt") ?: "",
-                        title = call.argument<String>("title") ?: code,
-                    )
-                    result.success(id)
-                } catch (e: Exception) {
-                    // The system downloader can be disabled by the user, and then
-                    // enqueue throws. That's a state to show, not a crash.
-                    result.error("ENQUEUE_FAILED", e.message, null)
+                // Arguments off the MethodCall here, on the platform thread; only the
+                // downloader call itself is handed to the worker.
+                val sizeBytes = call.argument<Number>("sizeBytes")?.toLong() ?: 0L
+                val generatedAt = call.argument<String>("generatedAt") ?: ""
+                val title = call.argument<String>("title") ?: code
+                // The system downloader can be disabled by the user, and then enqueue
+                // throws — that's a state to show, not a crash.
+                onMapsWorker(result, "ENQUEUE_FAILED") {
+                    downloader.start(code, url, sha256, sizeBytes, generatedAt, title)
                 }
             }
 
             "cancel" -> {
                 val code = call.argument<String>("code")
                 if (code == null) result.error("NO_CODE", "Missing 'code'", null)
-                else {
-                    downloader.cancel(code)
-                    result.success(null)
-                }
+                else onMapsWorker(result, "CANCEL_FAILED") { downloader.cancel(code); null }
             }
 
             "delete" -> {
                 val code = call.argument<String>("code")
                 if (code == null) result.error("NO_CODE", "Missing 'code'", null)
-                else result.success(downloader.delete(code))
+                else onMapsWorker(result, "DELETE_FAILED") { downloader.delete(code) }
             }
 
-            "progress" -> result.success(downloader.progress())
+            "progress" -> onMapsWorker(result, "PROGRESS_FAILED") { downloader.progress() }
 
-            "installedFiles" -> result.success(downloader.installedFiles())
+            "installedFiles" -> onMapsWorker(result, "LIST_FAILED") { downloader.installedFiles() }
 
-            // Hashing hundreds of megabytes — off the main thread, answer posted back.
-            "reconcile" -> mapsWorker.execute {
-                val outcomes = try {
-                    downloader.reconcile()
-                } catch (e: Exception) {
-                    runOnUiThread { result.error("RECONCILE_FAILED", e.message, null) }
-                    return@execute
-                }
-                runOnUiThread { result.success(outcomes) }
-            }
+            "reconcile" -> onMapsWorker(result, "RECONCILE_FAILED") { downloader.reconcile() }
 
             else -> result.notImplemented()
+        }
+    }
+
+    /**
+     * Runs one downloader call on [mapsWorker] and answers the channel from the
+     * main thread.
+     *
+     * **Every** method goes through here, not just the slow one. `reconcile()`
+     * hashes for seconds and then renames; `start`/`cancel` rewrite the same
+     * pending prefs and touch the same `.part` files. With only `reconcile` on the
+     * worker those two ran concurrently on unsynchronised state, and the losing
+     * interleaving installs a **truncated pack under its final name**: the worker
+     * finishes hashing the bytes of a download the rider has meanwhile restarted,
+     * the hash matches the *old* expectation, and `Files.move` renames the new,
+     * still-being-written `.part` into `<code>.pmtiles` — which the render engine
+     * then enumerates and draws. The mirror image is just as bad: the worker reads
+     * the expectation *after* it was overwritten, calls it a checksum mismatch and
+     * deletes the file a live download is writing into.
+     *
+     * One single-threaded executor makes those sequences impossible by
+     * construction, which no amount of per-method locking would do as clearly. It
+     * also takes the disk and binder traffic off the platform thread, which is
+     * where `progress()` (a DownloadManager query per pending pack, polled every
+     * 700 ms) used to run.
+     */
+    private fun onMapsWorker(result: MethodChannel.Result, errorCode: String, work: () -> Any?) {
+        mapsWorker.execute {
+            val value = try {
+                work()
+            } catch (e: Exception) {
+                runOnUiThread { result.error(errorCode, e.message, null) }
+                return@execute
+            }
+            runOnUiThread { result.success(value) }
         }
     }
 

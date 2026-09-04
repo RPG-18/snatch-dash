@@ -38,9 +38,17 @@ class PackDownloadResult {
   final String code;
   final PackOutcome outcome;
 
-  /// Present only on [PackOutcome.installed] — the verified hash and the
-  /// manifest it came from, ready to go straight into the registry.
+  /// Present on [PackOutcome.installed] — the verified hash and the manifest it
+  /// came from, ready to go straight into the registry.
   final String? sha256;
+
+  /// The manifest generation this download was *started against*.
+  ///
+  /// Also present on [PackOutcome.checksumMismatch], and there it carries the
+  /// whole decision: same generation as the manifest now says means the object
+  /// in the bucket is corrupt, and retrying would pull hundreds of megabytes to
+  /// fail identically. A different one means the corpus was rebuilt mid-download
+  /// — an ordinary conflict, worth one more attempt.
   final String? generatedAt;
   final int? sizeBytes;
 

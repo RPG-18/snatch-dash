@@ -519,7 +519,16 @@ class DashSession(private val scope: CoroutineScope) {
             // ── 09 00: button / joystick event → echo ack + notify UI ──
             if (tlv.type == 0x09 && tlv.sub == 0x00 && tlv.value.isNotEmpty()) {
                 val btn = tlv.value.last()  // 0900 0001 <code>
-                DebugLog.i(TAG) { "JOYSTICK 09 00 → code 0x${(btn.toInt() and 0xFF).toString(16).uppercase()}  full=${tlv.value.toHexFull()}" }
+                // Into the ride file, not just app_log.txt: what the rider pressed
+                // is the first half of every "the control did nothing" report, and
+                // the second half ([camera] in DashEngineController) is already
+                // there. Split across two files they could not be lined up — and
+                // app_log.txt is a ring buffer that a long ride overwrites.
+                // Cheap at this rate: 188 presses across the whole 2026-09-05 log.
+                RideDiagnostics.log(
+                    "joystick",
+                    "09 00 code=0x${(btn.toInt() and 0xFF).toString(16).uppercase()} full=${tlv.value.toHexFull()}",
+                )
                 sock.send(DashCommands.buttonAck(btn))
                 scope.launch(Dispatchers.Main) { onButton?.invoke(btn) }
                 continue

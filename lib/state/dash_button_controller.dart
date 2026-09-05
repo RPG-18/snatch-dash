@@ -1,6 +1,7 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:opendash_dash_engine/opendash_dash_engine.dart';
 
+import '../util/app_logger.dart' show talker;
 import 'dash_engine_state.dart';
 
 /// K1G joystick/media/call button codes the physical dash sends as `09 00`
@@ -64,6 +65,14 @@ class DashButtonController extends Notifier<void> {
       DashEngine.instance.zoomIn();
     } else if (code == _btnMapZoomOut || code == _btnMediaPrevious || _isLoosePreviousButton(code)) {
       DashEngine.instance.zoomOut();
+    } else {
+      // The native side acks and forwards every `09 00`, so a code with no branch
+      // here dies silently in this else — and from the saddle that is the same
+      // press-and-nothing-happens as a broken control. The 2026-09-05 ride sent
+      // 0x15 nine times and 0x0B six times; neither appears above, and nothing in
+      // the log said so. Whether they SHOULD do something is a separate question
+      // this line exists to raise.
+      talker.warning('dash button 0x${code.toRadixString(16).toUpperCase()} has no action');
     }
   }
 }

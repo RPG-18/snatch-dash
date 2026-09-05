@@ -104,15 +104,38 @@ class DashEngineController(
         // Zoom is stored in MAPLIBRE units, not slippy ones: MapLibre renders a
         // tile at 512 px, so its zoom Z frames what slippy Z+1 did. The whole
         // ladder moved rather than being converted at the boundary — one place
-        // to be wrong instead of three. 16 here is the old default of 17.
+        // to be wrong instead of three.
         //
-        // The floor is the pack corpus's `minzoom`: MapLibre asks for tile
-        // `floor(camera zoom)`, and below 11 that tile does not exist. Rendering
-        // does not build downwards, so a lower step is a blank screen, not a
-        // coarse map.
-        private const val ZOOM_MIN = 11
-        private const val ZOOM_MAX = 19
-        private const val ZOOM_DEFAULT = 16
+        // **In hundredths, as an Int**, so 1175 is a camera zoom of 11.75.
+        // MapLibre's zoom is continuous — the tile is `floor(zoom)` and everything
+        // between is that tile scaled, with the style's `interpolate` expressions
+        // following along — so the ladder need not land on integers, and it should
+        // not: an integer step is ×2 apiece, which on 526×300 means a press either
+        // barely helps or overshoots. [ZOOM_STEP] of 25 is ×1.19. Hundredths
+        // rather than a Float because repeated stepping cannot drift, the bounds
+        // stay exact, and the redraw signature keeps appending an Int.
+        //
+        // The floor is the pack corpus's `minzoom` and is not a preference:
+        // MapLibre asks for tile `floor(camera zoom)`, below 11 that tile does not
+        // exist, and rendering does not build downwards — a lower step is a blank
+        // screen, not a coarse map.
+        //
+        // The ceiling is one level past the corpus, which stops at z14. Everything
+        // above 14.00 is z14 scaled up, so 15.00 buys magnification and nothing
+        // else; the old ladder ran to 19.00, five steps of it, and the default sat
+        // two steps in.
+        private const val ZOOM_MIN = 1100
+        private const val ZOOM_MAX = 1500
+        private const val ZOOM_STEP = 25
+
+        // The one parameter the bounds do not settle. 14.00 is the corpus's own
+        // detail ceiling, so a ride opens on the closest view that is still real
+        // data. The old default was 16.00, and the 2026-09-05 log argues it was
+        // too close: 110 zoom-out presses against 63 zoom-in.
+        private const val ZOOM_DEFAULT = 1400
+
+        /** Hundredths → the units MapLibre's camera actually takes. */
+        private const val ZOOM_SCALE = 100.0
         // Perspective tilt for the heading-up view, in degrees (MapLibre clamps
         // to 0..60). Left flat for now: the raster renderer's `setPolyToPoly`
         // trapezoid was a fake with no camera model behind it, so it gives no
@@ -227,6 +250,10 @@ class DashEngineController(
     @Volatile private var headingUp = true
     @Volatile private var followMode = true
     @Volatile private var lastManualPanAt = 0L
+    // Whether [panBy] is currently pushing against a bound, so it can log the
+    // transition instead of every call. MethodChannel thread only — the frame loop
+    // never reads it.
+    private var panAtBound = false
     private var camLat = 0.0
     private var camLng = 0.0
     // These two are the exception to the note above: the frame loop writes them on
@@ -237,6 +264,15 @@ class DashEngineController(
     @Volatile private var camHdg = 0f
     @Volatile private var camInit = false
     private var camMoving = false
+    /**
+     * The controllable part of the last camera [logCameraSend] reported, so it
+     * only speaks when one of those parts actually changed.
+     *
+     * Down here with the frame-loop-only fields, not up with the camera controls
+     * it is built from: it is written by [logCameraSend] on Dispatchers.Default
+     * and by [startStream] before the loop launches, so it needs no @Volatile.
+     */
+    private var lastCameraLogKey: String? = null
     private var lastTickNs = 0L
     private var lastSignature = ""
     private var lastRedrawAt = 0L
@@ -526,14 +562,71 @@ class DashEngineController(
         lastManualPanAt = System.currentTimeMillis()
         val maxX = DashEncoder.WIDTH * DashCamera.MAX_PAN_FRACTION
         val maxY = DashEncoder.HEIGHT * DashCamera.MAX_PAN_FRACTION
+        val beforeX = panX
+        val beforeY = panY
         panX = (panX + dx).coerceIn(-maxX, maxX)
         panY = (panY + dy).coerceIn(-maxY, maxY)
+        // Same reason as [stepZoom] — pan saturates too, and a joystick held at the
+        // bound looks exactly like one nobody is reading — but only the transition
+        // into that state, not every call. Two differences from zoom justify it:
+        // where the pan ended up is already in the "→ MapLibre" line as padding,
+        // and zoom arrives at thumb rate from a button while [panBy] is the one
+        // control a drag gesture could drive at frame rate. RideDiagnostics.log
+        // appends to a file on external storage from the calling thread, and this
+        // one is the Flutter platform thread.
+        val stuck = panX == beforeX && panY == beforeY
+        if (stuck != panAtBound) {
+            panAtBound = stuck
+            if (stuck) {
+                RideDiagnostics.log("camera", "pan ignored — at the bound (${panX.toInt()},${panY.toInt()})")
+            }
+        }
     }
 
-    fun zoomIn() { zoom = (zoom + 1).coerceAtMost(ZOOM_MAX) }
-    fun zoomOut() { zoom = (zoom - 1).coerceAtLeast(ZOOM_MIN) }
-    fun toggleHeadingUp() { headingUp = !headingUp }
-    fun recenter() { followMode = true; panX = 0f; panY = 0f }
+    fun zoomIn() = stepZoom(+ZOOM_STEP, "zoomIn")
+    fun zoomOut() = stepZoom(-ZOOM_STEP, "zoomOut")
+
+    /**
+     * One zoom step, and a line saying whether it moved anything.
+     *
+     * The clamp is the point. `zoomOut` at [ZOOM_MIN] and `zoomIn` at [ZOOM_MAX]
+     * are ordinary silent no-ops, and from the rider's seat a control that
+     * bottomed out is indistinguishable from one that is broken — the 2026-09-05
+     * ride sent 110 zoom-out presses against a floor of 11 and the log had nothing
+     * to say about any of them. Saying "ignored, already at the floor" costs one
+     * line per press at a rate a thumb sets.
+     */
+    private fun stepZoom(delta: Int, action: String) {
+        val before = zoom
+        zoom = (zoom + delta).coerceIn(ZOOM_MIN, ZOOM_MAX)
+        RideDiagnostics.log(
+            "camera",
+            if (zoom != before) "$action ${zoomText(before)}→${zoomText(zoom)}"
+            else "$action ignored — already at ${if (delta > 0) "ZOOM_MAX" else "ZOOM_MIN"} (${zoomText(before)})",
+        )
+    }
+
+    /**
+     * Hundredths as a zoom a reader recognises: 1175 → "11.75".
+     *
+     * Assembled by hand rather than with `"%.2f".format`, which takes the default
+     * locale and writes "11,75" on the Russian device this runs on — a decimal
+     * comma inside log lines that separate other things with commas.
+     */
+    private fun zoomText(hundredths: Int) =
+        "${hundredths / 100}.${(hundredths % 100).toString().padStart(2, '0')}"
+
+    fun toggleHeadingUp() {
+        headingUp = !headingUp
+        RideDiagnostics.log("camera", "headingUp=$headingUp")
+    }
+
+    fun recenter() {
+        followMode = true
+        panX = 0f
+        panY = 0f
+        RideDiagnostics.log("camera", "recenter — follow on, pan cleared")
+    }
 
     fun forgetDash() { dashConfig.forgetDash() }
     fun setSsid(ssid: String) { dashConfig.ssid = ssid.trim() }
@@ -660,6 +753,11 @@ class DashEngineController(
         lastSignature = ""
         camInit = false; lastTickNs = 0L
         haveFrame = false
+        // Cleared so every session's file opens with the camera it started on.
+        // The zoom a rider left behind survives the disconnect (the field does),
+        // and without this the one line saying what it is would be in the PREVIOUS
+        // session's file.
+        lastCameraLogKey = null
 
         // Theme and the set of packs are read HERE and nowhere else for the rest
         // of the ride. That is what makes a mid-ride style reload impossible by
@@ -761,6 +859,13 @@ class DashEngineController(
                             lastRenderLogAt = now
                             RideDiagnostics.log(
                                 "map",
+                                // Appended here rather than passed into drain():
+                                // RenderStats measures the frame pipeline and has
+                                // no business knowing what a camera is. It earns
+                                // the space because every other number on this
+                                // line is read against it — `blank` especially,
+                                // which rises with zoom for reasons that are not
+                                // a missing map.
                                 renderStats.drain(
                                     periodMs = elapsed,
                                     timeouts = snapshots.timeouts,
@@ -768,7 +873,7 @@ class DashEngineController(
                                     abandoned = snapshots.abandoned,
                                     errors = snapshots.errors,
                                     rebuilds = snapshots.rebuilds,
-                                ),
+                                ) + " zoom=${zoomText(zoom)}",
                             )
                         }
                         if (now - lastEncoderLogAt > ENCODER_LOG_INTERVAL_MS) {
@@ -930,7 +1035,7 @@ class DashEngineController(
     private fun cameraFor(centerLat: Double, centerLng: Double, heading: Float): CameraPosition =
         CameraPosition.Builder()
             .target(LatLng(centerLat, centerLng))
-            .zoom(zoom.toDouble())
+            .zoom(zoom / ZOOM_SCALE)
             .bearing(if (headingUp) heading.toDouble() else 0.0)
             .tilt(if (headingUp) NAV_TILT_DEG else 0.0)
             .build()
@@ -971,10 +1076,14 @@ class DashEngineController(
     ): Boolean {
         val bmp = frameBitmap ?: return false
 
+        val camera = cameraFor(centerLat, centerLng, heading)
+        val padding = DashCamera.padding(DashEncoder.WIDTH, DashEncoder.HEIGHT, headingUp, panX, panY)
+        logCameraSend(camera, padding)
+
         val snapshotStart = System.currentTimeMillis()
         val snapshot = snapshots.capture(
-            cameraFor(centerLat, centerLng, heading),
-            DashCamera.padding(DashEncoder.WIDTH, DashEncoder.HEIGHT, headingUp, panX, panY),
+            camera,
+            padding,
             if (haveFrame) SNAPSHOT_DEADLINE_MS else FIRST_SNAPSHOT_DEADLINE_MS,
         ) ?: return false
         val snapshotMs = System.currentTimeMillis() - snapshotStart
@@ -1019,6 +1128,39 @@ class DashEngineController(
             RideDiagnostics.log("map", "first map frame ready in ${snapshotMs}ms (blank=$blank)")
         }
         return true
+    }
+
+    /**
+     * What MapLibre was actually handed — the far end of a button press.
+     *
+     * **Only when it changes.** The centre moves with every GPS fix, so a line per
+     * capture would be two to four a second: the ride file for one 11-minute
+     * session would outgrow every other signal in it, which is the same reason the
+     * frame stats are a periodic aggregate rather than a line per frame. What a
+     * rider can change is keyed here instead; where the rider *is* is not what is
+     * in question when a control looks dead.
+     *
+     * Pan is absent from [CameraPosition] on purpose — it reaches MapLibre as
+     * padding, not as a shifted centre (see [DashCamera.padding]) — so the padding
+     * is printed rather than the pan that produced it: this line is meant to say
+     * what the renderer got, not what we meant by it. Padding is space-separated
+     * because a comma next to a locale-formatted number reads as a decimal.
+     *
+     * **Bearing is named, not numbered.** In heading-up it tracks the rider and
+     * changes with every fix, which the key deliberately does not — so printing
+     * the degrees would freeze one arbitrary sample at the top of the session and
+     * read, months later, as a map that stopped rotating. The mode is the part
+     * that actually holds still, and it is the part a dead control would break.
+     */
+    private fun logCameraSend(camera: CameraPosition, padding: IntArray) {
+        val key = "$zoom/${panX.toInt()}/${panY.toInt()}/$headingUp"
+        if (key == lastCameraLogKey) return
+        lastCameraLogKey = key
+        RideDiagnostics.log(
+            "camera",
+            "→ MapLibre zoom=${zoomText(zoom)} ${if (headingUp) "heading-up" else "north-up"} " +
+                "tilt=${camera.tilt.toInt()} padding=[${padding.joinToString(" ")}]",
+        )
     }
 
     private fun toDashDistance(meters: Double): Pair<Int, Int> =
@@ -1080,7 +1222,11 @@ class DashEngineController(
                 "errorMessage" to errorMessage,
                 "followMode" to followMode,
                 "headingUp" to headingUp,
-                "zoom" to zoom,
+                // In MapLibre's units, not the hundredths the field is stored
+                // in: the key is named `zoom` and documented as such in
+                // opendash_dash_engine.dart, and 1400 under that name would be
+                // read as a zoom of 1400 by whoever first consumes it.
+                "zoom" to zoom / ZOOM_SCALE,
                 "nowPlayingTitle" to nowPlayingTitle,
                 "incomingCaller" to incomingCaller,
                 "hasActiveCall" to hasActiveCall,

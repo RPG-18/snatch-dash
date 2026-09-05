@@ -3,6 +3,7 @@ package com.opendash.opendash_dash_engine.dash.map
 import android.content.Context
 import android.graphics.Bitmap
 import com.opendash.opendash_dash_engine.util.DebugLog
+import com.opendash.opendash_dash_engine.util.RideDiagnostics
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -82,6 +83,18 @@ class MapSnapshotProvider(private val context: Context) {
     private var lastRebuildAtMs = 0L
 
     /**
+     * Rebuilds since the last snapshot that actually landed.
+     *
+     * [rebuild] answers "this snapshotter is broken". It has no answer for "the
+     * style is broken", and past [REBUILD_GIVE_UP_AFTER] that is the only reading
+     * left: a fresh snapshotter parsing the same style hits the same wall, so the
+     * next one will too. The 2026-09-05 ride is the case — one glyph range missing
+     * from the assets, and every rebuild reloaded a style that still referenced it:
+     * wedge, tear off, rebuild, fail, for eleven minutes. See [REBUILD_BACKOFF_MS].
+     */
+    private var rebuildsSinceSuccess = 0
+
+    /**
      * Which snapshotter a pending request was issued to — bumped per request and
      * whenever the snapshotter is replaced, so a callback can tell whether it
      * still speaks for the current one. See its use in [capture].
@@ -151,10 +164,47 @@ class MapSnapshotProvider(private val context: Context) {
         frameWidth = width
         frameHeight = height
         consecutiveFailures = 0
+        rebuildsSinceSuccess = 0
         needsRebuild = false
+        resetCounters()
         MapLibre.getInstance(context)
         MapLibreLogBridge.install()
         snapshotter = buildSnapshotter(styleJson, width, height)
+    }
+
+    /**
+     * Zeroes the counters so a `[map]` line describes the session it appears in.
+     *
+     * These used to run for the life of the process, on the argument that any of
+     * them being nonzero at all is the signal and a per-session view would hide a
+     * provider degrading across a whole ride. Reading the 2026-09-05 logs is what
+     * settled it the other way: a diagnostics file is written **per session**, and
+     * that one opened with `frames=0/? … timeouts=58 skipped=945 wedged=56` on a
+     * session thirty-nine seconds old. Every number in it belonged to the ride
+     * before. Totals no window can be measured against are not a signal, they are
+     * a reader working out which half of each figure to ignore.
+     *
+     * What the old argument was right about survives as the carry-over line: said
+     * once, where "the previous session ended badly" is the whole message, instead
+     * of smeared into every window for the rest of the ride. [abandoned] is the
+     * one that genuinely outlives a session — its leaked bitmaps are in the
+     * process's native heap, not this object's — and that is exactly what the line
+     * reports.
+     */
+    private fun resetCounters() {
+        if (timeouts + skipped + abandoned + errors + rebuilds > 0) {
+            RideDiagnostics.log(
+                "map",
+                "previous session left timeouts=$timeouts skipped=$skipped " +
+                    "wedged=$abandoned snapErr=$errors rebuilds=$rebuilds" +
+                    if (abandoned > 0) " — ${abandoned * BITMAP_KB / 1024} MiB of bitmaps leaked and still held" else "",
+            )
+        }
+        timeouts = 0
+        skipped = 0
+        abandoned = 0
+        errors = 0
+        rebuilds = 0
     }
 
     /**
@@ -206,6 +256,7 @@ class MapSnapshotProvider(private val context: Context) {
         snapshotterIssue++
         if (json == null) return // never prepared — nothing to rebuild from
         rebuilds++
+        rebuildsSinceSuccess++
         lastRebuildAtMs = System.currentTimeMillis()
         DebugLog.w(TAG) { "rebuilding the snapshotter: $reason" }
         releaseCurrent()
@@ -258,8 +309,24 @@ class MapSnapshotProvider(private val context: Context) {
             // field it did not, and every later start() failed. Replace it.
             needsRebuild = true
         }
-        if (needsRebuild && now - lastRebuildAtMs >= REBUILD_COOLDOWN_MS) {
-            rebuild("after ${abandoned + errors} snapshot failures")
+        if (needsRebuild) {
+            // Past [REBUILD_GIVE_UP_AFTER] the fault is in the style, not in the
+            // object — replacing it every two seconds is pure cost. Slow down.
+            val backingOff = rebuildsSinceSuccess >= REBUILD_GIVE_UP_AFTER
+            val cooldown = if (backingOff) REBUILD_BACKOFF_MS else REBUILD_COOLDOWN_MS
+            if (now - lastRebuildAtMs < cooldown) {
+                // Waiting out the cooldown on a snapshotter we have already called
+                // dead. Asking it anyway is what the pre-backoff code did, and at
+                // 4 fps through a 60s wait that is 240 guaranteed failures — each
+                // one a warn line in the ride log that the real fault has to be
+                // found in. Skip like any other frame the map could not redraw.
+                skipped++
+                return@withContext null
+            }
+            rebuild(
+                "after ${abandoned + errors} snapshot failures" +
+                    if (backingOff) " — $rebuildsSinceSuccess rebuilds have not helped, retrying every ${REBUILD_BACKOFF_MS / 1000}s" else "",
+            )
         }
         val snapshotter = snapshotter ?: return@withContext null
         var failed = false
@@ -293,6 +360,7 @@ class MapSnapshotProvider(private val context: Context) {
                                 }
                                 inFlight = false
                                 consecutiveFailures = 0
+                                rebuildsSinceSuccess = 0
                                 if (cont.isActive) {
                                     cont.resume(snapshot)
                                 } else {
@@ -440,6 +508,39 @@ class MapSnapshotProvider(private val context: Context) {
          * notice, and only ever applies while the map is already gone.
          */
         private const val REBUILD_COOLDOWN_MS = 2_000L
+
+        /**
+         * Rebuilds in a row without a single snapshot landing, after which the
+         * pace drops to [REBUILD_BACKOFF_MS].
+         *
+         * Five, because the recovery this class was built for takes exactly one:
+         * a snapshotter that stopped taking work is replaced and the very next
+         * frame draws. Needing five means the fault is not in the object being
+         * replaced. A handful of extra tries costs a few seconds of a map that is
+         * already frozen and covers the case where the two overlap — a wedged
+         * request whose late callback poisons the replacement.
+         */
+        private const val REBUILD_GIVE_UP_AFTER = 5
+
+        /**
+         * The pace [rebuild] falls back to once it is clearly not working.
+         *
+         * Not a full stop, because the cause can pass on its own — a broken tile
+         * or an unrenderable label leaves the viewport as the rider moves, and a
+         * provider that gave up for good would stay blank across a fault that
+         * cured itself. What a full stop is really for is the cost of asking, and
+         * that is what this bounds: each attempt re-parses ~50 layers per pack on
+         * the main thread and, when it wedges again, abandons a 631 KB bitmap into
+         * the native heap. At two seconds that is ~19 MB a minute of leak against
+         * a map that is not coming back; at sixty it is one frame's worth.
+         */
+        private const val REBUILD_BACKOFF_MS = 60_000L
+
+        /**
+         * One abandoned snapshot's bitmap, for turning [abandoned] into the number
+         * that actually matters: 526×300 at ARGB_8888.
+         */
+        private const val BITMAP_KB = 526L * 300 * 4 / 1024
 
         /**
          * Whether the snapshot came back with no map on it — every sampled pixel

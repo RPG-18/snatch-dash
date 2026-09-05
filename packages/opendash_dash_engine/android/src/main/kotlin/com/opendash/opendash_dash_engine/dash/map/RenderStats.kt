@@ -125,12 +125,18 @@ class RenderStats {
      *
      * **Two different clocks share this line.** Everything computed here covers
      * one window, reset by [reset] at the start of each stream. [timeouts],
-     * [skipped], [abandoned], [errors] and [rebuilds] are cumulative counters
-     * owned by [MapSnapshotProvider] and deliberately NOT reset per session:
-     * any of them being nonzero at all is the signal, and a session that only
-     * ever shows its own would hide a snapshotter that has been degrading all
-     * ride. [skipped] is the one to read for "how often did the map stand still":
-     * the deadline bounds the wait, not the freeze, so a run of skipped frames is
+     * [skipped], [abandoned], [errors] and [rebuilds] pass straight through from
+     * `MapSnapshotProvider` and are cumulative over the **session**, not the
+     * window — they only ever go up within a ride, and the provider zeroes them
+     * when it prepares the next one, so every figure on this line belongs to the
+     * diagnostics file it is written into. (It was not always so: before
+     * 2026-09-05 they ran for the life of the process, and a fresh session's
+     * first line opened with the previous ride's totals against its own frame
+     * count. A session that ends badly now says so once, on its successor's
+     * carry-over line.)
+     *
+     * [skipped] is the one to read for "how often did the map stand still": the
+     * deadline bounds the wait, not the freeze, so a run of skipped frames is
      * what a wedged-but-not-yet-abandoned snapshotter looks like from here.
      * [rebuilds] says the provider had to throw a snapshotter away and carry on.
      */

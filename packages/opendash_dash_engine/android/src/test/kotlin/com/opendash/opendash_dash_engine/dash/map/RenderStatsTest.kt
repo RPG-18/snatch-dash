@@ -96,8 +96,9 @@ class RenderStatsTest {
         // The intended-interval accumulator has to reset too, or the next window
         // is measured against the previous one's pacing.
         assertTrue(second.contains("frames=0/?"), second)
-        // Owned by MapSnapshotProvider and reported as running totals: any of them
-        // being nonzero at all is the signal.
+        // Owned by MapSnapshotProvider and passed straight through: they are
+        // cumulative over the session, and it is the provider — not the window —
+        // that zeroes them for the next one.
         assertTrue(second.contains("timeouts=2 skipped=3 wedged=1 snapErr=1"), second)
     }
 

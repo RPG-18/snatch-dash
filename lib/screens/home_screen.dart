@@ -13,6 +13,7 @@ import '../state/offline_maps_controller.dart';
 import '../state/saved_destinations_controller.dart';
 import '../state/vehicle_store.dart';
 import '../util/current_position.dart';
+import '../util/format_distance.dart';
 import '../util/location_permission.dart';
 
 /// Landing tab: connect status, saved destinations, recent rides. Ports
@@ -37,12 +38,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     final origin = await currentPosition();
     if (!mounted) return;
     setState(() => _origin = origin);
-  }
-
-  String _formatDistance(AppLocalizations l10n, double meters) {
-    return meters >= 1000
-        ? l10n.unitKm((meters / 1000).toStringAsFixed(1))
-        : l10n.unitM(meters.round().toString());
   }
 
   /// Tapping the status card connects to the dash (a no-op while already
@@ -178,7 +173,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                       location: saved[i],
                       distanceLabel: _origin == null
                           ? null
-                          : _formatDistance(l10n, GeoPoint.distMeters(_origin!, GeoPoint(saved[i].lat, saved[i].lng))),
+                          : formatDistance(l10n, GeoPoint.distMeters(_origin!, GeoPoint(saved[i].lat, saved[i].lng))),
                       onTap: !hasMaps
                           ? null
                           : () {

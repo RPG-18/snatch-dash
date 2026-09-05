@@ -10,6 +10,7 @@ import '../nav/place.dart';
 import '../nav/suggest_result.dart';
 import '../state/route_search_controller.dart';
 import '../state/saved_destinations_controller.dart';
+import '../util/format_distance.dart';
 
 /// Destination search screen. Live suggestions via the Yandex Geosuggest
 /// HTTP API (`SuggestApi`), from 3 characters. The suggest endpoint returns
@@ -107,19 +108,13 @@ class _RouteScreenState extends ConsumerState<RouteScreen> {
                 subtitle: candidate.address.isEmpty ? null : Text(candidate.address),
                 trailing: candidate.distanceMeters == null
                     ? null
-                    : Text(_formatDistance(l10n, candidate.distanceMeters!)),
+                    : Text(formatDistance(l10n, candidate.distanceMeters!)),
                 onTap: () => Navigator.of(sheetContext).pop(candidate),
               ),
           ],
         ),
       ),
     );
-  }
-
-  String _formatDistance(AppLocalizations l10n, double meters) {
-    return meters >= 1000
-        ? l10n.unitKm((meters / 1000).toStringAsFixed(1))
-        : l10n.unitM(meters.round().toString());
   }
 
   @override
@@ -234,7 +229,7 @@ class _RouteScreenState extends ConsumerState<RouteScreen> {
         return ListTile(
           title: Text(result.title, style: const TextStyle(fontWeight: FontWeight.bold)),
           subtitle: result.subtitle.isEmpty ? null : Text(result.subtitle),
-          trailing: result.distanceMeters == null ? null : Text(_formatDistance(l10n, result.distanceMeters!)),
+          trailing: result.distanceMeters == null ? null : Text(formatDistance(l10n, result.distanceMeters!)),
           onTap: () => _selectResult(result, state.origin),
         );
       },

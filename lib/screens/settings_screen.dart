@@ -12,6 +12,7 @@ import '../state/currency_settings.dart';
 import '../state/dash_engine_state.dart';
 import '../state/map_theme_settings.dart';
 import '../state/map_tile_cache.dart';
+import '../models/offline_map.dart';
 import '../state/offline_maps_controller.dart';
 import '../state/update_channel_settings.dart';
 import '../util/app_logger.dart';
@@ -94,7 +95,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> with WidgetsBin
   Widget build(BuildContext context) {
     final engine = ref.watch(dashEngineStateProvider);
     final currency = ref.watch(currencySettingsProvider);
-    final installedPacks = ref.watch(installedPacksProvider);
+    final installedPacks = ref.watch(installedPacksProvider) ?? const <InstalledPack>[];
     final mapTheme = ref.watch(mapThemeSettingsProvider);
     final l10n = AppLocalizations.of(context)!;
 
@@ -146,7 +147,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> with WidgetsBin
               title: Text(l10n.settingsOfflineMapsTitle),
               subtitle: Text(l10n.settingsOfflineMapsSubtitle(
                 installedPacks.length,
-                formatByteSize(l10n, installedPacks.fold(0, (sum, p) => sum + p.sizeBytes)),
+                formatByteSize(l10n, installedPacks.fold<int>(0, (sum, p) => sum + p.sizeBytes)),
               )),
               trailing: const Icon(Icons.chevron_right),
               onTap: () => context.push('/more/offline-maps'),

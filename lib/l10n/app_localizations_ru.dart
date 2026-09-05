@@ -33,6 +33,12 @@ class AppLocalizationsRu extends AppLocalizations {
   String get actionDelete => 'Удалить';
 
   @override
+  String get actionYes => 'Да';
+
+  @override
+  String get actionNo => 'Нет';
+
+  @override
   String unitKm(String value) {
     return '$value км';
   }
@@ -412,6 +418,9 @@ class AppLocalizationsRu extends AppLocalizations {
   @override
   String get offlineMapsAppTooOld =>
       'Обновите приложение, чтобы работать с картами';
+
+  @override
+  String get offlineMapsLoadingRegions => 'Загружаем список регионов…';
 
   @override
   String get offlineMapsNoResults => 'Ничего не найдено';

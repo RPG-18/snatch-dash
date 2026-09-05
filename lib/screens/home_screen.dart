@@ -67,7 +67,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   Widget build(BuildContext context) {
     final engine = ref.watch(dashEngineStateProvider);
     final saved = ref.watch(savedDestinationsControllerProvider);
-    final hasMaps = ref.watch(hasInstalledPacksProvider);
+    // `!= false`: null is "the registry has not answered yet", and the gate must
+    // not blink shut over maps that are in fact installed.
+    final hasMaps = ref.watch(hasInstalledPacksProvider) != false;
     final rides = ref.watch(ridesControllerProvider);
     final vehicle = ref.watch(vehicleStoreProvider).active;
     final theme = Theme.of(context);

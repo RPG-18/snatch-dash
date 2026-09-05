@@ -10,6 +10,8 @@
   "actionCancel": "Отмена",
   "actionSave": "Сохранить",
   "actionDelete": "Удалить",
+  "actionYes": "Да",
+  "actionNo": "Нет",
 
   "unitKm": "{value} км",
   "unitM": "{value} м",
@@ -130,6 +132,7 @@
   "offlineMapsRetry": "Повторить",
   "offlineMapsStaleCache": "Не удалось проверить обновления",
   "offlineMapsAppTooOld": "Обновите приложение, чтобы работать с картами",
+  "offlineMapsLoadingRegions": "Загружаем список регионов…",
   "offlineMapsNoResults": "Ничего не найдено",
   "offlineMapsCancelTitle": "Отменить загрузку",
   "offlineMapsUpdateAvailable": "Есть обновление",

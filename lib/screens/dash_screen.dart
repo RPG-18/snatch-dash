@@ -30,7 +30,9 @@ class DashScreen extends ConsumerWidget {
     final engine = ref.watch(dashEngineStateProvider);
     final route = ref.watch(routeControllerProvider).route;
     final destination = ref.watch(routeControllerProvider).destination;
-    final hasMaps = ref.watch(hasInstalledPacksProvider);
+    // `!= false` on purpose: null means the registry has not been read yet, and
+    // flashing "no maps" over a working one is worse than saying nothing.
+    final hasMaps = ref.watch(hasInstalledPacksProvider) != false;
     final l10n = AppLocalizations.of(context)!;
 
     final dest = destination != null

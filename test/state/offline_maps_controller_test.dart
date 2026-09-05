@@ -64,10 +64,12 @@ class _FakeDownloader extends MapPackDownloader {
   @override
   Future<void> cancel(String code) async => cancelled.add(code);
 
+  bool deleteSucceeds = true;
+
   @override
   Future<bool> delete(String code) async {
     deleted.add(code);
-    return true;
+    return deleteSucceeds;
   }
 
   @override
@@ -201,12 +203,16 @@ void main() {
 
       container.read(offlineMapsControllerProvider);
       container.read(installedPacksProvider);
-      expect(container.read(hasInstalledPacksProvider), isFalse);
+      // Not `false`: sqlite has not been read yet, and the difference matters —
+      // `false` here is what made Home flash "no maps, navigation disabled" on
+      // every cold start of an app with maps installed.
+      expect(container.read(hasInstalledPacksProvider), isNull,
+          reason: 'the registry has not answered yet, which is not the same as empty');
 
       await _settle();
       await _settle();
 
-      expect(container.read(installedPacksProvider).single.code, 'ru-ad');
+      expect(container.read(installedPacksProvider)!.single.code, 'ru-ad');
       expect(container.read(hasInstalledPacksProvider), isTrue);
     });
   });
@@ -289,7 +295,7 @@ void main() {
       await _settle();
       await _settle();
 
-      final packs = container.read(installedPacksProvider);
+      final packs = container.read(installedPacksProvider)!;
       expect(packs.map((p) => p.code), ['ru-ad']);
       expect(packs.single.sizeBytes, 4096);
       expect(container.read(hasInstalledPacksProvider), isTrue);
@@ -512,6 +518,31 @@ void main() {
 
       expect(controller.hasUpdate('ru-ad'), isTrue);
       expect(controller.hasUpdate('ru-nope'), isFalse);
+    });
+
+    test('a delete the platform refused keeps the row and the running update', () async {
+      final repo = InMemoryInstalledPacksRepository([
+        const InstalledPack(
+            code: 'ru-ad', sha256: 'aaa', generatedAt: 'T1', sizeBytes: 100, installedAtMs: 1),
+      ]);
+      final downloader = _FakeDownloader()..deleteSucceeds = false;
+      final container = _container(
+          api: _FakeApi(remote: _manifest()),
+          downloader: downloader,
+          repo: repo,
+          onDisk: await repo.list());
+
+      container.read(installedPacksProvider);
+      await _settle();
+      await container.read(offlineMapsControllerProvider.notifier).delete('ru-ad');
+
+      // The file is still on disk and the engine draws files, not rows — so the
+      // row stays and the rider is told. And nothing else was thrown away on the
+      // way: cancelling an in-flight update before knowing the delete would work
+      // cost the rider both at once.
+      expect(container.read(installedPacksProvider), hasLength(1));
+      expect(downloader.cancelled, isEmpty);
+      expect(container.read(offlineMapsControllerProvider).lastError, 'deleteFailed');
     });
 
     test('delete removes both the file and the registry row', () async {

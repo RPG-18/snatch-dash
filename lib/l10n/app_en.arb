@@ -10,6 +10,8 @@
   "actionCancel": "Cancel",
   "actionSave": "Save",
   "actionDelete": "Delete",
+  "actionYes": "Yes",
+  "actionNo": "No",
 
   "unitKm": "{value} km",
   "@unitKm": {"placeholders": {"value": {"type": "String"}}},
@@ -143,6 +145,7 @@
   "offlineMapsRetry": "Retry",
   "offlineMapsStaleCache": "Couldn't check for updates",
   "offlineMapsAppTooOld": "Update the app to keep using maps",
+  "offlineMapsLoadingRegions": "Loading the list of regions…",
   "offlineMapsNoResults": "Nothing found",
   "offlineMapsCancelTitle": "Cancel download",
   "offlineMapsUpdateAvailable": "Update available",

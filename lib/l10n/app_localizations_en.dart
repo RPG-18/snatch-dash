@@ -33,6 +33,12 @@ class AppLocalizationsEn extends AppLocalizations {
   String get actionDelete => 'Delete';
 
   @override
+  String get actionYes => 'Yes';
+
+  @override
+  String get actionNo => 'No';
+
+  @override
   String unitKm(String value) {
     return '$value km';
   }
@@ -408,6 +414,9 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get offlineMapsAppTooOld => 'Update the app to keep using maps';
+
+  @override
+  String get offlineMapsLoadingRegions => 'Loading the list of regions…';
 
   @override
   String get offlineMapsNoResults => 'Nothing found';

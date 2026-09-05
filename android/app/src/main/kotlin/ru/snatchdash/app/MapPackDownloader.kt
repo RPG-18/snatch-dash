@@ -147,16 +147,36 @@ class MapPackDownloader(private val context: Context) {
                 reconcileOne(code)
             } catch (e: Exception) {
                 Log.w(TAG, "reconcile failed for $code: ${e.message}", e)
-                // Give up on this pack completely, not just on its bookkeeping.
-                // Dropping only the pending entry would strand the `.part` file —
-                // up to a few hundred megabytes that nothing ever looks at again,
-                // since `reconcile` walks pending codes — and leave a finished
-                // DownloadManager row behind it.
-                runCatching { partFile(code).delete() }
+                // Where the throw landed decides what actually happened. Anything
+                // after a successful Files.move leaves the pack on disk under its
+                // final name, which the engine enumerates and draws — reporting
+                // FAILED there would tell Dart to keep no registry row for a map
+                // the dash is already showing, and the rider gets an error over a
+                // download that worked.
+                val installed = packFile(code)
+                val verified = pending.getString(keySha(code), null)
+                val outcome = if (installed.exists() && verified != null) {
+                    Log.i(TAG, "reconcile for $code threw after the move — the pack is installed")
+                    mapOf(
+                        "code" to code,
+                        "outcome" to Outcome.INSTALLED.name,
+                        "sha256" to verified,
+                        "generatedAt" to (pending.getString(keyGeneratedAt(code), "") ?: ""),
+                        "sizeBytes" to installed.length(),
+                    )
+                } else {
+                    // Give up on this pack completely, not just on its bookkeeping.
+                    // Dropping only the pending entry would strand the `.part` file
+                    // — up to a few hundred megabytes that nothing ever looks at
+                    // again, since `reconcile` walks pending codes — and leave a
+                    // finished DownloadManager row behind it.
+                    runCatching { partFile(code).delete() }
+                    result(code, Outcome.FAILED, e.message)
+                }
                 val strandedId = pending.getLong(keyId(code), -1L)
                 if (strandedId >= 0) runCatching { dm.remove(strandedId) }
                 forget(code)
-                listOf(result(code, Outcome.FAILED, e.message))
+                listOf(outcome)
             }
         }
         return results

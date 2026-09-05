@@ -1,9 +1,12 @@
+import 'dart:async';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:opendash_dash_engine/opendash_dash_engine.dart';
 
 import '../models/shared_location.dart';
 import '../nav/nav_loop.dart';
 import '../nav/route.dart' as nav;
+import '../util/app_logger.dart' show talker;
 
 class RouteState {
   const RouteState({this.destination, this.route});
@@ -67,7 +70,20 @@ class RouteController extends Notifier<RouteState> {
   void exitNavigation() {
     _navLoop?.stop();
     _navLoop = null;
-    DashEngine.instance.clearDestination();
+    // A whole fresh state, not copyWith: destination and route are nullable
+    // fields behind `??`, so copyWith cannot clear them — and leaving them set
+    // meant the next visit to /home/dash drew the old polyline and destination
+    // pin and offered "exit navigation" again, over a native side that had
+    // already stopped navigating.
+    state = const RouteState();
+    // Fire-and-forget would make a channel failure an unhandled async error, on
+    // a path the rider takes to *stop* — nothing here is worth surfacing, but
+    // it does belong in the log.
+    unawaited(
+      DashEngine.instance.clearDestination().catchError(
+        (Object e, StackTrace st) => talker.error('[Route] clearDestination failed', e, st),
+      ),
+    );
   }
 }
 

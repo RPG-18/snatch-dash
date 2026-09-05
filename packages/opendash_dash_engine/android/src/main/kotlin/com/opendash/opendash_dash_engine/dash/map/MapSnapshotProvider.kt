@@ -78,6 +78,9 @@ class MapSnapshotProvider(private val context: Context) {
     /** Set from a callback; acted on at the top of the next [capture], on the main thread. */
     private var needsRebuild = false
 
+    /** When the last [rebuild] ran, so a failing one cannot be retried every frame. */
+    private var lastRebuildAtMs = 0L
+
     /**
      * Which snapshotter a pending request was issued to — bumped per request and
      * whenever the snapshotter is replaced, so a callback can tell whether it
@@ -203,11 +206,18 @@ class MapSnapshotProvider(private val context: Context) {
         snapshotterIssue++
         if (json == null) return // never prepared — nothing to rebuild from
         rebuilds++
+        lastRebuildAtMs = System.currentTimeMillis()
         DebugLog.w(TAG) { "rebuilding the snapshotter: $reason" }
         releaseCurrent()
         snapshotter = runCatching { buildSnapshotter(json, frameWidth, frameHeight) }
             .onFailure { DebugLog.e(TAG, { "snapshotter rebuild failed" }, it) }
             .getOrNull()
+        // A failed rebuild leaves no snapshotter at all, and [capture] returns
+        // early before it can ever reach start() — so nothing would count another
+        // failure and nothing would ask for another rebuild. The map would stay
+        // blank for the rest of the session on one unlucky allocation. Ask again
+        // instead, paced by [REBUILD_COOLDOWN_MS].
+        if (snapshotter == null) needsRebuild = true
     }
 
     /**
@@ -248,7 +258,9 @@ class MapSnapshotProvider(private val context: Context) {
             // field it did not, and every later start() failed. Replace it.
             needsRebuild = true
         }
-        if (needsRebuild) rebuild("after ${abandoned + errors} snapshot failures")
+        if (needsRebuild && now - lastRebuildAtMs >= REBUILD_COOLDOWN_MS) {
+            rebuild("after ${abandoned + errors} snapshot failures")
+        }
         val snapshotter = snapshotter ?: return@withContext null
         var failed = false
         snapshotter.setCameraPosition(camera)
@@ -405,6 +417,17 @@ class MapSnapshotProvider(private val context: Context) {
          * 468 of them.
          */
         private const val REBUILD_AFTER_FAILURES = 3
+
+        /**
+         * Shortest gap between two [rebuild] attempts.
+         *
+         * Only matters when a rebuild itself fails: the flag stays raised, and
+         * without a pace the frame loop would re-parse the style four times a
+         * second on the main thread — turning a broken map into a broken phone.
+         * Two seconds still recovers well inside the time it takes a rider to
+         * notice, and only ever applies while the map is already gone.
+         */
+        private const val REBUILD_COOLDOWN_MS = 2_000L
 
         /**
          * Whether the snapshot came back with no map on it — every sampled pixel

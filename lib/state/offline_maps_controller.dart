@@ -21,18 +21,32 @@ final mapPackDownloaderProvider = Provider<MapPackDownloader>((ref) => MapPackDo
 /// Read far beyond the offline-maps screen: Home gates navigation on it and
 /// Dash shows a "no maps" chip from it, because without a pack the frame the
 /// dash receives is an empty style background.
-class InstalledPacks extends Notifier<List<InstalledPack>> {
+/// `null` until sqlite has been read once — see [hasInstalledPacksProvider].
+class InstalledPacks extends Notifier<List<InstalledPack>?> {
   int _reloadGeneration = 0;
 
   @override
-  List<InstalledPack> build() {
+  List<InstalledPack>? build() {
     Future.microtask(reload);
-    return const [];
+    return null;
   }
 
   Future<void> reload() async {
     final generation = ++_reloadGeneration;
-    final packs = await ref.read(installedPacksRepositoryProvider).list();
+    List<InstalledPack> packs;
+    try {
+      packs = await ref.read(installedPacksRepositoryProvider).list();
+    } catch (e, st) {
+      // `null` means "not read yet", and readers treat that as "say nothing
+      // yet" — which is right for the microtask at startup and very wrong
+      // forever. A registry we cannot read is an answer: no packs we can
+      // account for. The engine still draws whatever is on disk; the interface
+      // stops claiming to know better.
+      talker.error('[OfflineMaps] could not read the pack registry', e, st);
+      if (!ref.mounted || generation != _reloadGeneration) return;
+      state = const [];
+      return;
+    }
     if (!ref.mounted) return;
     if (generation != _reloadGeneration) return; // superseded by a newer reload
     state = packs;
@@ -50,12 +64,21 @@ class InstalledPacks extends Notifier<List<InstalledPack>> {
 }
 
 final installedPacksProvider =
-    NotifierProvider<InstalledPacks, List<InstalledPack>>(InstalledPacks.new);
+    NotifierProvider<InstalledPacks, List<InstalledPack>?>(InstalledPacks.new);
 
-/// The one flag the rest of the app asks about. Kept derived rather than
-/// duplicated so it can never disagree with the registry.
+/// The one flag the rest of the app asks about — `null` while the registry has
+/// not been read yet.
+///
+/// Three states, not two, because the first frames of a cold start have no
+/// answer: the registry fills itself from sqlite in a microtask, and a plain
+/// `false` in the meantime made Home show "no maps, navigation disabled" and
+/// Dash its "no maps" chip for a moment on every launch of a perfectly stocked
+/// app. Callers must treat `null` as "don't say anything yet", not as `false`.
+///
+/// Kept derived rather than duplicated so it can never disagree with the
+/// registry.
 final hasInstalledPacksProvider =
-    Provider<bool>((ref) => ref.watch(installedPacksProvider).isNotEmpty);
+    Provider<bool?>((ref) => ref.watch(installedPacksProvider)?.isNotEmpty);
 
 /// Why the list of *available* packs looks the way it does. The three data
 /// sources — registry, local `index.json`, network — fail independently, and
@@ -325,6 +348,10 @@ class OfflineMapsController extends Notifier<OfflineMapsState> {
 
   /// Removes an installed pack — the file and its registry row.
   Future<void> delete(String code) async {
+    // File first, download second. The reverse order threw away an in-flight
+    // update *before* learning whether the delete would even work: on a failure
+    // the rider then had neither the deletion they asked for nor the update they
+    // had been waiting on, and nothing said so.
     final removed = await ref.read(mapPackDownloaderProvider).delete(code);
     if (!removed) {
       // The file is still there, and the engine enumerates files, not the
@@ -335,6 +362,12 @@ class OfflineMapsController extends Notifier<OfflineMapsState> {
       _reportError('deleteFailed');
       return;
     }
+    // Only now that the file is actually gone: a pack can be deleted while an
+    // update for it is downloading — the screen hides the menu then, but the
+    // interface's shape is not where an invariant should live, and the poller
+    // may not have noticed the transfer yet either. Left running, it would
+    // reinstall the pack the rider just deleted on the next harvest.
+    await cancel(code);
     await ref.read(installedPacksProvider.notifier).remove(code);
   }
 
@@ -345,7 +378,8 @@ class OfflineMapsController extends Notifier<OfflineMapsState> {
   /// when the OSM data didn't. The interface must not promise incremental
   /// updates (spec/remote_map_server.md, "Проверка обновлений").
   bool hasUpdate(String code) {
-    final installed = ref.read(installedPacksProvider).where((p) => p.code == code).firstOrNull;
+    final installed =
+        (ref.read(installedPacksProvider) ?? const []).where((p) => p.code == code).firstOrNull;
     return installed != null && state.hasUpdateFor(installed);
   }
 
@@ -383,13 +417,19 @@ class OfflineMapsController extends Notifier<OfflineMapsState> {
     } catch (e, st) {
       // A PlatformException out of the channel used to surface as an unhandled
       // async error with nothing to catch it, every 700 ms for as long as the
-      // timer ran. Swallowing it keeps an existing timer alive — but the
-      // bootstrap call happens before any timer exists, and there a failure
-      // would leave nothing watching the downloads at all, which is the hole
-      // this whole poller exists to close. So: restart polling if anything is
-      // still expected to be in flight.
+      // timer ran.
+      //
+      // Keep polling unconditionally, without consulting `progress` or
+      // `_wantsPolling`: the very first statement in the try is the channel call
+      // that fills them, so a failure there leaves both empty and says nothing
+      // about whether a download exists. This tick is also the bootstrap one,
+      // running before any timer — and giving up there means a transfer that
+      // outlived the app is never harvested this session, which is the single
+      // scenario the system downloader was chosen for. A timer that retries is
+      // the cheap side of that trade; it stops itself on the first clean tick
+      // that finds nothing in flight.
       talker.error('[OfflineMaps] poll tick failed', e, st);
-      if (ref.mounted && (_wantsPolling || state.progress.isNotEmpty)) _startPolling();
+      if (ref.mounted) _startPolling();
     } finally {
       _ticking = false;
     }

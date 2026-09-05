@@ -23,7 +23,7 @@ class OfflineMapsScreen extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final l10n = AppLocalizations.of(context)!;
     final state = ref.watch(offlineMapsControllerProvider);
-    final installed = ref.watch(installedPacksProvider);
+    final installed = ref.watch(installedPacksProvider) ?? const <InstalledPack>[];
     final navigating = ref.watch(dashEngineStateProvider).navigating;
 
     // Selects the nonce too, so the same failure twice in a row still fires.
@@ -33,6 +33,20 @@ class OfflineMapsScreen extends ConsumerWidget {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(_errorText(l10n, error))));
       ref.read(offlineMapsControllerProvider.notifier).errorShown();
     });
+
+    // ref.listen only fires on changes *after* it subscribes, and the poller
+    // deliberately outlives this screen: a download that failed while the rider
+    // was elsewhere left its error sitting in the state, shown to nobody and
+    // never cleared. Post-frame because a snackbar cannot be shown during build.
+    final pending = state.lastError;
+    if (pending != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!context.mounted) return;
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(_errorText(l10n, pending))));
+        ref.read(offlineMapsControllerProvider.notifier).errorShown();
+      });
+    }
 
     return Scaffold(
       appBar: AppBar(title: Text(l10n.offlineMapsTitle)),
@@ -46,11 +60,22 @@ class OfflineMapsScreen extends ConsumerWidget {
           else ...[
             if (state.status == ManifestStatus.staleCache)
               _Banner(icon: Icons.cloud_off, text: l10n.offlineMapsStaleCache),
-            _SearchField(
-              onTap: () => Navigator.of(context).push(
-                MaterialPageRoute<void>(builder: (_) => const _PackPickerScreen()),
+            // The search field stays disabled until the manifest lands. Active,
+            // it opened a picker over an empty region list and answered
+            // «Ничего не найдено» to everything — a lie the rider has no way to
+            // tell from a genuinely missing region on a slow connection.
+            if (state.status == ManifestStatus.loading)
+              const _ManifestLoading()
+            else
+              _SearchField(
+                // rootNavigator: the picker is a full-screen popup by spec, and
+                // the branch navigator of the StatefulShellRoute would leave the
+                // bottom bar on top of it — five tabs offering to leave a screen
+                // whose whole job is one choice.
+                onTap: () => Navigator.of(context, rootNavigator: true).push(
+                  MaterialPageRoute<void>(builder: (_) => const _PackPickerScreen()),
+                ),
               ),
-            ),
           ],
           const SizedBox(height: 16),
           Text(l10n.offlineMapsDownloadedSection, style: Theme.of(context).textTheme.labelLarge),
@@ -89,6 +114,36 @@ class OfflineMapsScreen extends ConsumerWidget {
         'deleteFailed' => l10n.offlineMapsDeleteFailed,
         _ => l10n.offlineMapsDownloadFailed,
       };
+}
+
+/// Stand-in for the search field while the manifest is still on its way.
+///
+/// Shaped like the field it replaces so the layout does not jump when the list
+/// of regions arrives.
+class _ManifestLoading extends StatelessWidget {
+  const _ManifestLoading();
+
+  @override
+  Widget build(BuildContext context) {
+    final l10n = AppLocalizations.of(context)!;
+    return InputDecorator(
+      decoration: InputDecoration(
+        prefixIcon: const Padding(
+          padding: EdgeInsets.all(12),
+          child: SizedBox(
+            width: 20,
+            height: 20,
+            child: CircularProgressIndicator(strokeWidth: 2),
+          ),
+        ),
+        border: const OutlineInputBorder(),
+      ),
+      child: Text(
+        l10n.offlineMapsLoadingRegions,
+        style: TextStyle(color: Theme.of(context).hintColor),
+      ),
+    );
+  }
 }
 
 class _SearchField extends StatelessWidget {
@@ -188,12 +243,19 @@ class _InstalledTile extends ConsumerWidget {
       onTap: updating
           ? () => _confirmCancel(context, ref, l10n)
           : (hasUpdate ? () => _startUpdate(context, ref, l10n, name) : null),
-      trailing: PopupMenuButton<String>(
-        onSelected: (_) => _confirmDelete(context, ref, name),
-        itemBuilder: (context) => [
-          PopupMenuItem(value: 'delete', child: Text(l10n.offlineMapsDeleteAction)),
-        ],
-      ),
+      // No delete while an update is downloading: it would remove the file and
+      // the registry row without stopping the transfer, and the next harvest
+      // would put the pack straight back — the "deleted" pack reappearing on
+      // its own. The invariant is enforced in the controller too; this only
+      // keeps the interface from offering it.
+      trailing: updating
+          ? null
+          : PopupMenuButton<String>(
+              onSelected: (_) => _confirmDelete(context, ref, name),
+              itemBuilder: (context) => [
+                PopupMenuItem(value: 'delete', child: Text(l10n.offlineMapsDeleteAction)),
+              ],
+            ),
     );
   }
 
@@ -211,21 +273,28 @@ class _InstalledTile extends ConsumerWidget {
   }
 
   Future<void> _confirmCancel(BuildContext context, WidgetRef ref, AppLocalizations l10n) async {
+    // Held before the await: while the dialog is open the poller can install the
+    // pack, the list rebuilds and this tile is unmounted — and `ref.read` on a
+    // defunct WidgetRef throws a StateError nobody catches. The provider is not
+    // autoDispose, so a reference taken now stays valid either way.
+    final controller = ref.read(offlineMapsControllerProvider.notifier);
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(
         title: Text(l10n.offlineMapsCancelTitle),
+        // "Yes"/"No", not "Cancel"/"Delete": in a dialog whose own title is
+        // «Отменить загрузку», a button reading «Отмена» is ambiguous about
+        // which thing it cancels, and «Удалить» names an action this dialog
+        // does not perform.
         actions: [
           TextButton(
-              onPressed: () => Navigator.pop(dialogContext, false), child: Text(l10n.actionCancel)),
+              onPressed: () => Navigator.pop(dialogContext, false), child: Text(l10n.actionNo)),
           TextButton(
-              onPressed: () => Navigator.pop(dialogContext, true), child: Text(l10n.actionDelete)),
+              onPressed: () => Navigator.pop(dialogContext, true), child: Text(l10n.actionYes)),
         ],
       ),
     );
-    if (confirmed ?? false) {
-      await ref.read(offlineMapsControllerProvider.notifier).cancel(pack.code);
-    }
+    if (confirmed ?? false) await controller.cancel(pack.code);
   }
 
   Future<void> _confirmDelete(BuildContext context, WidgetRef ref, String name) async {
@@ -237,6 +306,7 @@ class _InstalledTile extends ConsumerWidget {
           .showSnackBar(SnackBar(content: Text(l10n.offlineMapsExitNavigationFirst)));
       return;
     }
+    final controller = ref.read(offlineMapsControllerProvider.notifier); // see _confirmCancel
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(
@@ -249,9 +319,7 @@ class _InstalledTile extends ConsumerWidget {
         ],
       ),
     );
-    if (confirmed ?? false) {
-      await ref.read(offlineMapsControllerProvider.notifier).delete(pack.code);
-    }
+    if (confirmed ?? false) await controller.delete(pack.code);
   }
 }
 
@@ -274,7 +342,9 @@ class _PackPickerScreenState extends ConsumerState<_PackPickerScreen> {
     final l10n = AppLocalizations.of(context)!;
     final language = Localizations.localeOf(context).languageCode;
     final state = ref.watch(offlineMapsControllerProvider);
-    final installed = {for (final p in ref.watch(installedPacksProvider)) p.code};
+    final installed = {
+      for (final p in ref.watch(installedPacksProvider) ?? const <InstalledPack>[]) p.code,
+    };
     final navigating = ref.watch(dashEngineStateProvider).navigating;
 
     final matches = state.regions
@@ -361,21 +431,24 @@ class _AvailableTile extends ConsumerWidget {
   Future<void> _confirmCancel(BuildContext context, WidgetRef ref, AppLocalizations l10n) async {
     // Cancelling is allowed while navigating: an in-flight download hasn't
     // changed the active pack set yet, so stopping it breaks nothing.
+    final controller = ref.read(offlineMapsControllerProvider.notifier); // see _InstalledTile
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(
         title: Text(l10n.offlineMapsCancelTitle),
+        // "Yes"/"No", not "Cancel"/"Delete": in a dialog whose own title is
+        // «Отменить загрузку», a button reading «Отмена» is ambiguous about
+        // which thing it cancels, and «Удалить» names an action this dialog
+        // does not perform.
         actions: [
           TextButton(
-              onPressed: () => Navigator.pop(dialogContext, false), child: Text(l10n.actionCancel)),
+              onPressed: () => Navigator.pop(dialogContext, false), child: Text(l10n.actionNo)),
           TextButton(
-              onPressed: () => Navigator.pop(dialogContext, true), child: Text(l10n.actionDelete)),
+              onPressed: () => Navigator.pop(dialogContext, true), child: Text(l10n.actionYes)),
         ],
       ),
     );
-    if (confirmed ?? false) {
-      await ref.read(offlineMapsControllerProvider.notifier).cancel(region.code);
-    }
+    if (confirmed ?? false) await controller.cancel(region.code);
   }
 }
 

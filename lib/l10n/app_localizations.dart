@@ -146,6 +146,18 @@ abstract class AppLocalizations {
   /// **'Delete'**
   String get actionDelete;
 
+  /// No description provided for @actionYes.
+  ///
+  /// In en, this message translates to:
+  /// **'Yes'**
+  String get actionYes;
+
+  /// No description provided for @actionNo.
+  ///
+  /// In en, this message translates to:
+  /// **'No'**
+  String get actionNo;
+
   /// No description provided for @unitKm.
   ///
   /// In en, this message translates to:
@@ -817,6 +829,12 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Update the app to keep using maps'**
   String get offlineMapsAppTooOld;
+
+  /// No description provided for @offlineMapsLoadingRegions.
+  ///
+  /// In en, this message translates to:
+  /// **'Loading the list of regions…'**
+  String get offlineMapsLoadingRegions;
 
   /// No description provided for @offlineMapsNoResults.
   ///

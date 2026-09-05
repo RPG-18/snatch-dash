@@ -21,11 +21,37 @@ class MaintenanceNotifier {
   static final MaintenanceNotifier instance = MaintenanceNotifier._();
 
   final _plugin = FlutterLocalNotificationsPlugin();
-  bool _initialized = false;
+
+  /// The pending *future* of initialization, not a "done" flag.
+  ///
+  /// A `bool` set before the `await` (which is what this was) let a second
+  /// [check] sail past initialization while the first was still inside
+  /// `_plugin.initialize()`, and reach `_plugin.show()` on a plugin that had not
+  /// finished setting up its notification channel. Same reasoning — and the same
+  /// shape — as `AppDatabase._opening`, including not caching a failure.
+  Future<void>? _initializing;
+
+  /// Serialises [check]. [GarageController._reload] documents that it runs
+  /// concurrently and fires this through `unawaited` at the end of every run, so
+  /// two checks overlapping is ordinary, not exotic. Both would then read
+  /// `_prefsKeyNotified` before either wrote it, compute the same `newlyDue`
+  /// against the same base, and both buzz — with the later write losing the
+  /// earlier one. Run in order and the second sees the first's write, finds
+  /// nothing newly due, and returns.
+  Future<void> _queue = Future.value();
 
   Future<void> _ensureInitialized() async {
-    if (_initialized) return;
-    _initialized = true;
+    final pending = _initializing ??= _initialize();
+    try {
+      await pending;
+    } catch (_) {
+      // Never cache a failed initialization — the next check() gets a fresh try.
+      if (identical(_initializing, pending)) _initializing = null;
+      rethrow;
+    }
+  }
+
+  Future<void> _initialize() async {
     final l10n = deviceLocalizations();
     const android = AndroidInitializationSettings('@mipmap/ic_launcher');
     await _plugin.initialize(settings: const InitializationSettings(android: android));
@@ -50,7 +76,18 @@ class MaintenanceNotifier {
     return distanceDue || remainingDays < months * 30 * 0.25;
   }
 
-  Future<void> check(List<MaintenanceItem> items, int odometer) async {
+  /// Posts the reminder if anything newly crossed into "due". Serialised — see
+  /// [_queue].
+  Future<void> check(List<MaintenanceItem> items, int odometer) {
+    final result = _queue.then((_) => _check(items, odometer));
+    // The chain has to survive a failure: a rejected `_queue` would make every
+    // later check() fail at once with the *previous* call's error. Callers still
+    // see their own failure through `result`.
+    _queue = result.catchError((Object _) {});
+    return result;
+  }
+
+  Future<void> _check(List<MaintenanceItem> items, int odometer) async {
     await _ensureInitialized();
 
     final due = items.where((m) => _isDue(m, odometer)).toList();

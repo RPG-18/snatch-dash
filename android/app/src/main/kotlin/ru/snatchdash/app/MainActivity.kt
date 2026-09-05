@@ -9,6 +9,7 @@ import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 import java.io.File
+import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 
 /**
@@ -25,9 +26,22 @@ class MainActivity : FlutterActivity() {
 
     private val downloader by lazy { MapPackDownloader(applicationContext) }
 
-    /** Single thread: sha256 over a large pack must never run on the main one,
-     *  and two reconciles racing over the same `.part` file help nobody. */
-    private val mapsWorker = Executors.newSingleThreadExecutor()
+    private companion object {
+        /**
+         * Single thread: sha256 over a large pack must never run on the main one, and two
+         * reconciles racing over the same `.part` file help nobody.
+         *
+         * Process-wide, not per-activity. As an instance field the guarantee held only as long
+         * as exactly one [MainActivity] existed — two of them (a recreation whose predecessor
+         * has not finished tearing down) each got their own executor, and with it exactly the
+         * interleavings over `.part` files and the pending prefs that a single thread exists to
+         * rule out. `launchMode="singleTask"` plus a wide `configChanges` in the manifest makes
+         * that unlikely today, but the guarantee then rests on the manifest rather than on this
+         * file. There is no `shutdown()` for the same reason: the next activity has to inherit a
+         * live worker, and Android reclaims the whole process anyway.
+         */
+        val mapsWorker: ExecutorService = Executors.newSingleThreadExecutor()
+    }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -53,11 +67,6 @@ class MainActivity : FlutterActivity() {
 
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, mapsChannelName)
             .setMethodCallHandler { call, result -> handleMaps(call.method, call, result) }
-    }
-
-    override fun onDestroy() {
-        mapsWorker.shutdown()
-        super.onDestroy()
     }
 
     /**

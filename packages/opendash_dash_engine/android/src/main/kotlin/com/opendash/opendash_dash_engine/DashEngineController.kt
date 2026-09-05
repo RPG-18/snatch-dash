@@ -359,7 +359,16 @@ class DashEngineController(
     fun disconnect() {
         RideDiagnostics.log("connect", "disconnect() called")
         giveupJob?.cancel(); giveupJob = null
-        streamJob?.cancel(); streamJob = null
+        // Cancelled but deliberately NOT nulled, unlike every other job here. cancel() is
+        // cooperative: the frame loop keeps running on Dispatchers.Default until its next
+        // suspension point, and its finally releases the encoder and nulls the field. Dropping
+        // the reference is what let the NEXT [startStream] skip its cancelAndJoin() — it would
+        // see null, join nothing, and install a fresh encoder that the still-unwinding old loop
+        // then released out from under it, leaving `encoder` null for the whole session: a
+        // frozen dash with no error anywhere, since the session does reach STREAMING and the
+        // give-up timer is cancelled. Keeping the reference costs nothing (joining an already
+        // finished Job returns at once) and restores the invariant [startStream] documents.
+        streamJob?.cancel()
         sessionWatchJob?.cancel(); sessionWatchJob = null
         wifiWatchJob?.cancel(); wifiWatchJob = null
         stopMediaForwarding()

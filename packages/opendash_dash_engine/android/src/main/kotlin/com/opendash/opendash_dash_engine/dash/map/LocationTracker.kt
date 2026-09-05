@@ -15,6 +15,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import java.util.concurrent.atomic.AtomicInteger
 
 /** GPS position via LocationManager (no Play Services dependency). */
 class LocationTracker(context: Context, private val scope: CoroutineScope) {
@@ -38,9 +39,15 @@ class LocationTracker(context: Context, private val scope: CoroutineScope) {
     val location = _location.asStateFlow()
 
     // Quality counters for [launchQualityLog] — accumulate between reports, reset there.
-    private var acceptedCount = 0
-    private var rejectedCount = 0
-    private var degradedCount = 0
+    // Atomic because the two ends are different threads: the [listener] increments them on the
+    // main looper (that is where requestLocationUpdates delivers), while [launchQualityLog]
+    // reads and zeroes them on Dispatchers.Default. As plain Ints the increments were a
+    // non-atomic read-modify-write and the reads could see arbitrarily stale values — which
+    // matters more than it looks, because these numbers exist purely to answer "was GPS healthy
+    // at this point in the ride" from a diag file after the fact.
+    private val acceptedCount = AtomicInteger(0)
+    private val rejectedCount = AtomicInteger(0)
+    private val degradedCount = AtomicInteger(0)
     @Volatile private var lastFixAtMs = 0L
     private var qualityLogJob: Job? = null
 
@@ -48,12 +55,12 @@ class LocationTracker(context: Context, private val scope: CoroutineScope) {
         val cur = _location.value
         if (acceptFix(cur, loc)) {
             _location.value = loc
-            acceptedCount++
-            if (loc.accuracy > DEGRADED_ACCURACY_M) degradedCount++
+            acceptedCount.incrementAndGet()
+            if (loc.accuracy > DEGRADED_ACCURACY_M) degradedCount.incrementAndGet()
             lastFixAtMs = System.currentTimeMillis()
             DebugLog.d(TAG) { "fix ${loc.provider} acc=${loc.accuracy} (${loc.latitude},${loc.longitude})" }
         } else {
-            rejectedCount++
+            rejectedCount.incrementAndGet()
             DebugLog.d(TAG) { "REJECT ${loc.provider} acc=${loc.accuracy} dt=${loc.time - (cur?.time ?: 0)}ms" }
         }
     }
@@ -136,7 +143,7 @@ class LocationTracker(context: Context, private val scope: CoroutineScope) {
      */
     private fun launchQualityLog() {
         qualityLogJob?.cancel()
-        acceptedCount = 0; rejectedCount = 0; degradedCount = 0
+        acceptedCount.set(0); rejectedCount.set(0); degradedCount.set(0)
         var warnedForThisGap = false
         var msSinceLastSummary = 0L
         qualityLogJob = scope.launch(Dispatchers.Default) {
@@ -155,8 +162,11 @@ class LocationTracker(context: Context, private val scope: CoroutineScope) {
                 msSinceLastSummary += 1_000
                 if (msSinceLastSummary >= QUALITY_LOG_INTERVAL_MS) {
                     msSinceLastSummary = 0L
-                    val accepted = acceptedCount; val rejected = rejectedCount; val degraded = degradedCount
-                    acceptedCount = 0; rejectedCount = 0; degradedCount = 0
+                    // getAndSet, not read-then-zero: a fix landing between the two would
+                    // otherwise be counted into this window and then thrown away.
+                    val accepted = acceptedCount.getAndSet(0)
+                    val rejected = rejectedCount.getAndSet(0)
+                    val degraded = degradedCount.getAndSet(0)
                     DebugLog.i(TAG) {
                         "GPS quality: accepted=$accepted rejected=$rejected " +
                             "degraded(acc>${DEGRADED_ACCURACY_M.toInt()}m)=$degraded in the last " +

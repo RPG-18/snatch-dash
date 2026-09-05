@@ -43,7 +43,13 @@ class VoiceManager {
 
   final _tts = FlutterTts();
   VoiceMode _mode = VoiceMode.chime;
-  bool _loaded = false;
+
+  /// The pending *future* of the preference read, not a "done" flag: a `bool`
+  /// set before the `await` makes a second `load()` return immediately while
+  /// [_mode] is still the default, so awaiting it would not mean what it says.
+  /// Only `main.dart` calls this today, once and awaited, so this is a latent
+  /// hazard rather than a live one — but it costs one field to remove.
+  Future<void>? _loading;
 
   double _lastManeuverKey = -1.0;
   bool _farDone = false;
@@ -53,8 +59,19 @@ class VoiceManager {
   VoiceMode get mode => _mode;
 
   Future<void> load() async {
-    if (_loaded) return;
-    _loaded = true;
+    final pending = _loading ??= _load();
+    try {
+      await pending;
+    } catch (_) {
+      // Never cache a failed read — a transient SharedPreferences failure must
+      // not leave every later load() replaying it. Same shape as
+      // `MaintenanceNotifier._ensureInitialized` and `AppDatabase.database`.
+      if (identical(_loading, pending)) _loading = null;
+      rethrow;
+    }
+  }
+
+  Future<void> _load() async {
     final prefs = await SharedPreferences.getInstance();
     final saved = prefs.getString(_prefsKeyMode);
     _mode = VoiceMode.values.firstWhere(

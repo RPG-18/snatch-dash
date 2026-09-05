@@ -12,7 +12,7 @@
   `RouteOptionsMap`, несколько маршрутов-альтернатив (экран
   [Маршруты](route_preview_screen.md)).
 
-Оба виджета имеративно работают с `window.map.mapObjects`
+Оба виджета императивно работают с `window.map.mapObjects`
 (`RootMapObjectCollection`) через `yandex_maps_mapkit` — на каждый
 пересчёт `objects.clear()` и перерисовка с нуля.
 

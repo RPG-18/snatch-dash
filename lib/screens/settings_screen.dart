@@ -199,19 +199,23 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> with WidgetsBin
           Text(l10n.settingsCurrency, style: Theme.of(context).textTheme.labelLarge),
           const SizedBox(height: 8),
           Card(
-            child: RadioGroup<OpenDashCurrency>(
-              groupValue: currency,
-              onChanged: (v) {
-                if (v != null) ref.read(currencySettingsProvider.notifier).select(v);
-              },
-              child: Column(
-                children: [
-                  for (final c in OpenDashCurrency.values)
-                    RadioListTile<OpenDashCurrency>(
-                      value: c,
-                      title: Text('${currencyDisplayName(l10n, c)} (${c.symbol})'),
-                    ),
-                ],
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+              child: DropdownButtonHideUnderline(
+                child: DropdownButton<OpenDashCurrency>(
+                  value: currency,
+                  isExpanded: true,
+                  items: [
+                    for (final c in OpenDashCurrency.values)
+                      DropdownMenuItem(
+                        value: c,
+                        child: Text('${currencyDisplayName(l10n, c)} (${c.symbol})'),
+                      ),
+                  ],
+                  onChanged: (v) {
+                    if (v != null) ref.read(currencySettingsProvider.notifier).select(v);
+                  },
+                ),
               ),
             ),
           ),

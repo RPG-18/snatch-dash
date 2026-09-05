@@ -11,7 +11,7 @@ This is a **Flutter port of [subtlesayak/open-dash](https://github.com/subtlesay
 (the original native Kotlin/Compose app), rebuilt on **Yandex map and
 navigation services** (Yandex MapKit) in place of Google Maps — so it works
 reliably **within the Russian Federation**, where Google's mapping/location
-services are unavailable or unreliable. 
+services are unavailable or unreliable.
 
 ## ✨ Features
 
@@ -21,7 +21,7 @@ services are unavailable or unreliable.
   the system `DownloadManager`, verified by sha256, and rendered on-device by
   MapLibre. **The dash needs at least one pack**: without it, navigation is
   gated off in the app (routing and destination search still need the network,
-  see «Known gaps»).
+  see "Known gaps").
 - 🏍️ Vehicle profiles with active-vehicle selection, odometer, PUC/insurance
   dates, and service details.
 - 🧰 Garage with spare-part intervals, service history, odometer editing, and

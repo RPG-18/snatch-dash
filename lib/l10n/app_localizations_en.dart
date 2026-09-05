@@ -531,6 +531,9 @@ class AppLocalizationsEn extends AppLocalizations {
   String get settingsLogsSubtitle => 'View app logs';
 
   @override
+  String get settingsLogsShareSubject => 'SnatchDash logs';
+
+  @override
   String get settingsLogsShareFile => 'Share saved log file';
 
   @override

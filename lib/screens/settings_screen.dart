@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -11,8 +13,8 @@ import '../state/auto_update_settings.dart';
 import '../state/currency_settings.dart';
 import '../state/dash_engine_state.dart';
 import '../state/map_theme_settings.dart';
-import '../state/map_tile_cache.dart';
 import '../models/offline_map.dart';
+import '../state/map_tile_cache.dart';
 import '../state/offline_maps_controller.dart';
 import '../state/update_channel_settings.dart';
 import '../util/app_logger.dart';
@@ -44,6 +46,11 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> with WidgetsBin
   // over a fresher one if two of them race.
   int _configGeneration = 0;
 
+  /// One re-drive of the install flow per visit to the system permission screen.
+  /// Reset whenever the controller leaves [AppUpdateStatus.needsInstallPermission],
+  /// so a later, genuine permission prompt still gets its retry.
+  bool _installPermissionRedriven = false;
+
   @override
   void initState() {
     super.initState();
@@ -65,14 +72,26 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> with WidgetsBin
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    // Leaving the app arms the next re-drive. Resetting on resume instead (as
+    // this first did) spent the single attempt on the trip *to* the permission
+    // screen — the status is still needsInstallPermission on the way out and on
+    // the way back — so the visit where the rider actually granted it did
+    // nothing, and the update sat stuck until an app restart.
+    if (state == AppLifecycleState.paused) _installPermissionRedriven = false;
     // The user grants notification access in system settings, outside the
     // app; re-check when they come back so the status stays current.
     if (state == AppLifecycleState.resumed) {
       _loadNotificationAccess();
       // Same story for "install unknown apps": granted in system settings,
-      // outside the app. There's no install-time callback, so re-drive the
-      // flow on return — it'll just re-check and proceed if now granted.
-      if (ref.read(appUpdateControllerProvider).status == AppUpdateStatus.needsInstallPermission) {
+      // outside the app. There's no install-time callback, so re-drive the flow
+      // on return — but only once, and only for a resume that plausibly *is* the
+      // return from that dialog. Re-driving on every resume restarted the whole
+      // download-and-install on any trip out of the app — the permission screen,
+      // a notification, a phone call — while the state still read
+      // needsInstallPermission.
+      final status = ref.read(appUpdateControllerProvider).status;
+      if (status == AppUpdateStatus.needsInstallPermission && !_installPermissionRedriven) {
+        _installPermissionRedriven = true;
         ref.read(appUpdateControllerProvider.notifier).downloadAndInstall();
       }
     }
@@ -218,7 +237,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> with WidgetsBin
               trailing: IconButton(
                 icon: const Icon(Icons.ios_share),
                 tooltip: l10n.settingsLogsShareFile,
-                onPressed: _shareLogFile,
+                onPressed: () => _shareLogFile(l10n),
               ),
             ),
           ),
@@ -283,17 +302,23 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> with WidgetsBin
     );
   }
 
-  Future<void> _shareLogFile() async {
+  Future<void> _shareLogFile(AppLocalizations l10n) async {
     final files = await persistedLogFiles();
     if (files.isEmpty) return;
     await SharePlus.instance.share(
-      ShareParams(files: files.map((f) => XFile(f.path)).toList(), subject: 'SnatchDash logs'),
+      ShareParams(
+        files: files.map((f) => XFile(f.path)).toList(),
+        subject: l10n.settingsLogsShareSubject,
+      ),
     );
   }
 
   void _showSsidDialog(BuildContext context, AppLocalizations l10n) {
     final controller = TextEditingController(text: _config?['ssid'] as String? ?? '');
-    showDialog<void>(
+    // Disposed when the dialog closes, whichever way it closes — a controller
+    // holds a change-notifier listener list, and one per dialog opening adds up
+    // over a session of fiddling with pairing.
+    unawaited(showDialog<void>(
       context: context,
       builder: (dialogContext) => AlertDialog(
         title: Text(l10n.settingsSsidDialogTitle),
@@ -319,12 +344,12 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> with WidgetsBin
           ),
         ],
       ),
-    );
+    ).whenComplete(controller.dispose));
   }
 
   void _showPasswordDialog(BuildContext context, AppLocalizations l10n) {
     final controller = TextEditingController(text: _config?['password'] as String? ?? '');
-    showDialog<void>(
+    unawaited(showDialog<void>(
       context: context,
       builder: (dialogContext) => AlertDialog(
         title: Text(l10n.settingsWifiPasswordDialogTitle),
@@ -342,7 +367,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> with WidgetsBin
           ),
         ],
       ),
-    );
+    ).whenComplete(controller.dispose));
   }
 }
 

@@ -1028,6 +1028,12 @@ abstract class AppLocalizations {
   /// **'View app logs'**
   String get settingsLogsSubtitle;
 
+  /// No description provided for @settingsLogsShareSubject.
+  ///
+  /// In en, this message translates to:
+  /// **'SnatchDash logs'**
+  String get settingsLogsShareSubject;
+
   /// No description provided for @settingsLogsShareFile.
   ///
   /// In en, this message translates to:

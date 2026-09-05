@@ -64,6 +64,49 @@ Riverpod-провайдеры, которые экран читает/пишет
 - [сервер карт](spec/remote_map_server.md) формат офлайн-тайлов, `index.json` и протокол скачивания паков.
 - [отрисовка из скачанных тайлов](spec/drawing_from_local_tiles.md) как кадр дэша получается из локального пака (MapLibre offscreen, стиль, несколько источников).
 
+## Сборка и тесты
+
+Сборке нужен **JDK 21 — JBR из Android Studio**, а не `openjdk` из Homebrew: там
+26, и на нём AGP падает — `jlink` не может трансформировать
+`core-for-system-modules.jar`. На машине разработчика прописано разово в трёх
+местах, потому что двух не хватает: `JAVA_HOME` в `~/.zprofile`,
+`org.gradle.java.home` в `~/.gradle/gradle.properties`, `flutter config
+--jdk-dir`. Переменная нужна именно в окружении — лаунчеру `gradlew` нужен
+`java`, чтобы стартовать и дочитать до `gradle.properties`.
+
+```
+flutter analyze
+flutter test                                              # плюс 3 теста в packages/opendash_dash_engine
+cd android && ./gradlew :opendash_dash_engine:testDebugUnitTest
+flutter build apk --debug --dart-define-from-file=android/dart_defines.local.properties
+```
+
+**Ключ Яндекса идёт только флагом `--dart-define-from-file`** (шаблон —
+`android/dart_defines.defaults.properties`, реальный ключ в gitignore'нутом
+`.local.properties`). Без него сборка проходит, но карта пустая, а поиск на
+экране «Маршрут» молчит.
+
+## Полевые логи с дэша
+
+Приборка работает при выключенном экране телефона, поэтому единственный
+пост-мортем — файлы на устройстве. Ничего, кроме кабеля, не нужно:
+
+```
+adb pull /sdcard/Android/data/ru.snatchdash.app/files/diag   # по файлу на сессию: [map], [session], [stream]
+adb exec-out run-as ru.snatchdash.app cat files/app_log.txt > app_log.txt
+```
+
+`diag/` лежит на внешнем хранилище и тянется без root; `app_log.txt` —
+внутренний, достаётся через `run-as` (работает на debug-сборке). Нативный лог
+MapLibre отдельно ловить не нужно: `MapLibreLogBridge` заворачивает его в тот же
+`DebugLog`, поэтому имя недостающего ассета попадёт в оба файла само. Кольцевой
+буфер `adb logcat` живёт минуты и к возвращению телефона на стол пуст — на него
+не рассчитывать.
+
+**Мерить производительность на debug-сборке нельзя**: Flutter в JIT с asserts,
+`debuggable=true` гасит оптимизации ART и включает CheckJNI на JNI-плотном пути
+MapLibre. Для замеров — `--profile`.
+
 ## Заметки
 - разрешения на GPS запрашивается при старте приложения
 - каталог `re_app/` содержит оригинальное декомпилированное приложение. В репозиторий он не входит и на диске может отсутствовать. Не смотри в него, когда дело касается Dart/Flutter; использовать только по моей команде.

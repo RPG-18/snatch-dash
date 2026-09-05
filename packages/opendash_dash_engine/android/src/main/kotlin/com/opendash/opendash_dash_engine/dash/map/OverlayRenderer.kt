@@ -52,16 +52,11 @@ class OverlayRenderer {
         val riderLng: Double? = null,
         val destLat: Double? = null,
         val destLng: Double? = null,
-        val destName: String? = null,
         val route: List<GeoPoint> = emptyList(),
         // Traffic-level code per route segment (index i = route[i]..route[i+1]),
         // 0=unknown..5=veryHard — see jamColors below. Empty/mismatched length
         // (no traffic data for this route) falls back to a solid [routeBlue] line.
         val routeJam: List<Int> = emptyList(),
-        val maneuverText: String? = null,  // e.g. "Turn left · 400 m"
-        val remainingText: String? = null, // e.g. "186 km"
-        val etaPrimary: String? = null,    // big glance value, e.g. "24 min" (nav only)
-        val etaSecondary: String? = null,  // smaller line, e.g. "18 km · 13:32"
         val gpsWeak: Boolean = false,
         val gpsLost: Boolean = false,
     )
@@ -103,10 +98,8 @@ class OverlayRenderer {
     private val standbyPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { textSize = 22f; isFakeBoldText = true }
 
     // ETA pill (drawn in screen space, bottom-centre, inside the round safe zone)
-    private val etaBgPaint     = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(232, 20, 22, 26) }
-    private val etaBorderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(46, 255, 255, 255); style = Paint.Style.STROKE; strokeWidth = 1.5f }
-    private val etaBigPaint    = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.rgb(126, 217, 87); textSize = 20f; isFakeBoldText = true; textAlign = Paint.Align.CENTER }   // Google-nav green
-    private val etaSmallPaint  = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.rgb(196, 201, 208); textSize = 12f; textAlign = Paint.Align.CENTER }
+    private val pillBgPaint     = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(232, 20, 22, 26) }
+    private val pillBorderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(46, 255, 255, 255); style = Paint.Style.STROKE; strokeWidth = 1.5f }
     private val gpsPillText = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         textSize = 13f
         isFakeBoldText = true
@@ -269,34 +262,6 @@ class OverlayRenderer {
             canvas.restore()
         }
 
-        // ── ETA pill (bottom-centre safe zone) ──
-        // The dash is round, so it's kept narrow and centred. Shows ETA only (time +
-        // arrival clock) — distance lives on the dash's own widget.
-        f.etaPrimary?.let { primary ->
-            val secondary = f.etaSecondary
-            val padH = 18f; val padV = 8f; val gap = 1f
-            val bigFm = etaBigPaint.fontMetrics
-            val smallFm = etaSmallPaint.fontMetrics
-            val bigH = bigFm.descent - bigFm.ascent
-            val smallH = if (secondary != null) smallFm.descent - smallFm.ascent else 0f
-            val contentW = maxOf(etaBigPaint.measureText(primary), secondary?.let { etaSmallPaint.measureText(it) } ?: 0f)
-            val pillW = (contentW + padH * 2).coerceAtMost(w * 0.6f)
-            val pillH = padV * 2 + bigH + (if (secondary != null) gap + smallH else 0f)
-            val cxp = w / 2f
-            val bottom = h - 26f
-            val top = bottom - pillH
-            pillRect.set(cxp - pillW / 2f, top, cxp + pillW / 2f, bottom)
-            val r = pillH / 2f
-            canvas.drawRoundRect(pillRect, r, r, etaBgPaint)
-            canvas.drawRoundRect(pillRect, r, r, etaBorderPaint)
-            var baseline = top + padV - bigFm.ascent
-            canvas.drawText(primary, cxp, baseline, etaBigPaint)
-            if (secondary != null) {
-                baseline += bigFm.descent + gap - smallFm.ascent
-                canvas.drawText(secondary, cxp, baseline, etaSmallPaint)
-            }
-        }
-
         if (f.gpsLost || f.gpsWeak) {
             val label = if (f.gpsLost) "GPS lost" else "GPS weak"
             gpsPillText.color = if (f.gpsLost) googleRed else Color.rgb(251, 188, 5)
@@ -308,8 +273,8 @@ class OverlayRenderer {
             val bottom = top + 12f + textHeight
             pillRect.set(center - pillWidth / 2f, top, center + pillWidth / 2f, bottom)
             val radius = (bottom - top) / 2f
-            canvas.drawRoundRect(pillRect, radius, radius, etaBgPaint)
-            canvas.drawRoundRect(pillRect, radius, radius, etaBorderPaint)
+            canvas.drawRoundRect(pillRect, radius, radius, pillBgPaint)
+            canvas.drawRoundRect(pillRect, radius, radius, pillBorderPaint)
             canvas.drawText(label, center, top + 6f - font.ascent, gpsPillText)
         }
 

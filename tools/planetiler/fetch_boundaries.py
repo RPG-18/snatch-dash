@@ -24,6 +24,7 @@ admin_level = subject_admin_level внутри страны и сохраняе�
 from __future__ import annotations
 
 import argparse
+import os
 import json
 import logging
 import sys
@@ -228,8 +229,25 @@ out tags;
 
     tree = build_osm_xml(rel_elements, rel["id"])
     out_dir.mkdir(parents=True, exist_ok=True)
-    tree.write(out_path, encoding="UTF-8", xml_declaration=True)
+    write_osm_atomic(tree, out_path)
     return 1, 0
+
+
+def write_osm_atomic(tree, out_path: Path) -> None:
+    """Пишет `.osm` через временный файл рядом + `os.replace`.
+
+    Прямая запись в целевой файл вместе с правилом «пропустить, если файл уже
+    есть» консервирует обрезанный полигон: процесс, убитый на полуслове, оставляет
+    валидный по имени, но неполный `.osm`, и следующий запуск его пропускает как
+    готовый. Тот же приём уже применяется в `build_index.py`.
+    """
+    tmp_path = out_path.with_suffix(out_path.suffix + ".tmp")
+    try:
+        tree.write(tmp_path, encoding="UTF-8", xml_declaration=True)
+        os.replace(tmp_path, out_path)
+    except BaseException:
+        tmp_path.unlink(missing_ok=True)
+        raise
 
 
 def process_country(country: common.Country, overpass_url: str, out_dir: Path, force: bool) -> tuple[int, int]:
@@ -244,6 +262,7 @@ def process_country(country: common.Country, overpass_url: str, out_dir: Path, f
     skipped = 0
     total = len(relations)
     out_dir.mkdir(parents=True, exist_ok=True)
+    seen_codes: dict[str, int] = {}
     for i, rel in enumerate(relations, start=1):
         tags = rel.get("tags", {})
         iso_code = tags.get("ISO3166-2", "").strip().lower()
@@ -252,6 +271,20 @@ def process_country(country: common.Country, overpass_url: str, out_dir: Path, f
             log.warning("[%d/%d] Пропускаю релацию %s (%s) — нет тега ISO3166-2, сопоставить вручную", i, total, rel["id"], name)
             skipped += 1
             continue
+
+        if iso_code in seen_codes:
+            # `fetch_single_code` takes the first of a duplicate set and says so;
+            # here every duplicate wrote to the same `<iso>.osm` and the last one
+            # silently won. Whichever relation that turned out to be became the
+            # pack's cut polygon — the kind of difference nobody notices until a
+            # region comes out the wrong shape.
+            log.warning(
+                "[%d/%d] Пропускаю релацию %s (%s) — код %s уже занят релацией %s; сопоставить вручную",
+                i, total, rel["id"], name, iso_code, seen_codes[iso_code],
+            )
+            skipped += 1
+            continue
+        seen_codes[iso_code] = rel["id"]
 
         out_path = out_dir / f"{iso_code}.osm"
         if out_path.exists() and not force:
@@ -284,7 +317,7 @@ def process_country(country: common.Country, overpass_url: str, out_dir: Path, f
             continue
 
         tree = build_osm_xml(elements, rel["id"])
-        tree.write(out_path, encoding="UTF-8", xml_declaration=True)
+        write_osm_atomic(tree, out_path)
         written += 1
         time.sleep(POLITE_DELAY_SECONDS)
 
@@ -309,7 +342,10 @@ def main() -> int:
     if args.code:
         written, skipped = fetch_single_code(args.code, args.overpass_url, args.out_dir, args.force)
         log.info("Готово: записано %d границ, пропущено %d.", written, skipped)
-        return 0
+        # Ненулевой код при пропусках: `--code` — это ровно та команда, которую
+        # `validate_packs.py` печатает в инструкции по восстановлению, и обёртка
+        # вокруг неё не должна считать «границу не нашёл» успехом.
+        return 1 if skipped else 0
 
     countries = [c for c in common.filter_by_iso(common.enabled_countries(args.regions), args.only) if c.mode == "subjects"]
     if not countries:
@@ -323,7 +359,7 @@ def main() -> int:
         total_skipped += skipped
 
     log.info("Готово: записано %d границ, пропущено %d.", total_written, total_skipped)
-    return 0
+    return 1 if total_skipped else 0
 
 
 if __name__ == "__main__":

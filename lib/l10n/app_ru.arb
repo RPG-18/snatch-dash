@@ -166,6 +166,7 @@
   "settingsCurrency": "Валюта",
   "settingsLogsTitle": "Логи отладки",
   "settingsLogsSubtitle": "Просмотр логов приложения",
+  "settingsLogsShareSubject": "Логи SnatchDash",
   "settingsLogsShareFile": "Поделиться сохранённым логом",
   "settingsMediaAccessTitle": "Уведомления медиа и звонков",
   "settingsMediaAccessGranted": "Доступ предоставлен",

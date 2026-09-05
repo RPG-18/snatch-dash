@@ -229,8 +229,13 @@ class DashEngineController(
     @Volatile private var lastManualPanAt = 0L
     private var camLat = 0.0
     private var camLng = 0.0
-    private var camHdg = 0f
-    private var camInit = false
+    // These two are the exception to the note above: the frame loop writes them on
+    // Dispatchers.Default while publishState() reads them from Main for the Dash
+    // screen's compass. Without @Volatile that read is a data race — in practice a
+    // stale or torn heading on the phone's own preview, which is cosmetic, but
+    // "cosmetic race" is not a thing the memory model promises.
+    @Volatile private var camHdg = 0f
+    @Volatile private var camInit = false
     private var camMoving = false
     private var lastTickNs = 0L
     private var lastSignature = ""
@@ -310,7 +315,24 @@ class DashEngineController(
                 publishState()
                 if (st == DashState.STREAMING) cancelGiveupTimer() else armGiveupTimer()
                 when (st) {
-                    DashState.READY -> { authRetries = 0; startStream() }
+                    // Guarded: assembleCurrent() reads the pack directory and
+                    // prepare() parses the style, and either can throw. Uncaught,
+                    // the exception kills this collector, and the session then sits
+                    // in READY with no frame loop behind it until the 120-second
+                    // give-up timer fires — a dash showing nothing while the app
+                    // insists it is connected.
+                    DashState.READY -> {
+                        authRetries = 0
+                        try {
+                            startStream()
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (e: Exception) {
+                            DebugLog.e(TAG, { "startStream failed — disconnecting" }, e)
+                            RideDiagnostics.log("stream", "startStream failed: ${e.message}")
+                            disconnect()
+                        }
+                    }
                     // The K1G handshake failed but the WiFi link itself is still up — no need
                     // to tear down and re-request WiFi (which risks the system dialog, see
                     // spec/wifi_retry_policy.md's "Из живого форка"). Just retry the handshake
@@ -360,7 +382,11 @@ class DashEngineController(
         // otherwise have it free the snapshotter the NEXT stream just prepared —
         // after which every frame silently returns null and the map freezes.
         val generation = snapshotGeneration
-        scope.launch { snapshots.release(generation) }
+        // Synchronously, not through the scope: `dispose()` reaches this method and
+        // the plugin cancels the scope on the line after it, so a launched
+        // release would simply never run. This method is main-thread only, which
+        // is what makes the direct call legal.
+        snapshots.releaseNow(generation)
         DashKeepAliveService.stop(context)
         RideDiagnostics.stop("disconnect")
         // explicitDisconnect=true distinguishes this from every other publishState() call (all
@@ -605,8 +631,22 @@ class DashEngineController(
 
         // No release() needed first: the joined loop released its own encoder and
         // nulled the field on the way out (see its finally below).
+        //
+        // Between here and the launch below the encoder has no owner: the frame
+        // loop's finally is what releases it, and the loop does not exist yet.
+        // Anything in between can throw — assembleCurrent() reads external
+        // storage, prepare() parses the style — and since the collector now
+        // catches that and retries, each attempt would strand a configured
+        // MediaCodec and its input Surface. So this stretch cleans up after
+        // itself.
         encoder = DashEncoder(onEncoded).also { it.prepare() }
+        try {
 
+        // The previous stream's bitmap is ~631 KB in the native heap (API 26+), where
+        // the Java GC feels no pressure from it and would leave the free to a
+        // finalizer. Dropping the reference per stream added up across a ride of
+        // reconnects without ever raising a Java OOM.
+        runCatching { frameBitmap?.recycle() }
         frameBitmap = Bitmap.createBitmap(DashEncoder.WIDTH, DashEncoder.HEIGHT, Bitmap.Config.ARGB_8888)
         lastSignature = ""
         camInit = false; lastTickNs = 0L
@@ -632,6 +672,14 @@ class DashEngineController(
             "map",
             "style ${style.theme} from ${style.packs} pack(s), ${style.json.length / 1024} KiB",
         )
+
+        } catch (e: Throwable) {
+            runCatching { encoder?.release() }
+            encoder = null
+            runCatching { frameBitmap?.recycle() }
+            frameBitmap = null
+            throw e
+        }
 
         session.startStreaming()
 
@@ -821,13 +869,27 @@ class DashEngineController(
         val centerLng = if (haveTarget) camLng else 0.0
         val camHeading = if (haveTarget) camHdg else heading
 
+        // Everything the frame is drawn FROM has to be in here, or the change is
+        // invisible until FORCE_REDRAW_MS two seconds later. Three things used to
+        // be missing, each with its own way of showing up on the panel:
+        //   - `headingUp` itself. Only its *effect* was included, and at a heading
+        //     near 0° the north-up and heading-up frames hash the same — so the
+        //     one toggle a rider presses to reorient the map appeared to do
+        //     nothing at exactly the moment it was most confusing.
+        //   - the route's contents. `size` alone hides a reroute onto a different
+        //     road with the same number of points, and hides every jam-colour
+        //     change outright.
+        //   - the destination. Picking a new one left the old pin on the dash.
         val sig = buildString {
             append("nav")
             append("%.6f".format(centerLat)); append("%.6f".format(centerLng))
             append(zoom); append(panX.toInt()); append(panY.toInt())
+            append(headingUp)
             append(if (headingUp) (camHeading * 10).toInt() else 0)
             append(remainingM?.let { (it / 100).toInt() } ?: -1)
-            append(routePoints.size)
+            append(routeSignature())
+            append(destLat?.let { "%.5f".format(it) } ?: "-")
+            append(destLng?.let { "%.5f".format(it) } ?: "-")
             append(gpsLost); append(gpsWeak)
         }
         val now = System.currentTimeMillis()
@@ -863,6 +925,26 @@ class DashEngineController(
             .bearing(if (headingUp) heading.toDouble() else 0.0)
             .tilt(if (headingUp) NAV_TILT_DEG else 0.0)
             .build()
+
+    /**
+     * A cheap stand-in for "the route the frame would be drawn from".
+     *
+     * Hashing every point is pointless at 4 fps and comparing the lists outright
+     * would keep the previous one alive; the endpoints plus the count plus the
+     * jam colours catch what actually changes on screen — a reroute (different
+     * geometry, same length) and a traffic recolour (same geometry).
+     */
+    private fun routeSignature(): String {
+        // One read of each @Volatile field, not four: clearDestination() replaces
+        // the list from another thread, and re-reading between isEmpty() and
+        // first() would throw NoSuchElementException on the frame loop.
+        val points = routePoints
+        if (points.isEmpty()) return "r0"
+        val first = points.first()
+        val last = points.last()
+        return "r${points.size}:${"%.5f".format(first.lat)},${"%.5f".format(first.lng)}" +
+            ":${"%.5f".format(last.lat)},${"%.5f".format(last.lng)}:${routeJam.hashCode()}"
+    }
 
     /**
      * Map first, overlays on top, into [frameBitmap]. True if the frame changed.
@@ -908,7 +990,6 @@ class DashEngineController(
             riderLng = if (haveRider) camLng else null,
             destLat = destLat,
             destLng = destLng,
-            destName = destName,
             route = routePoints,
             routeJam = routeJam,
             gpsWeak = gpsWeak,

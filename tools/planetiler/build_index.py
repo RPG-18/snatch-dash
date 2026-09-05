@@ -78,6 +78,21 @@ def main() -> int:
         log.info("Нет enabled-стран — index.json писать не из чего.")
         return 0
 
+    # `--only` сужает набор стран, а `index.json` — документ про весь корпус:
+    # записать его по подмножеству значит вычеркнуть остальные включённые страны
+    # у всех, кто уже поставил приложение. Пока включена одна `ru`, разницы нет,
+    # и именно поэтому это стоит остановить до того, как включат вторую.
+    if args.only:
+        enabled_iso = {c.iso for c in common.enabled_countries(args.regions)}
+        selected_iso = {c.iso for c in countries}
+        if selected_iso != enabled_iso:
+            log.error(
+                "--only %s даёт частичный манифест (%s из %s включённых) — "
+                "index.json пишется только по всему корпусу",
+                args.only, ",".join(sorted(selected_iso)), ",".join(sorted(enabled_iso)),
+            )
+            return 2
+
     country_entries = []
     for country in countries:
         entry = build_country_entry(country, args.out_dir)

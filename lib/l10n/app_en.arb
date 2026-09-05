@@ -183,6 +183,7 @@
   "settingsCurrency": "Currency",
   "settingsLogsTitle": "Debug logs",
   "settingsLogsSubtitle": "View app logs",
+  "settingsLogsShareSubject": "SnatchDash logs",
   "settingsLogsShareFile": "Share saved log file",
   "settingsMediaAccessTitle": "Media & call notifications",
   "settingsMediaAccessGranted": "Access granted",

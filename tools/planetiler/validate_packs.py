@@ -143,6 +143,15 @@ class HttpSource:
         for attempt in range(1, self.RETRIES + 1):
             try:
                 with urllib.request.urlopen(req, timeout=30) as resp:
+                    # 200 вместо 206 означает, что сервер проигнорировал Range и
+                    # отдаёт файл целиком — до 356 МБ в память ради заголовка в
+                    # несколько килобайт. Ошибка, а не «медленно»: проверять пак
+                    # по такому источнику всё равно нельзя.
+                    if resp.status != 206:
+                        raise RuntimeError(
+                            f"сервер не поддержал Range (HTTP {resp.status} вместо 206) — "
+                            f"проверка по HTTP невозможна: {self.name}"
+                        )
                     return resp.read()
             except (urllib.error.URLError, TimeoutError, OSError) as exc:
                 last_error = exc

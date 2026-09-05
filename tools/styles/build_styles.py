@@ -32,7 +32,12 @@ STYLES = {
     "dark-matter": "https://raw.githubusercontent.com/openmaptiles/dark-matter-gl-style/master/style.json",
 }
 SPRITE_BASE = "https://openmaptiles.github.io/{style}-gl-style/{file}"
-SPRITE_FILES = ["sprite.json", "sprite.png", "sprite@2x.png"]
+# Both ratios, and both halves of each: a sheet without its JSON is not a
+# partial sprite, it is a style resource that fails to load. The dash renders at
+# pixelRatio 1 today, so only the plain pair is actually read — but the @2x png
+# was already being shipped, and shipping half of a pair is how the first change
+# of ratio turns into missing icons.
+SPRITE_FILES = ["sprite.json", "sprite.png", "sprite@2x.json", "sprite@2x.png"]
 
 FONTS_ZIP = "https://github.com/openmaptiles/fonts/releases/download/v2.0/noto-sans.zip"
 # One block of 256 code points each. Latin, Latin Extended-A (transliteration
@@ -60,8 +65,15 @@ FONT_BOLD = "Noto Sans Bold"
 SOURCE_ID = "openmaptiles"
 
 
+# Every fetch here is a plain GitHub GET; a minute is generous for the largest of
+# them (the 59 MB font zip) and still finite, which the default is not — without
+# it a stalled connection hangs the build with no output and no way to tell it
+# from slow.
+FETCH_TIMEOUT_SECONDS = 60
+
+
 def fetch(url: str) -> bytes:
-    with urllib.request.urlopen(url) as response:
+    with urllib.request.urlopen(url, timeout=FETCH_TIMEOUT_SECONDS) as response:
         return response.read()
 
 

@@ -362,10 +362,22 @@ class MapSnapshotProvider(private val context: Context) {
     suspend fun currentGeneration(): Long = withContext(Dispatchers.Main) { generation }
 
     /** Releases the snapshotter [generation] refers to; a no-op once it has moved on. */
-    suspend fun release(generation: Long) = withContext(Dispatchers.Main) {
-        if (generation != this@MapSnapshotProvider.generation) {
-            DebugLog.i(TAG) { "stale release for gen=$generation, now ${this@MapSnapshotProvider.generation} — ignored" }
-            return@withContext
+    suspend fun release(generation: Long) = withContext(Dispatchers.Main) { releaseNow(generation) }
+
+    /**
+     * [release] for callers already on the main thread — and for the one caller
+     * that cannot afford a coroutine at all.
+     *
+     * The plugin's `onDetachedFromEngine` disposes the controller and cancels the
+     * scope on the very next line, so a `scope.launch { release(...) }` there had
+     * no chance to run: the MapSnapshotter, its parsed style, its GL context and
+     * its open `.pmtiles` handles leaked on every detach — which in development
+     * is every hot restart.
+     */
+    fun releaseNow(generation: Long) {
+        if (generation != this.generation) {
+            DebugLog.i(TAG) { "stale release for gen=$generation, now ${this.generation} — ignored" }
+            return
         }
         releaseCurrent()
     }

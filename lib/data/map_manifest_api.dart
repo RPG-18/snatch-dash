@@ -115,9 +115,21 @@ class MapManifestApi {
   /// but only because the file that fails to parse was never the last good copy.
   Future<void> _saveLocal(String raw) async {
     final dir = (await mapsDir()).path;
-    final tmp = File(p.join(dir, '$_fileName.tmp'));
-    await tmp.writeAsString(raw, flush: true);
-    await tmp.rename(p.join(dir, _fileName));
+    // A name of its own per write. Two refreshes can overlap — the bootstrap one
+    // against the retry button, or against the checksum-mismatch path that
+    // re-reads the manifest — and with one fixed `.tmp` the second writer's
+    // half-written file is what the first one renames into place, destroying the
+    // very cache this method exists to protect.
+    final tmp = File(p.join(dir, '$_fileName.${DateTime.now().microsecondsSinceEpoch}.tmp'));
+    try {
+      await tmp.writeAsString(raw, flush: true);
+      await tmp.rename(p.join(dir, _fileName));
+    } catch (_) {
+      // Leaving a stray tmp behind would be picked up by nothing — `upload.sh`
+      // excludes them on the server, but here they would just accumulate.
+      await tmp.delete().catchError((Object _) => tmp);
+      rethrow;
+    }
   }
 
   /// Pure parse — no IO, so the contract below is directly testable.

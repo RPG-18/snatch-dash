@@ -367,7 +367,16 @@ class OfflineMapsController extends Notifier<OfflineMapsState> {
     // interface's shape is not where an invariant should live, and the poller
     // may not have noticed the transfer yet either. Left running, it would
     // reinstall the pack the rider just deleted on the next harvest.
-    await cancel(code);
+    //
+    // Guarded, because the row must come off regardless. The file is already
+    // gone, so a channel failure here would otherwise leave the registry
+    // claiming a pack that does not exist — and unremovable, since every retry
+    // now finds nothing to delete and reports deleteFailed.
+    try {
+      await cancel(code);
+    } catch (e, st) {
+      talker.error('[OfflineMaps] could not cancel a download for the deleted $code', e, st);
+    }
     await ref.read(installedPacksProvider.notifier).remove(code);
   }
 

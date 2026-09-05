@@ -6,6 +6,7 @@ import android.net.Uri
 import android.os.storage.StorageManager
 import android.util.Log
 import java.io.File
+import java.io.IOException
 import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
@@ -45,7 +46,25 @@ class MapPackDownloader(private val context: Context) {
     /** Pending downloads: pack code -> enqueued id + what we expect it to be. */
     private val pending = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
-    fun mapsDir(): File = File(context.getExternalFilesDir(null), MAPS_DIR).apply { mkdirs() }
+    /**
+     * `<externalFilesDir>/maps`, created if missing.
+     *
+     * Throws rather than improvises when the volume is unavailable:
+     * `getExternalFilesDir(null)` returns null on ejected or unmounted storage,
+     * and `File(null, "maps")` is not an error — it is the *relative* path
+     * `maps`, resolved against the process's working directory. Everything then
+     * appears to work on a phantom directory the DownloadManager cannot write
+     * to, which is the failure the spec asks to be made loud.
+     */
+    fun mapsDir(): File {
+        val base = context.getExternalFilesDir(null)
+            ?: throw IOException("external files dir unavailable — storage not mounted?")
+        val dir = File(base, MAPS_DIR)
+        if (!dir.isDirectory && !dir.mkdirs()) {
+            throw IOException("could not create ${dir.absolutePath}")
+        }
+        return dir
+    }
 
     private fun partFile(code: String) = File(mapsDir(), "$code$PART_SUFFIX")
     private fun packFile(code: String) = File(mapsDir(), "$code$PACK_SUFFIX")
@@ -73,6 +92,10 @@ class MapPackDownloader(private val context: Context) {
      * is a real user-visible state, not a crash).
      */
     fun start(code: String, url: String, sha256: String, sizeBytes: Long, generatedAt: String, title: String): Long {
+        // Not left to whoever called hasRoomFor() first: DownloadManager will not
+        // create the destination directory, and "the Dart side happens to have
+        // touched it" is not a precondition worth depending on.
+        mapsDir()
         // Any earlier attempt for this code is stale the moment a new one starts.
         cancel(code)
 
@@ -85,12 +108,17 @@ class MapPackDownloader(private val context: Context) {
             .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
 
         val id = dm.enqueue(request)
+        // commit(), not apply(): this is the one write whose loss equals the loss
+        // of the download. The transfer is already enqueued in the system service
+        // and will finish on its own; if the process dies before an async apply()
+        // reaches disk, `reconcile` — which walks pending codes — never learns the
+        // pack exists, and a few hundred megabytes land in a `.part` nobody claims.
         pending.edit()
             .putLong(keyId(code), id)
             .putString(keySha(code), sha256)
             .putLong(keySize(code), sizeBytes)
             .putString(keyGeneratedAt(code), generatedAt)
-            .apply()
+            .commit()
         Log.i(TAG, "enqueued $code id=$id size=$sizeBytes")
         return id
     }
@@ -135,6 +163,10 @@ class MapPackDownloader(private val context: Context) {
      */
     fun reconcile(): List<Map<String, Any?>> {
         val results = mutableListOf<Map<String, Any?>>()
+        // Before the loop: it only ever deletes files no pending code claims, so it
+        // cannot touch anything the loop below is about to install.
+        runCatching { sweepOrphanParts() }
+            .onFailure { Log.w(TAG, "orphan sweep failed: ${it.message}") }
         for (code in pendingCodes()) {
             // One pack's failure must not take the batch with it. Without this,
             // an IOException out of Files.move or sha256Of threw away `results`
@@ -147,39 +179,55 @@ class MapPackDownloader(private val context: Context) {
                 reconcileOne(code)
             } catch (e: Exception) {
                 Log.w(TAG, "reconcile failed for $code: ${e.message}", e)
-                // Where the throw landed decides what actually happened. Anything
-                // after a successful Files.move leaves the pack on disk under its
-                // final name, which the engine enumerates and draws — reporting
-                // FAILED there would tell Dart to keep no registry row for a map
-                // the dash is already showing, and the rider gets an error over a
-                // download that worked.
-                val installed = packFile(code)
-                val verified = pending.getString(keySha(code), null)
-                val outcome = if (installed.exists() && verified != null) {
-                    Log.i(TAG, "reconcile for $code threw after the move — the pack is installed")
-                    mapOf(
-                        "code" to code,
-                        "outcome" to Outcome.INSTALLED.name,
-                        "sha256" to verified,
-                        "generatedAt" to (pending.getString(keyGeneratedAt(code), "") ?: ""),
-                        "sizeBytes" to installed.length(),
-                    )
-                } else {
-                    // Give up on this pack completely, not just on its bookkeeping.
-                    // Dropping only the pending entry would strand the `.part` file
-                    // — up to a few hundred megabytes that nothing ever looks at
-                    // again, since `reconcile` walks pending codes — and leave a
-                    // finished DownloadManager row behind it.
-                    runCatching { partFile(code).delete() }
-                    result(code, Outcome.FAILED, e.message)
+                // FAILED, without trying to work out how far install() got. The
+                // "a pack file exists, so the move must have happened" shortcut
+                // belongs in install(), where it can afford to verify the hash; a
+                // guess here would adopt the OLD build of a pack being updated.
+                // Whatever is on disk stays there — the next reconcile, or the
+                // orphan sweep, deals with it.
+                //
+                // Every step wrapped: partFile()/packFile() go through mapsDir(),
+                // which throws when external storage is gone, and a second throw
+                // escaping this handler would discard the whole batch — precisely
+                // what the per-pack catch exists to prevent.
+                runCatching { partFile(code).delete() }
+                runCatching {
+                    val strandedId = pending.getLong(keyId(code), -1L)
+                    if (strandedId >= 0) dm.remove(strandedId)
                 }
-                val strandedId = pending.getLong(keyId(code), -1L)
-                if (strandedId >= 0) runCatching { dm.remove(strandedId) }
-                forget(code)
-                listOf(outcome)
+                runCatching { forget(code) }
+                listOf(result(code, Outcome.FAILED, e.message))
             }
         }
         return results
+    }
+
+    /**
+     * Deletes `.part` files no pending entry claims.
+     *
+     * Every race and crash in this file leaves its residue under the same name:
+     * a partial pack of up to a few hundred megabytes that [reconcile] will never
+     * look at, because it walks *pending codes*, not the directory. Nothing in
+     * the interface shows them either — the screen lists the registry — so they
+     * accumulate silently on a device whose owner is watching free space go down.
+     *
+     * Called once per [reconcile], which is cheap: one directory listing against
+     * a prefs map, no hashing, no I/O per pack.
+     */
+    private fun sweepOrphanParts() {
+        val claimed = pendingCodes().toSet()
+        val parts = runCatching { mapsDir().listFiles { f -> f.isFile && f.name.endsWith(PART_SUFFIX) } }
+            .getOrNull() ?: return
+        for (part in parts) {
+            val code = part.name.removeSuffix(PART_SUFFIX)
+            if (code in claimed) continue
+            val size = part.length()
+            if (part.delete()) {
+                Log.i(TAG, "swept orphan part for $code ($size B)")
+            } else {
+                Log.w(TAG, "could not sweep orphan part ${part.absolutePath}")
+            }
+        }
     }
 
     /** One pending code; see [reconcile] for why this is separable. */
@@ -221,10 +269,19 @@ class MapPackDownloader(private val context: Context) {
             val installed = packFile(code)
             // The `.part` can be missing because the move already happened and the
             // process was killed before forget() — the install is two writes, and
-            // only the first one is atomic. Reporting FAILED here put a "couldn't
+            // only the first one is atomic. Reporting FAILED there put a "couldn't
             // download the map" in front of the rider on a launch where the pack is
             // present and about to be drawn.
-            if (expected != null && installed.exists()) {
+            //
+            // But "a file with the right name exists" is NOT that proof. On an
+            // update the old build sits under exactly that name, and adopting it
+            // would file the new manifest's sha256 against the previous build's
+            // bytes — a registry row that describes a pack nobody has, and an
+            // update that is never offered again because the hashes now "match".
+            // So hash it. Expensive (seconds), and only on this path.
+            if (expected != null && installed.exists() &&
+                sha256Of(installed).equals(expected, ignoreCase = true)
+            ) {
                 val size = installed.length()
                 val generatedAt = pending.getString(keyGeneratedAt(code), "") ?: ""
                 dm.remove(id)

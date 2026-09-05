@@ -131,7 +131,14 @@ def split_at_antimeridian(geom: Any) -> list[tuple[str, Any]]:
         xs = [x for x, _ in poly.exterior.coords if abs(abs(x) - 180.0) > 1e-9]
         (east if sum(1 for x in xs if x < 0) > len(xs) / 2 else west).append(poly)
     if not west or not east:
-        return [("", geom)]
+        # Раньше здесь возвращалась неразрезанная геометрия — то есть функция,
+        # существующая ровно чтобы не дать bbox пака накрыть полмира, тихо
+        # отдавала именно такой bbox. Сейчас недостижимо (Чукотка в exclude), но
+        # молчаливый путь отказа хуже отсутствующего.
+        raise ValueError(
+            "геометрия шире антимеридианного порога, но не делится на западную и "
+            "восточную части — разрезать нечем, bbox пака накрыл бы полмира"
+        )
     return [("", unary_union(west)), ("-east", unary_union(east))]
 
 

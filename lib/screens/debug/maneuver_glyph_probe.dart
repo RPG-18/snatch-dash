@@ -45,6 +45,7 @@ class _ManeuverGlyphProbeState extends State<ManeuverGlyphProbe> {
       lat: widget.riderLat ?? 0,
       lng: widget.riderLng ?? 0,
     );
+    if (!mounted) return;
     setState(() => _navStarted = true);
     await _push();
   }

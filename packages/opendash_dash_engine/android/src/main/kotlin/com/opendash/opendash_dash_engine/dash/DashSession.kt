@@ -188,14 +188,11 @@ class DashSession(private val scope: CoroutineScope) {
     fun sendRtp(packet: ByteArray) { socket?.sendRtp(packet) }
 
     /**
-     * EXPERIMENT (2026-08-28, unverified on hardware) — chrome (route-card) used to be turned
-     * off entirely when idle (`name` blank/"OpenDash"), via a projectionStop/Off/Frame/On
-     * sequence, in an attempt to get a chrome-free wallpaper showing underneath. That never
-     * worked (see [enterIdleProjectionMode]'s doc) — chrome now always stays on, same as
-     * [enterNavMode] always being the entry sequence regardless of destination. Idle just means
-     * `name` is blank, so the card shows the "OpenDash" placeholder with no live nav figures
-     * (`navActive` stays false) — matching a sibling fork's approach of never having a distinct
-     * chrome-free mode at all (see [enterIdleProjectionMode]'s doc for where that was found).
+     * Chrome (the route-card) always stays on, matching [enterNavMode] being the entry
+     * sequence regardless of destination: the dash only opens its video decoder as part of
+     * nav mode. Idle just means `name` is blank, so the card shows the "OpenDash"
+     * placeholder with no live nav figures (`navActive` stays false), and the video plane
+     * carries a live map with no route. See spec/fsm.md.
      */
     fun updateRouteCard(name: String) {
         destinationName = name.ifBlank { "OpenDash" }
@@ -270,7 +267,8 @@ class DashSession(private val scope: CoroutineScope) {
             DebugLog.i(TAG) { "Authenticated ✓" }
             RideDiagnostics.log("auth", "authenticated (07 01 01) — entering nav mode")
 
-            // Always nav-mode entry now, idle or not — see enterIdleProjectionMode's doc.
+            // Always nav-mode entry, idle or not: the dash opens its video decoder only as
+            // part of nav mode, so there is no separate idle mode (see spec/fsm.md).
             enterNavMode(sock)
             // Cancellation is cooperative and [enterNavMode]'s last suspension point is a
             // delay() several synchronous sends before this line, so a disconnect() landing in
@@ -313,50 +311,6 @@ class DashSession(private val scope: CoroutineScope) {
         DebugLog.i(TAG) { "Nav mode kick sent" }
     }
 
-    /**
-     * SUPERSEDED, no longer called (2026-08-28) — kept as the fallback to revert to if the
-     * replacement below doesn't pan out on hardware.
-     *
-     * This used to be idle-wallpaper mode: open projection without route-card/nav-start chrome,
-     * so a chrome-free wallpaper could show underneath while [enterNavMode] handled active
-     * navigation separately.
-     *
-     * KNOWN BROKEN (2026-08-15) — three on-hardware rounds, all failed:
-     *   1. projectionFrame/projectionOn only, no route-card/z2 — wallpaper
-     *      frames encode/send fine (RTP has zero failures) but never appear;
-     *      the dash just never opens its decoder.
-     *   2. Added [enterNavMode]'s exact pcap-verified entry (route-card ×4 →
-     *      projectionFrame → navPlaceholder → z2 → confirming route-card).
-     *      Decoder opened, but the dash rendered ONLY its route-card chrome
-     *      (title/glyph/distance bubble) full-screen on a blank background —
-     *      video plane never became visible.
-     *   3. Also faked `navActive = true` so `launchNavInfo` would stream
-     *      `activeNavPacket` telemetry too, on the theory that a route-card
-     *      with no live telemetry reads to the firmware as a static
-     *      route-preview screen. No change — same chrome, still no video.
-     *
-     * Rather than a 4th on-hardware round of guessing, checked a sibling fork of the same
-     * upstream (`OpenMotoDash/NorthStar` — a fork of the removed `adityadasika21/NorthStar`,
-     * found by searching for forks of it; see spec/wifi_retry_policy.md's "Из живого форка" for
-     * how it was found and its unrelated WiFi-retry findings). Its `DashSession` has no idle/nav
-     * split at all — `runSession` always enters nav-mode chrome, and its own dev notes
-     * (`context.md`) explicitly call the wallpaper idea a "fad" they deliberately skipped,
-     * showing a plain map with an empty route instead when idle. `runSession` now does the same
-     * (always [enterNavMode]), and [DashEngineController.tick] renders a live map with no
-     * route/destination when idle instead of calling into [DashEngineController.tickIdle].
-     *
-     * Genuinely different from attempts 2/3 above, not just a retry: those still fed a static
-     * wallpaper bitmap (attempt 3: + faked telemetry) through nav-mode chrome. This feeds a real,
-     * self-consistent live map (matching what the now-permanent chrome says: no destination) —
-     * untested whether THAT'S what was missing, or this firmware simply never shows video
-     * without genuine turn-by-turn data flowing. Needs an on-hardware ride to confirm either way.
-     */
-    private suspend fun enterIdleProjectionMode(sock: DashSocket) {
-        sock.send(DashCommands.projectionFrame()); delay(60)
-        sock.send(DashCommands.projectionOn()); delay(40)
-        DebugLog.i(TAG) { "Idle projection kick sent" }
-    }
-
     private fun launchReceiveLoop(sock: DashSocket) {
         var lastRxAtMs = System.currentTimeMillis()
         rxJob = scope.launch(Dispatchers.IO) {
@@ -370,18 +324,18 @@ class DashSession(private val scope: CoroutineScope) {
                     // crashing the app; DashWifiManager handles reconnect.
                     DebugLog.w(TAG) { "RX loop stopped — socket error: ${e.message}" }
                     RideDiagnostics.log("error", "RX loop stopped — socket error: ${e.message}")
-                    // A deliberate disconnect() closes the socket out from under this blocking
-                    // receive(), so this exception is the EXPECTED way the loop ends there.
-                    // Reporting it would republish state with the explicitDisconnect flag back
-                    // to false and leave a "Lost connection" error hanging after a clean stop.
-                    reportLinkLost()
+                    // Full teardown, exactly as the watchdog path below: reporting the error
+                    // alone would leave the session in STREAMING with a dead socket, and the
+                    // state guard in connect() would then refuse every reconnect until the
+                    // rider disconnected by hand.
+                    endLink(sock)
                     break
                 }
                 if (pkt == null) {
                     // Timeout — not itself a problem (see DashSocket.RECV_TIMEOUT_MS), but
                     // repeated timeouts during STREAMING with no real packet in between mean
-                    // the dash has gone silent (see RX_IDLE_TIMEOUT_MS's doc). Mirrors the
-                    // socket-error path above: tear down the session so a fresh `connect()`
+                    // the dash has gone silent (see RX_IDLE_TIMEOUT_MS's doc). Same teardown as
+                    // the socket-error path above: tear down the session so a fresh `connect()`
                     // isn't blocked by the stale-socket state guard.
                     if (_state.value == DashState.STREAMING &&
                         System.currentTimeMillis() - lastRxAtMs > RX_IDLE_TIMEOUT_MS
@@ -389,11 +343,7 @@ class DashSession(private val scope: CoroutineScope) {
                         DebugLog.w(TAG) { "RX loop stopped — no data from dash for over ${RX_IDLE_TIMEOUT_MS}ms" }
                         val silentS = (System.currentTimeMillis() - lastRxAtMs) / 1000
                         RideDiagnostics.log("error", "RX watchdog: dash silent ${silentS}s → link lost")
-                        heartbeatJob?.cancel(); projHbJob?.cancel(); routeCardJob?.cancel()
-                        navInfoJob?.cancel(); mediaInfoJob?.cancel()
-                        sock.close(); socket = null
-                        setState(DashState.IDLE)
-                        onError?.invoke("Lost connection to dash")
+                        endLink(sock)
                         break
                     }
                     continue
@@ -418,15 +368,39 @@ class DashSession(private val scope: CoroutineScope) {
     }
 
     /**
-     * Surfaces a link loss to [onError], unless the session is already IDLE — which means
-     * [disconnect] got there first and this is just the teardown being observed, not a drop.
+     * Ends the link the RX loop was serving: the periodic senders that write to
+     * [sock], the socket itself, the session state, and the error report.
+     *
+     * Both ways the loop can end need every one of these. Reporting without the
+     * teardown — which is what the socket-error path used to do — leaves the
+     * session in STREAMING holding a dead socket: [onError] only publishes an
+     * error message, it does not touch session state, and the give-up timer is
+     * already cancelled by the time streaming starts. The stream loop then keeps
+     * pushing RTP into a closed socket, and the `!= IDLE && != ERROR` guard in
+     * [connect] refuses every reconnect until the rider disconnects by hand.
+     *
+     * [rxJob] is deliberately not cancelled here: the only callers are inside it,
+     * and they break out of their own loop on return.
      */
-    private fun reportLinkLost() {
-        if (_state.value == DashState.IDLE) {
+    private fun endLink(sock: DashSocket) {
+        // Read before the teardown below sets IDLE itself: a deliberate disconnect()
+        // closes the socket out from under the blocking receive(), so an exception
+        // there is the EXPECTED way this loop ends and must not republish state with
+        // explicitDisconnect back to false — that would leave a "Lost connection"
+        // error hanging after a clean stop.
+        val deliberate = _state.value == DashState.IDLE
+        heartbeatJob?.cancel(); projHbJob?.cancel(); routeCardJob?.cancel()
+        navInfoJob?.cancel(); mediaInfoJob?.cancel(); ackCounterJob?.cancel()
+        runCatching { sock.close() }
+        // Only if it is still ours: a reconnect that already replaced the field must
+        // not have its live socket nulled out by the previous session's loop.
+        if (socket === sock) socket = null
+        setState(DashState.IDLE)
+        if (deliberate) {
             DebugLog.i(TAG) { "RX loop ended after an explicit disconnect — not reporting" }
-            return
+        } else {
+            onError?.invoke("Lost connection to dash")
         }
-        onError?.invoke("Lost connection to dash")
     }
 
     private fun dispatchIncoming(pkt: ByteArray, sock: DashSocket) {

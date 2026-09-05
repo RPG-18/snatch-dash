@@ -123,22 +123,6 @@ class MethodChannelOpendashDashEngine extends OpendashDashEnginePlatform {
       methodChannel.invokeMethod('updateCall', {'caller': caller});
 
   @override
-  Future<void> setWallpaper({
-    String? path,
-    String? kind,
-    String? fit,
-    double biasX = 0,
-    double biasY = 0,
-  }) =>
-      methodChannel.invokeMethod('setWallpaper', {
-        'path': path,
-        'kind': kind,
-        'fit': fit,
-        'biasX': biasX,
-        'biasY': biasY,
-      });
-
-  @override
   Future<void> playChime() => methodChannel.invokeMethod('playChime');
 
   @override

@@ -9,6 +9,7 @@ import '../models/shared_location.dart';
 import '../nav/geo_point.dart';
 import '../state/dash_engine_state.dart';
 import '../state/rides_controller.dart';
+import '../state/offline_maps_controller.dart';
 import '../state/saved_destinations_controller.dart';
 import '../state/vehicle_store.dart';
 import '../util/current_position.dart';
@@ -45,9 +46,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   }
 
   /// Tapping the status card connects to the dash (a no-op while already
-  /// connecting/connected). The native engine streams the configured idle
-  /// wallpaper as a static image as soon as the link comes up, before any
-  /// nav data is available — see `DashWallpaperStore`.
+  /// connecting/connected). The native engine starts streaming the map as
+  /// soon as the link comes up — with no destination set it is simply a map
+  /// with no route (see spec/fsm.md).
   Future<void> _connect(BuildContext context, DashStage stage) async {
     if (stage != DashStage.idle && stage != DashStage.error) return;
     if (!await ensureLocationPermission()) {
@@ -66,6 +67,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   Widget build(BuildContext context) {
     final engine = ref.watch(dashEngineStateProvider);
     final saved = ref.watch(savedDestinationsControllerProvider);
+    // `!= false`: null is "the registry has not answered yet", and the gate must
+    // not blink shut over maps that are in fact installed.
+    final hasMaps = ref.watch(hasInstalledPacksProvider) != false;
     final rides = ref.watch(ridesControllerProvider);
     final vehicle = ref.watch(vehicleStoreProvider).active;
     final theme = Theme.of(context);
@@ -115,14 +119,33 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             ),
           ),
           const SizedBox(height: 16),
+          // Sits above the quick actions on purpose: while navigation is gated
+          // this card is the only explanation of why, and the only way out.
+          if (!hasMaps) ...[
+            Card(
+              color: theme.colorScheme.surfaceContainerHighest,
+              child: ListTile(
+                leading: const Icon(Icons.map_outlined),
+                title: Text(l10n.homeNoOfflineMaps),
+                subtitle: Text(l10n.homeNoOfflineMapsSub),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => context.push('/more/offline-maps'),
+              ),
+            ),
+            const SizedBox(height: 16),
+          ],
           Card(
             child: Column(children: [
               ListTile(
+                enabled: hasMaps,
                 leading: const Icon(Icons.navigation_outlined),
                 title: Text(l10n.homeStartNavigation),
-                subtitle: Text(l10n.homeStartNavigationSub),
+                // Without a pack the dash frame is an empty style background
+                // with the route floating on it — indistinguishable from a
+                // broken renderer, and discovered mid-ride. See spec/fsm.md.
+                subtitle: Text(hasMaps ? l10n.homeStartNavigationSub : l10n.homeNeedMapsForNavigation),
                 trailing: const Icon(Icons.chevron_right),
-                onTap: () => context.push('/home/route'),
+                onTap: hasMaps ? () => context.push('/home/route') : null,
               ),
               const Divider(height: 1),
               ListTile(
@@ -156,7 +179,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                       distanceLabel: _origin == null
                           ? null
                           : _formatDistance(l10n, GeoPoint.distMeters(_origin!, GeoPoint(saved[i].lat, saved[i].lng))),
-                      onTap: () {
+                      onTap: !hasMaps
+                          ? null
+                          : () {
                         context.push(
                           '/home/route-preview',
                           extra: RoutePreviewArgs(
@@ -213,14 +238,20 @@ class _SavedPlaceCard extends StatelessWidget {
   /// Formatted distance from the rider's current position, or null while no
   /// GPS fix is available yet.
   final String? distanceLabel;
-  final VoidCallback onTap;
+  /// Null while navigation is gated — the tile is the second way in, and
+  /// leaving it live would let one tap bypass the block on the quick action.
+  final VoidCallback? onTap;
   final VoidCallback onDelete;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final l10n = AppLocalizations.of(context)!;
-    return InkWell(
+    // Dimmed rather than merely inert: a tile that silently ignores taps
+    // reads as a bug, and the card above already explains why it is off.
+    return Opacity(
+      opacity: onTap == null ? 0.4 : 1,
+      child: InkWell(
       onTap: onTap,
       borderRadius: BorderRadius.circular(12),
       child: Container(
@@ -264,6 +295,7 @@ class _SavedPlaceCard extends StatelessWidget {
               ),
           ],
         ),
+      ),
       ),
     );
   }

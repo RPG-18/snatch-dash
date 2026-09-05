@@ -2,7 +2,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:opendash_dash_engine/opendash_dash_engine.dart';
 
 import 'dash_engine_state.dart';
-import 'dash_wallpaper_store.dart';
 
 /// K1G joystick/media/call button codes the physical dash sends as `09 00`
 /// events — see `DashSession.dispatchIncoming`. Values match the original
@@ -15,23 +14,27 @@ const _btnMediaNext = 0x09;
 const _btnMediaPrevious = 0x0A;
 
 // A second, looser set of codes some dash firmware/rocker variants send for
-// "next"/"previous" instead of (or in addition to) the media codes above —
-// only consulted once none of the more specific branches below matched.
-bool _isNextWallpaperButton(int code) => code == 0x06 || code == 0x09 || code == 0x22;
-bool _isPreviousWallpaperButton(int code) => code == 0x05 || code == 0x07 || code == 0x0A;
+// "next"/"previous" instead of (or in addition to) the media codes above.
+// Treated exactly like those codes below — the two sets don't overlap with
+// the zoom codes, so merging them changes nothing but saves two branches.
+// They DO overlap with the call codes (0x06/0x07), which is why the call
+// branches have to stay first.
+bool _isLooseNextButton(int code) => code == 0x06 || code == 0x09 || code == 0x22;
+bool _isLoosePreviousButton(int code) => code == 0x05 || code == 0x07 || code == 0x0A;
 
 /// Dispatches physical dash button presses to an app-side action, mirroring
 /// `DashViewModel.onButton` — the native `DashSession`/`DashEngineController`
 /// only ack the button and forward the raw code (see `dashEngineRawStreamProvider`);
-/// deciding what a code *means* (in the idle-wallpaper screen it cycles
-/// wallpapers, on the nav map it zooms, elsewhere it answers/skips) is Dart's
+/// deciding what a code *means* (with music playing it skips tracks, otherwise
+/// it zooms the map, and a ringing call takes precedence over both) is Dart's
 /// job, same as it was the ViewModel's job in the original app.
 ///
-/// Built eagerly from `main.dart` (like `dashWallpaperStoreProvider`) so it's
-/// listening even if no screen happens to be watching it — otherwise a
-/// session that never opens a wallpaper-cycling widget would silently drop
-/// every button press, same failure mode the wallpaper-push regression this
-/// was ported alongside had.
+/// Nothing here branches on `navigating` any more: the dash renders the map in
+/// both idle and navigation, so next/prev mean the same thing either way.
+///
+/// Built eagerly from `main.dart` so it's listening even if no screen happens
+/// to be watching it — otherwise a session where no widget subscribes would
+/// silently drop every button press.
 class DashButtonController extends Notifier<void> {
   @override
   void build() {
@@ -43,7 +46,6 @@ class DashButtonController extends Notifier<void> {
 
   void _handle(int code) {
     final engine = ref.read(dashEngineStateProvider);
-    final idle = !engine.navigating;
     final mediaActive = engine.nowPlayingTitle != null;
     final hasIncomingCall = engine.incomingCaller != null;
 
@@ -54,22 +56,14 @@ class DashButtonController extends Notifier<void> {
       // already answered/outgoing — matching the original's `call != null`
       // (vs `call.incoming == true` for answer).
       DashEngine.instance.hangupCall();
-    } else if (idle && code == _btnMediaNext) {
-      ref.read(dashWallpaperStoreProvider.notifier).cycle(1);
-    } else if (idle && code == _btnMediaPrevious) {
-      ref.read(dashWallpaperStoreProvider.notifier).cycle(-1);
-    } else if (!idle && mediaActive && code == _btnMediaNext) {
+    } else if (mediaActive && (code == _btnMediaNext || _isLooseNextButton(code))) {
       DashEngine.instance.skipNext();
-    } else if (!idle && mediaActive && code == _btnMediaPrevious) {
+    } else if (mediaActive && (code == _btnMediaPrevious || _isLoosePreviousButton(code))) {
       DashEngine.instance.skipPrevious();
-    } else if (code == _btnMapZoomIn || (!mediaActive && code == _btnMediaNext)) {
+    } else if (code == _btnMapZoomIn || code == _btnMediaNext || _isLooseNextButton(code)) {
       DashEngine.instance.zoomIn();
-    } else if (code == _btnMapZoomOut || (!mediaActive && code == _btnMediaPrevious)) {
+    } else if (code == _btnMapZoomOut || code == _btnMediaPrevious || _isLoosePreviousButton(code)) {
       DashEngine.instance.zoomOut();
-    } else if (idle && _isNextWallpaperButton(code)) {
-      ref.read(dashWallpaperStoreProvider.notifier).cycle(1);
-    } else if (idle && _isPreviousWallpaperButton(code)) {
-      ref.read(dashWallpaperStoreProvider.notifier).cycle(-1);
     }
   }
 }

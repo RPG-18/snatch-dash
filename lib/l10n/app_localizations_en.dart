@@ -33,6 +33,12 @@ class AppLocalizationsEn extends AppLocalizations {
   String get actionDelete => 'Delete';
 
   @override
+  String get actionYes => 'Yes';
+
+  @override
+  String get actionNo => 'No';
+
+  @override
   String unitKm(String value) {
     return '$value km';
   }
@@ -172,10 +178,6 @@ class AppLocalizationsEn extends AppLocalizations {
   String get routeDestinationSaved => 'Destination saved';
 
   @override
-  String get routeShareLinkHint =>
-      'Paste a Google Maps share link, or geo:lat,lng';
-
-  @override
   String get routePreview => 'Preview';
 
   @override
@@ -185,20 +187,11 @@ class AppLocalizationsEn extends AppLocalizations {
   String get routeSendToDash => 'Send to Dash';
 
   @override
-  String get routeErrorNoCoordinates =>
-      'Couldn\'t find coordinates for that link';
-
-  @override
   String get routeErrorNoGpsFix => 'No GPS fix for route planning yet';
 
   @override
   String get routeErrorRoutingFailedConnection =>
       'Routing failed — check your connection';
-
-  @override
-  String routeErrorRoutingFailedDetail(String detail) {
-    return 'Routing failed: $detail';
-  }
 
   @override
   String get voiceModeOff => 'off';
@@ -395,6 +388,109 @@ class AppLocalizationsEn extends AppLocalizations {
   }
 
   @override
+  String get offlineMapsTitle => 'Offline maps';
+
+  @override
+  String get offlineMapsSearchHint => 'Search regions';
+
+  @override
+  String get offlineMapsDownloadedSection => 'Downloaded';
+
+  @override
+  String get offlineMapsNothingDownloaded => 'No maps downloaded';
+
+  @override
+  String get offlineMapsNothingDownloadedSub =>
+      'Without maps the dash cannot show navigation';
+
+  @override
+  String get offlineMapsServerUnavailable => 'Map server unavailable';
+
+  @override
+  String get offlineMapsRetry => 'Retry';
+
+  @override
+  String get offlineMapsStaleCache => 'Couldn\'t check for updates';
+
+  @override
+  String get offlineMapsAppTooOld => 'Update the app to keep using maps';
+
+  @override
+  String get offlineMapsLoadingRegions => 'Loading the list of regions…';
+
+  @override
+  String get offlineMapsNoResults => 'Nothing found';
+
+  @override
+  String get offlineMapsCancelTitle => 'Cancel download';
+
+  @override
+  String get offlineMapsUpdateAvailable => 'Update available';
+
+  @override
+  String get offlineMapsDeleteAction => 'Delete';
+
+  @override
+  String offlineMapsDeleteTitle(String name) {
+    return 'Delete $name?';
+  }
+
+  @override
+  String get offlineMapsExitNavigationFirst => 'Exit navigation mode first';
+
+  @override
+  String get offlineMapsNoSpace => 'Not enough space on the device';
+
+  @override
+  String get offlineMapsEnqueueFailed => 'The system downloader is unavailable';
+
+  @override
+  String get offlineMapsDownloadFailed => 'Couldn\'t download the map';
+
+  @override
+  String get offlineMapsPackCorrupt =>
+      'The map on the server is damaged — try again later';
+
+  @override
+  String get offlineMapsDeleteFailed => 'Couldn\'t delete the map';
+
+  @override
+  String get settingsOfflineMapsTitle => 'Offline maps';
+
+  @override
+  String settingsOfflineMapsSubtitle(num count, String size) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count maps, $size',
+      one: '$count map, $size',
+      zero: 'Nothing downloaded',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String get settingsMapTheme => 'Map theme';
+
+  @override
+  String get settingsMapThemeLight => 'Light';
+
+  @override
+  String get settingsMapThemeDark => 'Dark';
+
+  @override
+  String get homeNoOfflineMaps => 'You have no downloaded maps';
+
+  @override
+  String get homeNoOfflineMapsSub => 'Download a region to enable navigation';
+
+  @override
+  String get homeNeedMapsForNavigation => 'Downloaded maps required';
+
+  @override
+  String get dashNoOfflineMaps => 'No maps downloaded';
+
+  @override
   String get settingsTitle => 'More';
 
   @override
@@ -426,9 +522,6 @@ class AppLocalizationsEn extends AppLocalizations {
   String get settingsForgetDashSub => 'Re-run prefix discovery on next connect';
 
   @override
-  String get settingsDashWallpaper => 'Dash wallpaper';
-
-  @override
   String get settingsCurrency => 'Currency';
 
   @override
@@ -436,6 +529,9 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get settingsLogsSubtitle => 'View app logs';
+
+  @override
+  String get settingsLogsShareSubject => 'SnatchDash logs';
 
   @override
   String get settingsLogsShareFile => 'Share saved log file';
@@ -485,6 +581,22 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get settingsAboutYandexTermsLink => 'Yandex Maps terms of use';
+
+  @override
+  String get settingsAboutMapDataTitle => 'Map on the dash';
+
+  @override
+  String get settingsAboutOsmLink => '© OpenStreetMap contributors (ODbL)';
+
+  @override
+  String get settingsAboutOpenMapTilesLink =>
+      '© OpenMapTiles — style and schema (CC BY 4.0)';
+
+  @override
+  String get settingsAboutMapLibreLink => 'MapLibre GL Native (BSD-2-Clause)';
+
+  @override
+  String get settingsAboutFontsLink => 'Noto Sans (SIL Open Font License 1.1)';
 
   @override
   String get settingsUpdatesTitle => 'Updates';
@@ -566,9 +678,6 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get settingsPasswordLabel => 'Password';
-
-  @override
-  String get settingsClearAll => 'Clear all';
 
   @override
   String get currencyNameInr => 'Indian rupee';

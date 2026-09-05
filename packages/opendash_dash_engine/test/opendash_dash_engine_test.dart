@@ -76,15 +76,6 @@ class MockOpendashDashEnginePlatform
   Future<void> updateCall(String? caller) async {}
 
   @override
-  Future<void> setWallpaper({
-    String? path,
-    String? kind,
-    String? fit,
-    double biasX = 0,
-    double biasY = 0,
-  }) async {}
-
-  @override
   Future<void> playChime() async {}
 
   @override

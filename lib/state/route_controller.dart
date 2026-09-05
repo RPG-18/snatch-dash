@@ -1,78 +1,38 @@
-import 'dart:async' show unawaited;
+import 'dart:async';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:opendash_dash_engine/opendash_dash_engine.dart';
 
 import '../models/shared_location.dart';
-import '../nav/geo_point.dart';
 import '../nav/nav_loop.dart';
 import '../nav/route.dart' as nav;
-import '../nav/router.dart' as nav;
-import '../util/current_position.dart';
-import '../util/location_parser.dart';
-import 'saved_destinations_controller.dart';
-
-/// Kept as codes (not localized strings) since the controller has no
-/// `BuildContext` — [RouteScreen] maps these to text via `AppLocalizations`.
-enum RouteErrorKind { noCoordinates, noGpsFix, routingFailedConnection, routingFailedDetail }
-
-class RouteError {
-  const RouteError(this.kind, {this.detail});
-  final RouteErrorKind kind;
-  final String? detail;
-}
+import '../util/app_logger.dart' show talker;
 
 class RouteState {
-  const RouteState({
-    this.queryText = '',
-    this.resolving = false,
-    this.destination,
-    this.route,
-    this.error,
-  });
+  const RouteState({this.destination, this.route});
 
-  final String queryText;
-  final bool resolving;
   final SharedLocation? destination;
   final nav.Route? route;
-  final RouteError? error;
 
-  RouteState copyWith({
-    String? queryText,
-    bool? resolving,
-    SharedLocation? destination,
-    nav.Route? route,
-    RouteError? error,
-    bool clearDestination = false,
-    bool clearRoute = false,
-    bool clearError = false,
-  }) {
-    return RouteState(
-      queryText: queryText ?? this.queryText,
-      resolving: resolving ?? this.resolving,
-      destination: clearDestination ? null : (destination ?? this.destination),
-      route: clearRoute ? null : (route ?? this.route),
-      error: clearError ? null : (error ?? this.error),
-    );
-  }
+  RouteState copyWith({SharedLocation? destination, nav.Route? route}) => RouteState(
+        destination: destination ?? this.destination,
+        route: route ?? this.route,
+      );
 }
 
-/// Destination search/preview + "Send to Dash" — the Dart-side counterpart
-/// to the original `RouteViewModel.kt`. Ports `LocationParser` (share-text
-/// parsing) and drives `Router` (Yandex driving) for the preview; a one-shot
-/// `Geolocator` fix stands in for the original's separate `LocationManager`
-/// use for route planning (independent of the dash session's own native GPS
-/// tracking, which only starts once `DashEngine.connect()` is called).
+/// Holds the destination + route that were sent (or are about to be sent) to
+/// the dash, and owns the [NavLoop] that pushes live progress while riding —
+/// the Dart-side counterpart to the original `RouteViewModel.kt`.
+///
+/// **It does no route planning of its own.** Picking a destination and
+/// fetching alternatives both happen on [RoutePreviewScreen], which calls
+/// `Router.routes()` directly and reports its own errors; this controller only
+/// adopts the finished result via [selectRoute]. That split is why there is no
+/// error/loading state here — nothing in this class can fail before
+/// [sendToDash], and `sendToDash`'s own failures surface as the dash session
+/// not coming up (see `DashStage`), not as route-planning errors.
 class RouteController extends Notifier<RouteState> {
   NavLoop? _navLoop;
-
-  /// Bumped by every entry point that starts a destination/route request, so a
-  /// slow one can tell it has been superseded before writing to `state`. Two
-  /// picks in quick succession finish in whatever order the network decides —
-  /// a share link needing a round-trip resolve can easily land after a saved
-  /// place picked right afterwards — and without this the stale result wins.
-  /// Same guard [RouteSearchController] uses for its suggestion queries.
-  int _requestId = 0;
 
   @override
   RouteState build() {
@@ -80,99 +40,10 @@ class RouteController extends Notifier<RouteState> {
     return const RouteState();
   }
 
-  void setDestinationFromShareText(String text) {
-    final requestId = ++_requestId;
-    final parsed = LocationParser.parse(text);
-    state = state.copyWith(
-      queryText: text,
-      destination: parsed,
-      clearRoute: true,
-      clearError: true,
-    );
-    unawaited(_resolveAndRoute(parsed, requestId));
-  }
-
-  void clear() {
-    _navLoop?.stop();
-    _navLoop = null;
-    // Anything still in flight is now stale — clear() means "forget this".
-    _requestId++;
-    state = const RouteState();
-  }
-
-  /// Loads a previously saved destination straight from its coordinates
-  /// (no re-parsing/network resolve needed) and kicks off route planning.
-  void selectSaved(SavedLocation location) {
-    final requestId = ++_requestId;
-    final destination = SharedLocation(name: location.name, lat: location.lat, lng: location.lng);
-    state = state.copyWith(destination: destination, clearRoute: true, clearError: true);
-    unawaited(_fetchRoute(destination, requestId));
-  }
-
-  /// Adopts a destination + route already resolved elsewhere (the route
-  /// preview screen's alternative picker) instead of fetching one, then
-  /// [sendToDash] can be called right away.
+  /// Adopts a destination + route already resolved by the preview screen's
+  /// alternative picker; [sendToDash] can be called right after.
   void selectRoute(SharedLocation destination, nav.Route route) {
-    // Adopting a finished route also supersedes anything still resolving.
-    _requestId++;
-    state = state.copyWith(destination: destination, route: route, clearError: true);
-  }
-
-  void saveCurrentDestination() {
-    final d = state.destination;
-    if (d?.lat == null || d?.lng == null) return;
-    ref.read(savedDestinationsControllerProvider.notifier).save(d!.name, d.lat!, d.lng!);
-  }
-
-  Future<void> _resolveAndRoute(SharedLocation parsed, int requestId) async {
-    var destination = parsed;
-    if (parsed.needsExpansion && parsed.url != null) {
-      state = state.copyWith(resolving: true);
-      final (coords, name) = await LocationParser.resolve(parsed.url!);
-      if (requestId != _requestId) return; // superseded while resolving
-      destination = SharedLocation(
-        name: name ?? parsed.name,
-        lat: coords?.$1,
-        lng: coords?.$2,
-        url: parsed.url,
-        needsExpansion: false,
-      );
-      state = state.copyWith(destination: destination, resolving: false);
-    }
-
-    if (destination.lat == null || destination.lng == null) {
-      state = state.copyWith(error: const RouteError(RouteErrorKind.noCoordinates), resolving: false);
-      return;
-    }
-
-    await _fetchRoute(destination, requestId);
-  }
-
-  Future<void> _fetchRoute(SharedLocation destination, int requestId) async {
-    state = state.copyWith(resolving: true, clearError: true);
-    try {
-      final origin = await currentPosition();
-      if (requestId != _requestId) return;
-      if (origin == null) {
-        state = state.copyWith(resolving: false, error: const RouteError(RouteErrorKind.noGpsFix));
-        return;
-      }
-      final route = await nav.Router.route(
-        origin,
-        GeoPoint(destination.lat!, destination.lng!),
-      );
-      if (requestId != _requestId) return;
-      state = state.copyWith(route: route, resolving: false, clearError: route != null);
-      if (route == null) {
-        state = state.copyWith(error: const RouteError(RouteErrorKind.routingFailedConnection));
-      }
-    } catch (e) {
-      if (requestId != _requestId) return;
-      state = state.copyWith(
-        resolving: false,
-        error: RouteError(RouteErrorKind.routingFailedDetail, detail: '$e'),
-      );
-    }
+    state = state.copyWith(destination: destination, route: route);
   }
 
   /// "Send to Dash": hands the destination + route to the native engine and
@@ -181,10 +52,10 @@ class RouteController extends Notifier<RouteState> {
   Future<void> sendToDash() async {
     final destination = state.destination;
     final route = state.route;
-    if (destination?.lat == null || destination?.lng == null) return;
+    if (destination == null) return;
 
     await DashEngine.instance.setDestination(
-      name: destination!.name,
+      name: destination.name,
       lat: destination.lat,
       lng: destination.lng,
     );
@@ -199,7 +70,20 @@ class RouteController extends Notifier<RouteState> {
   void exitNavigation() {
     _navLoop?.stop();
     _navLoop = null;
-    DashEngine.instance.clearDestination();
+    // A whole fresh state, not copyWith: destination and route are nullable
+    // fields behind `??`, so copyWith cannot clear them — and leaving them set
+    // meant the next visit to /home/dash drew the old polyline and destination
+    // pin and offered "exit navigation" again, over a native side that had
+    // already stopped navigating.
+    state = const RouteState();
+    // Fire-and-forget would make a channel failure an unhandled async error, on
+    // a path the rider takes to *stop* — nothing here is worth surfacing, but
+    // it does belong in the log.
+    unawaited(
+      DashEngine.instance.clearDestination().catchError(
+        (Object e, StackTrace st) => talker.error('[Route] clearDestination failed', e, st),
+      ),
+    );
   }
 }
 

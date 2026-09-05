@@ -146,6 +146,18 @@ abstract class AppLocalizations {
   /// **'Delete'**
   String get actionDelete;
 
+  /// No description provided for @actionYes.
+  ///
+  /// In en, this message translates to:
+  /// **'Yes'**
+  String get actionYes;
+
+  /// No description provided for @actionNo.
+  ///
+  /// In en, this message translates to:
+  /// **'No'**
+  String get actionNo;
+
   /// No description provided for @unitKm.
   ///
   /// In en, this message translates to:
@@ -374,12 +386,6 @@ abstract class AppLocalizations {
   /// **'Destination saved'**
   String get routeDestinationSaved;
 
-  /// No description provided for @routeShareLinkHint.
-  ///
-  /// In en, this message translates to:
-  /// **'Paste a Google Maps share link, or geo:lat,lng'**
-  String get routeShareLinkHint;
-
   /// No description provided for @routePreview.
   ///
   /// In en, this message translates to:
@@ -398,12 +404,6 @@ abstract class AppLocalizations {
   /// **'Send to Dash'**
   String get routeSendToDash;
 
-  /// No description provided for @routeErrorNoCoordinates.
-  ///
-  /// In en, this message translates to:
-  /// **'Couldn\'t find coordinates for that link'**
-  String get routeErrorNoCoordinates;
-
   /// No description provided for @routeErrorNoGpsFix.
   ///
   /// In en, this message translates to:
@@ -415,12 +415,6 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Routing failed — check your connection'**
   String get routeErrorRoutingFailedConnection;
-
-  /// No description provided for @routeErrorRoutingFailedDetail.
-  ///
-  /// In en, this message translates to:
-  /// **'Routing failed: {detail}'**
-  String routeErrorRoutingFailedDetail(String detail);
 
   /// No description provided for @voiceModeOff.
   ///
@@ -782,6 +776,186 @@ abstract class AppLocalizations {
   /// **'{date} · avg {speed} km/h'**
   String rideDateAvgSpeed(String date, String speed);
 
+  /// No description provided for @offlineMapsTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Offline maps'**
+  String get offlineMapsTitle;
+
+  /// No description provided for @offlineMapsSearchHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Search regions'**
+  String get offlineMapsSearchHint;
+
+  /// No description provided for @offlineMapsDownloadedSection.
+  ///
+  /// In en, this message translates to:
+  /// **'Downloaded'**
+  String get offlineMapsDownloadedSection;
+
+  /// No description provided for @offlineMapsNothingDownloaded.
+  ///
+  /// In en, this message translates to:
+  /// **'No maps downloaded'**
+  String get offlineMapsNothingDownloaded;
+
+  /// No description provided for @offlineMapsNothingDownloadedSub.
+  ///
+  /// In en, this message translates to:
+  /// **'Without maps the dash cannot show navigation'**
+  String get offlineMapsNothingDownloadedSub;
+
+  /// No description provided for @offlineMapsServerUnavailable.
+  ///
+  /// In en, this message translates to:
+  /// **'Map server unavailable'**
+  String get offlineMapsServerUnavailable;
+
+  /// No description provided for @offlineMapsRetry.
+  ///
+  /// In en, this message translates to:
+  /// **'Retry'**
+  String get offlineMapsRetry;
+
+  /// No description provided for @offlineMapsStaleCache.
+  ///
+  /// In en, this message translates to:
+  /// **'Couldn\'t check for updates'**
+  String get offlineMapsStaleCache;
+
+  /// No description provided for @offlineMapsAppTooOld.
+  ///
+  /// In en, this message translates to:
+  /// **'Update the app to keep using maps'**
+  String get offlineMapsAppTooOld;
+
+  /// No description provided for @offlineMapsLoadingRegions.
+  ///
+  /// In en, this message translates to:
+  /// **'Loading the list of regions…'**
+  String get offlineMapsLoadingRegions;
+
+  /// No description provided for @offlineMapsNoResults.
+  ///
+  /// In en, this message translates to:
+  /// **'Nothing found'**
+  String get offlineMapsNoResults;
+
+  /// No description provided for @offlineMapsCancelTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Cancel download'**
+  String get offlineMapsCancelTitle;
+
+  /// No description provided for @offlineMapsUpdateAvailable.
+  ///
+  /// In en, this message translates to:
+  /// **'Update available'**
+  String get offlineMapsUpdateAvailable;
+
+  /// No description provided for @offlineMapsDeleteAction.
+  ///
+  /// In en, this message translates to:
+  /// **'Delete'**
+  String get offlineMapsDeleteAction;
+
+  /// No description provided for @offlineMapsDeleteTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Delete {name}?'**
+  String offlineMapsDeleteTitle(String name);
+
+  /// No description provided for @offlineMapsExitNavigationFirst.
+  ///
+  /// In en, this message translates to:
+  /// **'Exit navigation mode first'**
+  String get offlineMapsExitNavigationFirst;
+
+  /// No description provided for @offlineMapsNoSpace.
+  ///
+  /// In en, this message translates to:
+  /// **'Not enough space on the device'**
+  String get offlineMapsNoSpace;
+
+  /// No description provided for @offlineMapsEnqueueFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'The system downloader is unavailable'**
+  String get offlineMapsEnqueueFailed;
+
+  /// No description provided for @offlineMapsDownloadFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Couldn\'t download the map'**
+  String get offlineMapsDownloadFailed;
+
+  /// No description provided for @offlineMapsPackCorrupt.
+  ///
+  /// In en, this message translates to:
+  /// **'The map on the server is damaged — try again later'**
+  String get offlineMapsPackCorrupt;
+
+  /// No description provided for @offlineMapsDeleteFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Couldn\'t delete the map'**
+  String get offlineMapsDeleteFailed;
+
+  /// No description provided for @settingsOfflineMapsTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Offline maps'**
+  String get settingsOfflineMapsTitle;
+
+  /// No description provided for @settingsOfflineMapsSubtitle.
+  ///
+  /// In en, this message translates to:
+  /// **'{count, plural, =0{Nothing downloaded} one{{count} map, {size}} other{{count} maps, {size}}}'**
+  String settingsOfflineMapsSubtitle(num count, String size);
+
+  /// No description provided for @settingsMapTheme.
+  ///
+  /// In en, this message translates to:
+  /// **'Map theme'**
+  String get settingsMapTheme;
+
+  /// No description provided for @settingsMapThemeLight.
+  ///
+  /// In en, this message translates to:
+  /// **'Light'**
+  String get settingsMapThemeLight;
+
+  /// No description provided for @settingsMapThemeDark.
+  ///
+  /// In en, this message translates to:
+  /// **'Dark'**
+  String get settingsMapThemeDark;
+
+  /// No description provided for @homeNoOfflineMaps.
+  ///
+  /// In en, this message translates to:
+  /// **'You have no downloaded maps'**
+  String get homeNoOfflineMaps;
+
+  /// No description provided for @homeNoOfflineMapsSub.
+  ///
+  /// In en, this message translates to:
+  /// **'Download a region to enable navigation'**
+  String get homeNoOfflineMapsSub;
+
+  /// No description provided for @homeNeedMapsForNavigation.
+  ///
+  /// In en, this message translates to:
+  /// **'Downloaded maps required'**
+  String get homeNeedMapsForNavigation;
+
+  /// No description provided for @dashNoOfflineMaps.
+  ///
+  /// In en, this message translates to:
+  /// **'No maps downloaded'**
+  String get dashNoOfflineMaps;
+
   /// No description provided for @settingsTitle.
   ///
   /// In en, this message translates to:
@@ -836,12 +1010,6 @@ abstract class AppLocalizations {
   /// **'Re-run prefix discovery on next connect'**
   String get settingsForgetDashSub;
 
-  /// No description provided for @settingsDashWallpaper.
-  ///
-  /// In en, this message translates to:
-  /// **'Dash wallpaper'**
-  String get settingsDashWallpaper;
-
   /// No description provided for @settingsCurrency.
   ///
   /// In en, this message translates to:
@@ -859,6 +1027,12 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'View app logs'**
   String get settingsLogsSubtitle;
+
+  /// No description provided for @settingsLogsShareSubject.
+  ///
+  /// In en, this message translates to:
+  /// **'SnatchDash logs'**
+  String get settingsLogsShareSubject;
 
   /// No description provided for @settingsLogsShareFile.
   ///
@@ -949,6 +1123,36 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Yandex Maps terms of use'**
   String get settingsAboutYandexTermsLink;
+
+  /// No description provided for @settingsAboutMapDataTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Map on the dash'**
+  String get settingsAboutMapDataTitle;
+
+  /// No description provided for @settingsAboutOsmLink.
+  ///
+  /// In en, this message translates to:
+  /// **'© OpenStreetMap contributors (ODbL)'**
+  String get settingsAboutOsmLink;
+
+  /// No description provided for @settingsAboutOpenMapTilesLink.
+  ///
+  /// In en, this message translates to:
+  /// **'© OpenMapTiles — style and schema (CC BY 4.0)'**
+  String get settingsAboutOpenMapTilesLink;
+
+  /// No description provided for @settingsAboutMapLibreLink.
+  ///
+  /// In en, this message translates to:
+  /// **'MapLibre GL Native (BSD-2-Clause)'**
+  String get settingsAboutMapLibreLink;
+
+  /// No description provided for @settingsAboutFontsLink.
+  ///
+  /// In en, this message translates to:
+  /// **'Noto Sans (SIL Open Font License 1.1)'**
+  String get settingsAboutFontsLink;
 
   /// No description provided for @settingsUpdatesTitle.
   ///
@@ -1087,12 +1291,6 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Password'**
   String get settingsPasswordLabel;
-
-  /// No description provided for @settingsClearAll.
-  ///
-  /// In en, this message translates to:
-  /// **'Clear all'**
-  String get settingsClearAll;
 
   /// No description provided for @currencyNameInr.
   ///

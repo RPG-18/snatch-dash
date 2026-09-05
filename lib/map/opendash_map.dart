@@ -14,9 +14,11 @@ const _routeColor = Color(0xFF4285F4);
 
 /// In-app phone map — `yandex_maps_mapkit` (official Yandex MapKit SDK)
 /// replacement for the original app's MapLibre/OpenFreeMap `OpenDashMap.kt`.
-/// The physical dash still uses its own off-screen power-efficient renderer
-/// (native, see `TileProvider`/`MapRenderer` — deliberately NOT this widget's
-/// tile source).
+/// The physical dash draws its own frame off-screen and no longer shares
+/// anything with this widget: MapLibre over downloaded `.pmtiles` packs, native,
+/// see `MapSnapshotProvider`/`OverlayRenderer` and
+/// spec/drawing_from_local_tiles.md. The two are separate pipelines on purpose —
+/// this one is online Yandex, that one works with no network at all.
 ///
 /// Modes: [fitRoute] frames the whole route; [navMode] tilts/zooms/rotates to
 /// heading; default follows the rider north-up.

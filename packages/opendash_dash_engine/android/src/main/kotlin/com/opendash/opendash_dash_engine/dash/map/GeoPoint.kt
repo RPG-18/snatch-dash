@@ -6,6 +6,6 @@ package com.opendash.opendash_dash_engine.dash.map
  * The full nav-math `GeoPoint` (distance/bearing/segment-projection helpers)
  * lives in Dart now (Phase 2) — the route geometry it computes is handed to
  * the native side as plain coordinate pairs for drawing only, which is all
- * [MapRenderer]/[TileProvider] ever needed from it.
+ * [OverlayRenderer] ever needed from it.
  */
 data class GeoPoint(val lat: Double, val lng: Double)

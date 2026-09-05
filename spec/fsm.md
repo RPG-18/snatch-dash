@@ -11,8 +11,9 @@
   есть до этого момента дэш **ничего не получает от телефона** и показывает
   собственный экран прошивки.
 - **`navigating`** (`Boolean`, ставится в `setDestination`/`clearDestination`)
-  — есть ли активный пункт назначения. Определяет, что рисует кадр: карту с
-  маршрутом (`MapRenderer`) или статичные обои простоя (`DashIdleRenderer`).
+  — есть ли активный пункт назначения. **Кадр в обоих случаях один и тот же —
+  карта** (`MapRenderer`); флаг определяет только содержимое карточки маршрута
+  на самом дэше и наличие живых нав-данных.
 
 Экраны приложения меняют состояние этого автомата, вызывая методы
 `DashEngine` (`packages/opendash_dash_engine`), а не рисуют картинку сами —
@@ -28,13 +29,13 @@ stateDiagram-v2
     off --> linking: Превью Маршрутов — «Поехали»\n(setDestination() + connect())
 
     linking --> off: ошибка/таймаут Wi‑Fi\nили аутентификации
-    linking --> idleWallpaper: STREAMING достигнут,\nнет активного пункта назначения
+    linking --> idleMap: STREAMING достигнут,\nнет активного пункта назначения
     linking --> navigating: STREAMING достигнут,\nпункт назначения уже задан\n(«Поехали» до коннекта)
 
-    idleWallpaper --> navigating: Превью Маршрутов — «Поехали»\n(setDestination())
-    navigating --> idleWallpaper: Dash — кнопка «Выйти из навигации»\n(exitNavigation() → clearDestination())
+    idleMap --> navigating: Превью Маршрутов — «Поехали»\n(setDestination())
+    navigating --> idleMap: Dash — кнопка «Выйти из навигации»\n(exitNavigation() → clearDestination())
 
-    idleWallpaper --> off: Dash — «Отключиться»\nили обрыв связи
+    idleMap --> off: Dash — «Отключиться»\nили обрыв связи
     navigating --> off: Dash — «Отключиться»\nили обрыв связи
 ```
 
@@ -44,7 +45,7 @@ stateDiagram-v2
 |---|---|---|---|---|
 | `off` | `IDLE` / `ERROR` | — | Собственный boot/standby экран прошивки дэша — телефон ничего не передаёт (кадровый цикл не запущен) | [Главная](home_screen.md) — карточка статуса «Не в сети» |
 | `linking` | `CONNECTING` / `AUTHENTICATING` / `READY` | не важно | Тот же экран прошивки — Wi-Fi/K1G-хендшейк идёт, но `streamJob` ещё не стартовал | [Главная](home_screen.md) — «Поиск…»; [Dash](dash_screen.md) — соответствующий `_stageLabel` в AppBar |
-| `idleWallpaper` | `STREAMING` | `false` | Статичное фото/GIF из `DashWallpaperStore` (`DashIdleRenderer`), либо служебный кадр "waiting", если ни один слот обоев не задан | [Главная](home_screen.md) — карточка статуса «Подключено», без выбранного маршрута; [Dash](dash_screen.md) открыт напрямую без навигации |
+| `idleMap` | `STREAMING` | `false` | Та же карта (`MapRenderer`), но без маршрута и без пункта назначения: позиция райдера и дороги вокруг. Карточка маршрута дэша показывает заглушку «OpenDash» без живых цифр | [Главная](home_screen.md) — карточка статуса «Подключено», без выбранного маршрута; [Dash](dash_screen.md) открыт напрямую без навигации |
 | `navigating` | `STREAMING` | `true` | Карта (`MapRenderer`): позиция райдера, маршрут, следующий манёвр/ETA; поверх — метка потери/слабого GPS при `gpsLost`/`gpsWeak` | [Превью Маршрутов](route_preview_screen.md) сразу после «Поехали»; [Dash](dash_screen.md) во время активной навигации |
 
 Карточки входящего звонка/медиа (`updateNowPlaying`/`updateCall`) идут по
@@ -58,23 +59,25 @@ stateDiagram-v2
 подтверждает (ack) и пробрасывает код наверх — `DashEngineController.onButton`
 → плагин кладёт `{"button": code}` в `dashEngineRawStreamProvider`. Что код
 *означает*, решает
-[`DashButtonController`](../lib/state/dash_button_controller.dart) (Dart) —
-как и в оригинале, решение зависит от того же `navigating`, что и выбор
-кадра выше, плюс от текущих `nowPlayingTitle`/`incomingCaller`/`hasActiveCall`
-(тоже поля `DashEngineState`):
+[`DashButtonController`](../lib/state/dash_button_controller.dart) (Dart).
+На `navigating` он больше не смотрит вовсе — раз кадр всегда карта, next/prev
+означают одно и то же в обоих состояниях; решают только текущие
+`nowPlayingTitle`/`incomingCaller`/`hasActiveCall` (поля `DashEngineState`):
 
 | Состояние | Кнопка | Действие |
 |---|---|---|
-| `idleWallpaper` (`navigating == false`) | next/prev | `DashWallpaperStore.cycle(±1)` — листает слоты обоев; не меняет состояние автомата, только содержимое кадра, как и смена обоев из Настроек |
-| `navigating` (`navigating == true`), идёт музыка | next/prev | `DashEngine.skipNext()/skipPrevious()` |
-| `navigating`, музыки нет | next/prev | `DashEngine.zoomIn()/zoomOut()` (запасной маппинг) |
+| любое, идёт музыка | next/prev | `DashEngine.skipNext()/skipPrevious()` |
+| любое, музыки нет | next/prev | `DashEngine.zoomIn()/zoomOut()` (запасной маппинг) |
 | любое | zoom in/out | `DashEngine.zoomIn()/zoomOut()` |
 | любое, есть звонящий (`incomingCaller != null`) | «ответить» | `DashEngine.answerCall()` |
 | любое, есть звонок вообще (`hasActiveCall`, включая уже принятый/исходящий) | «сброс» | `DashEngine.hangupCall()` |
 
-`DashButtonController` подписан eagerly из `main.dart` (как
-`dashWallpaperStoreProvider`) — иначе, пока ни один экран его не «смотрит»,
-нажатия кнопок на дэше уходят в никуда.
+`DashButtonController` подписан eagerly из `main.dart` — иначе, пока ни один
+экран его не «смотрит», нажатия кнопок на дэше уходят в никуда.
+
+Часть прошивок шлёт для next/prev не медиа-коды, а свой набор
+(`0x05`/`0x06`/`0x07`/`0x22`); он проверяется последним и ведёт туда же —
+в skip при играющей музыке, иначе в зум.
 
 ## Таблица переходов
 
@@ -84,19 +87,18 @@ stateDiagram-v2
 | `off` | Dash: FAB «Подключиться» | `linking` | `DashEngine.instance.connect()` |
 | `off` | Превью Маршрутов: «Поехали» | `linking` → (см. ниже, `navigating` как только `STREAMING`) | `RouteController.sendToDash()`: `setDestination()`, затем `connect()` |
 | `linking` | Wi-Fi/аутентификация не удалась или таймаут | `off` (`DashStage.error`) | нативно, без вызова из Dart |
-| `linking` | Хендшейк дошёл до `STREAMING`, `navigating == false` | `idleWallpaper` | нативно (`session.state.collect { READY → startStream() }`); картинка берётся из уже отправленного `DashEngine.setWallpaper()` (см. [Настройки](settings_screen.md)) |
+| `linking` | Хендшейк дошёл до `STREAMING`, `navigating == false` | `idleMap` | нативно (`session.state.collect { READY → startStream() }`); кадр — карта вокруг текущей позиции, маршрута в ней нет |
 | `linking` | Хендшейк дошёл до `STREAMING`, `navigating == true` | `navigating` | то же, но пункт назначения уже был выставлен `setDestination()` до/во время коннекта |
-| `idleWallpaper` | Превью Маршрутов: «Поехали» | `navigating` | `RouteController.sendToDash()`: `DashEngine.setDestination()` (уже подключено, `connect()` — no-op) |
-| `navigating` | Dash: FAB «Выйти из навигации» | `idleWallpaper` | `RouteController.exitNavigation()` → `DashEngine.clearDestination()` |
-| `idleWallpaper` / `navigating` | Dash: FAB «Отключиться» | `off` | `DashEngine.instance.disconnect()` |
-| `idleWallpaper` / `navigating` | Обрыв Wi-Fi-связи с дэшем | `off` (`DashStage.error`) | нативно, без вызова из Dart |
-| любое | Настройки: смена обоев на активном слоте, пока `idleWallpaper` | `idleWallpaper` (кадр перерисовывается) | `DashWallpaperStore` пушит `DashEngine.setWallpaper()` — не меняет состояние автомата, только содержимое |
+| `idleMap` | Превью Маршрутов: «Поехали» | `navigating` | `RouteController.sendToDash()`: `DashEngine.setDestination()` (уже подключено, `connect()` — no-op) |
+| `navigating` | Dash: FAB «Выйти из навигации» | `idleMap` | `RouteController.exitNavigation()` → `DashEngine.clearDestination()` |
+| `idleMap` / `navigating` | Dash: FAB «Отключиться» | `off` | `DashEngine.instance.disconnect()` |
+| `idleMap` / `navigating` | Обрыв Wi-Fi-связи с дэшем | `off` (`DashStage.error`) | нативно, без вызова из Dart |
 
 ## Заметки
 
 - Автомат описывает именно **картинку кадра**, а не `DashStage` из
   [`state/dash_engine_state.dart`](../lib/state/dash_engine_state.dart)
-  напрямую: `DashStage` не различает `idleWallpaper`/`navigating` — оба
+  напрямую: `DashStage` не различает `idleMap`/`navigating` — оба
   относятся к `DashStage.streaming`. Различие видно по отдельному полю
   `DashEngineState.navigating` — прямому зеркалу нативного `navigating`,
   пушится в Dart сразу из `setDestination()`/`clearDestination()` (не только
@@ -106,8 +108,9 @@ stateDiagram-v2
   годится как признак `navigating`.
 - Источник истины на нативной стороне —
   [`DashEngineController.kt`](../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt):
-  `tick()` выбирает `tickIdle()` vs навигационный рендер по флагу
-  `navigating`, который выставляют только `setDestination`/`clearDestination`.
+  `tick()` рисует карту всегда и ни на что не ветвится, а `navigating`
+  (его выставляют только `setDestination`/`clearDestination`) читает
+  `DashSession` — для карточки маршрута и признака `navActive`.
 - `linking` может занять заметное время (Wi-Fi-подключение к дэшу как к
   точке доступа + K1G-аутентификация) — в этот период дэш не показывает
   никакого фидбэка от телефона, только собственный экран прошивки.

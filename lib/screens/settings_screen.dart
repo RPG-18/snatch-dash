@@ -1,9 +1,8 @@
-import 'dart:io';
+import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
-import 'package:image_picker/image_picker.dart';
 import 'package:opendash_dash_engine/opendash_dash_engine.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -13,16 +12,19 @@ import '../state/app_update_controller.dart';
 import '../state/auto_update_settings.dart';
 import '../state/currency_settings.dart';
 import '../state/dash_engine_state.dart';
-import '../state/dash_wallpaper_store.dart';
+import '../state/map_theme_settings.dart';
+import '../models/offline_map.dart';
 import '../state/map_tile_cache.dart';
+import '../state/offline_maps_controller.dart';
 import '../state/update_channel_settings.dart';
 import '../util/app_logger.dart';
+import '../util/byte_size.dart';
 import '../util/github_release.dart';
 
-/// "More" tab: dash connection/pairing, idle wallpaper, and currency. Ports
-/// `SettingsScreen.kt`'s connection section (`DashConfig` via the native
-/// engine's `getConfig`/`setSsid`/`setWifiPassword`/`forgetDash`) and the
-/// wallpaper gallery (`DashWallpaperStore`). No account/sign-in section —
+/// "More" tab: dash connection/pairing, offline maps, map theme and currency.
+/// Ports `SettingsScreen.kt`'s connection section (`DashConfig` via the native
+/// engine's `getConfig`/`setSsid`/`setWifiPassword`/`forgetDash`).
+/// No account/sign-in section —
 /// Firebase auth was dropped from this port. Voice guidance lives on the
 /// Route tab (matches the original's per-trip toggle placement); media/call
 /// notification access has a status tile here that deep-links to system
@@ -43,6 +45,11 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> with WidgetsBin
   // call happens to resolve last wins, which can flash a stale config back
   // over a fresher one if two of them race.
   int _configGeneration = 0;
+
+  /// One re-drive of the install flow per visit to the system permission screen.
+  /// Reset whenever the controller leaves [AppUpdateStatus.needsInstallPermission],
+  /// so a later, genuine permission prompt still gets its retry.
+  bool _installPermissionRedriven = false;
 
   @override
   void initState() {
@@ -65,14 +72,26 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> with WidgetsBin
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    // Leaving the app arms the next re-drive. Resetting on resume instead (as
+    // this first did) spent the single attempt on the trip *to* the permission
+    // screen — the status is still needsInstallPermission on the way out and on
+    // the way back — so the visit where the rider actually granted it did
+    // nothing, and the update sat stuck until an app restart.
+    if (state == AppLifecycleState.paused) _installPermissionRedriven = false;
     // The user grants notification access in system settings, outside the
     // app; re-check when they come back so the status stays current.
     if (state == AppLifecycleState.resumed) {
       _loadNotificationAccess();
       // Same story for "install unknown apps": granted in system settings,
-      // outside the app. There's no install-time callback, so re-drive the
-      // flow on return — it'll just re-check and proceed if now granted.
-      if (ref.read(appUpdateControllerProvider).status == AppUpdateStatus.needsInstallPermission) {
+      // outside the app. There's no install-time callback, so re-drive the flow
+      // on return — but only once, and only for a resume that plausibly *is* the
+      // return from that dialog. Re-driving on every resume restarted the whole
+      // download-and-install on any trip out of the app — the permission screen,
+      // a notification, a phone call — while the state still read
+      // needsInstallPermission.
+      final status = ref.read(appUpdateControllerProvider).status;
+      if (status == AppUpdateStatus.needsInstallPermission && !_installPermissionRedriven) {
+        _installPermissionRedriven = true;
         ref.read(appUpdateControllerProvider.notifier).downloadAndInstall();
       }
     }
@@ -95,6 +114,8 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> with WidgetsBin
   Widget build(BuildContext context) {
     final engine = ref.watch(dashEngineStateProvider);
     final currency = ref.watch(currencySettingsProvider);
+    final installedPacks = ref.watch(installedPacksProvider) ?? const <InstalledPack>[];
+    final mapTheme = ref.watch(mapThemeSettingsProvider);
     final l10n = AppLocalizations.of(context)!;
 
     return Scaffold(
@@ -138,18 +159,42 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> with WidgetsBin
               ),
             ]),
           ),
-          // Idle-wallpaper gallery hidden (2026-08-15): on-hardware testing plus
-          // the better-dash reference (tripper_app_like_nav.py, which this
-          // protocol is ported from) both indicate the Tripper dash's video
-          // decoder only ever opens as part of active-navigation mode — there's
-          // no route-card-free path that shows plain video, so nothing picked
-          // here can ever actually appear on the dash. `DashWallpaperStore` and
-          // the native `setWallpaper` plumbing are left in place (harmless,
-          // and worth keeping in case a real idle-projection sequence is found
-          // later) — only this picker UI is hidden so it stops promising
-          // something the hardware can't currently do. See the investigation
-          // in the "не отобразились обои" conversation thread for the two
-          // failed on-hardware attempts (bare z2, z2 + faked activeNavPacket).
+          const SizedBox(height: 16),
+          Card(
+            child: ListTile(
+              leading: const Icon(Icons.download_for_offline_outlined),
+              title: Text(l10n.settingsOfflineMapsTitle),
+              subtitle: Text(l10n.settingsOfflineMapsSubtitle(
+                installedPacks.length,
+                formatByteSize(l10n, installedPacks.fold<int>(0, (sum, p) => sum + p.sizeBytes)),
+              )),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => context.push('/more/offline-maps'),
+            ),
+          ),
+          const SizedBox(height: 16),
+          Text(l10n.settingsMapTheme, style: Theme.of(context).textTheme.labelLarge),
+          const SizedBox(height: 8),
+          Card(
+            child: RadioGroup<MapTheme>(
+              groupValue: mapTheme,
+              onChanged: (v) {
+                if (v != null) ref.read(mapThemeSettingsProvider.notifier).select(v);
+              },
+              child: Column(
+                children: [
+                  RadioListTile<MapTheme>(
+                    value: MapTheme.light,
+                    title: Text(l10n.settingsMapThemeLight),
+                  ),
+                  RadioListTile<MapTheme>(
+                    value: MapTheme.dark,
+                    title: Text(l10n.settingsMapThemeDark),
+                  ),
+                ],
+              ),
+            ),
+          ),
           const SizedBox(height: 16),
           Text(l10n.settingsCurrency, style: Theme.of(context).textTheme.labelLarge),
           const SizedBox(height: 8),
@@ -192,7 +237,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> with WidgetsBin
               trailing: IconButton(
                 icon: const Icon(Icons.ios_share),
                 tooltip: l10n.settingsLogsShareFile,
-                onPressed: _shareLogFile,
+                onPressed: () => _shareLogFile(l10n),
               ),
             ),
           ),
@@ -211,23 +256,43 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> with WidgetsBin
                   title: Text(l10n.settingsAboutTitle),
                   subtitle: Text(l10n.settingsAboutSubtitle),
                 ),
-                ListTile(
-                  dense: true,
-                  // Empty leading matches the Icon above's footprint, so this
-                  // title lines up with the title/subtitle text instead of
-                  // starting flush with the card edge.
-                  leading: const SizedBox(width: 24, height: 24),
-                  title: Text(
-                    l10n.settingsAboutYandexTermsLink,
-                    style: TextStyle(
-                      color: Theme.of(context).colorScheme.primary,
-                      decoration: TextDecoration.underline,
+                _AboutLink(
+                  label: l10n.settingsAboutYandexTermsLink,
+                  url: 'https://yandex.ru/legal/maps_api',
+                ),
+                // The dash frame carries no attribution of its own: MapLibre's
+                // logo and attribution line are switched off in
+                // MapSnapshotProvider because at 526×300 under a round bezel
+                // they cost a visible share of the frame (review-spec.md, C6).
+                // That makes this card the only place the offline corpus is
+                // credited, so these rows are a licence requirement, not a
+                // courtesy — see plan.md 4.6.
+                const Divider(height: 1),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+                  child: Align(
+                    alignment: Alignment.centerLeft,
+                    child: Text(
+                      l10n.settingsAboutMapDataTitle,
+                      style: Theme.of(context).textTheme.labelLarge,
                     ),
                   ),
-                  onTap: () => launchUrl(
-                    Uri.parse('https://yandex.ru/legal/maps_api'),
-                    mode: LaunchMode.externalApplication,
-                  ),
+                ),
+                _AboutLink(
+                  label: l10n.settingsAboutOsmLink,
+                  url: 'https://www.openstreetmap.org/copyright',
+                ),
+                _AboutLink(
+                  label: l10n.settingsAboutOpenMapTilesLink,
+                  url: 'https://openmaptiles.org/',
+                ),
+                _AboutLink(
+                  label: l10n.settingsAboutMapLibreLink,
+                  url: 'https://maplibre.org/',
+                ),
+                _AboutLink(
+                  label: l10n.settingsAboutFontsLink,
+                  url: 'https://github.com/openmaptiles/fonts',
                 ),
               ],
             ),
@@ -237,17 +302,23 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> with WidgetsBin
     );
   }
 
-  Future<void> _shareLogFile() async {
+  Future<void> _shareLogFile(AppLocalizations l10n) async {
     final files = await persistedLogFiles();
     if (files.isEmpty) return;
     await SharePlus.instance.share(
-      ShareParams(files: files.map((f) => XFile(f.path)).toList(), subject: 'SnatchDash logs'),
+      ShareParams(
+        files: files.map((f) => XFile(f.path)).toList(),
+        subject: l10n.settingsLogsShareSubject,
+      ),
     );
   }
 
   void _showSsidDialog(BuildContext context, AppLocalizations l10n) {
     final controller = TextEditingController(text: _config?['ssid'] as String? ?? '');
-    showDialog<void>(
+    // Disposed when the dialog closes, whichever way it closes — a controller
+    // holds a change-notifier listener list, and one per dialog opening adds up
+    // over a session of fiddling with pairing.
+    unawaited(showDialog<void>(
       context: context,
       builder: (dialogContext) => AlertDialog(
         title: Text(l10n.settingsSsidDialogTitle),
@@ -273,12 +344,12 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> with WidgetsBin
           ),
         ],
       ),
-    );
+    ).whenComplete(controller.dispose));
   }
 
   void _showPasswordDialog(BuildContext context, AppLocalizations l10n) {
     final controller = TextEditingController(text: _config?['password'] as String? ?? '');
-    showDialog<void>(
+    unawaited(showDialog<void>(
       context: context,
       builder: (dialogContext) => AlertDialog(
         title: Text(l10n.settingsWifiPasswordDialogTitle),
@@ -296,95 +367,35 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> with WidgetsBin
           ),
         ],
       ),
-    );
+    ).whenComplete(controller.dispose));
   }
 }
 
-/// Up to 5 wallpaper slots shown on the dash while idle (no active
-/// destination). Tap a thumbnail to make it active, long-press to remove it.
-/// Cropping is centered by default — the original's drag-to-reposition bias
-/// editor isn't ported yet; `updateCurrentOptions` on the store already
-/// supports it for whenever that lands.
+/// One underlined, tappable line in the About card.
 ///
-/// Currently unreferenced — its call site in [SettingsScreen] is commented
-/// out (see the comment there) since the dash can't actually display idle
-/// wallpaper. Kept, not deleted, so restoring it is a one-line change if a
-/// working idle-projection sequence is ever found.
-// ignore: unused_element
-class _WallpaperGallery extends ConsumerWidget {
-  const _WallpaperGallery();
+/// The empty [leading] matches the footprint of the icon on the card's first
+/// tile, so every line's text starts at the same left edge instead of flush
+/// with the card.
+class _AboutLink extends StatelessWidget {
+  const _AboutLink({required this.label, required this.url});
+
+  final String label;
+  final String url;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final infos = ref.watch(dashWallpaperStoreProvider);
-    final notifier = ref.read(dashWallpaperStoreProvider.notifier);
-    final l10n = AppLocalizations.of(context)!;
-
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            SizedBox(
-              height: 72,
-              child: ListView(
-                scrollDirection: Axis.horizontal,
-                children: [
-                  for (final info in infos)
-                    Padding(
-                      padding: const EdgeInsets.only(right: 8),
-                      child: GestureDetector(
-                        onTap: () => notifier.selectSlot(info.slot),
-                        onLongPress: () => notifier.clearSlot(info.slot),
-                        child: ClipRRect(
-                          borderRadius: BorderRadius.circular(8),
-                          child: info.kind.name == 'image'
-                              ? Image.file(File(info.path), width: 96, height: 72, fit: BoxFit.cover)
-                              : Container(
-                                  width: 96,
-                                  height: 72,
-                                  color: Theme.of(context).colorScheme.surfaceContainerHighest,
-                                  alignment: Alignment.center,
-                                  child: const Icon(Icons.gif_box_outlined),
-                                ),
-                        ),
-                      ),
-                    ),
-                  GestureDetector(
-                    onTap: () => _pick(notifier),
-                    child: Container(
-                      width: 96,
-                      height: 72,
-                      decoration: BoxDecoration(
-                        border: Border.all(color: Theme.of(context).colorScheme.outlineVariant),
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      alignment: Alignment.center,
-                      child: const Icon(Icons.add_photo_alternate_outlined),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            if (infos.isNotEmpty)
-              Padding(
-                padding: const EdgeInsets.only(top: 8),
-                child: TextButton.icon(
-                  onPressed: notifier.clear,
-                  icon: const Icon(Icons.delete_outline),
-                  label: Text(l10n.settingsClearAll),
-                ),
-              ),
-          ],
+  Widget build(BuildContext context) {
+    return ListTile(
+      dense: true,
+      leading: const SizedBox(width: 24, height: 24),
+      title: Text(
+        label,
+        style: TextStyle(
+          color: Theme.of(context).colorScheme.primary,
+          decoration: TextDecoration.underline,
         ),
       ),
+      onTap: () => launchUrl(Uri.parse(url), mode: LaunchMode.externalApplication),
     );
-  }
-
-  Future<void> _pick(DashWallpaperStore notifier) async {
-    final files = await ImagePicker().pickMultiImage(limit: 5);
-    if (files.isNotEmpty) await notifier.saveManyFromXFiles(files);
   }
 }
 
@@ -411,7 +422,7 @@ class _MapCacheCard extends ConsumerWidget {
         subtitle: cache.status == MapTileCacheStatus.error
             ? Text(l10n.settingsMapCacheUnknown)
             : cache.sizeBytes != null
-                ? Text(l10n.settingsMapCacheSize(_formatCacheSize(l10n, cache.sizeBytes!)))
+                ? Text(l10n.settingsMapCacheSize(formatByteSize(l10n, cache.sizeBytes!)))
                 : null,
         trailing: busy
             ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))
@@ -422,17 +433,6 @@ class _MapCacheCard extends ConsumerWidget {
       ),
     );
   }
-}
-
-const _cacheKb = 1024;
-const _cacheMb = _cacheKb * 1024;
-const _cacheGb = _cacheMb * 1024;
-
-String _formatCacheSize(AppLocalizations l10n, int bytes) {
-  if (bytes >= _cacheGb) return '${(bytes / _cacheGb).toStringAsFixed(1)} ${l10n.settingsMapCacheUnitGb}';
-  if (bytes >= _cacheMb) return '${(bytes / _cacheMb).toStringAsFixed(1)} ${l10n.settingsMapCacheUnitMb}';
-  if (bytes >= _cacheKb) return '${(bytes / _cacheKb).toStringAsFixed(0)} ${l10n.settingsMapCacheUnitKb}';
-  return '$bytes ${l10n.settingsMapCacheUnitBytes}';
 }
 
 /// Self-update card: current version, stable/nightly channel toggle, and the

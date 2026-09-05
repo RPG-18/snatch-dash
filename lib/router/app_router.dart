@@ -5,6 +5,7 @@ import '../screens/dash_screen.dart';
 import '../screens/expenses_screen.dart';
 import '../screens/garage_screen.dart';
 import '../screens/home_screen.dart';
+import '../screens/offline_maps_screen.dart';
 import '../models/route_preview_args.dart';
 import '../screens/rides_screen.dart';
 import '../screens/route_preview_screen.dart';
@@ -67,6 +68,10 @@ final appRouter = GoRouter(
               GoRoute(
                 path: 'logs',
                 builder: (context, state) => TalkerScreen(talker: talker),
+              ),
+              GoRoute(
+                path: 'offline-maps',
+                builder: (context, state) => const OfflineMapsScreen(),
               ),
             ],
           ),

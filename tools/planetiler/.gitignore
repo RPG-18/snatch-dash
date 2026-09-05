@@ -1,9 +1,10 @@
 # Всё это — сгенерированные/скачанные вручную бинарные артефакты конвейера,
-# пересобираются с нуля (см. plan.md) — в git не нужны.
+# пересобираются с нуля (см. README.md) — в git не нужны.
 /downloads/
 /polygons/
-/extracts/
+/full/
 /out/
 /data/
 /planetiler.jar
 *.tmp
+__pycache__/

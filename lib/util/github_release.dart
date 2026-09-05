@@ -33,8 +33,10 @@ class AppRelease {
     final assets = (json['assets'] as List?)?.cast<Map<String, dynamic>>() ?? const [];
     final apkAssets = assets.where((a) => (a['name'] as String?)?.toLowerCase().endsWith('.apk') ?? false).toList();
     if (apkAssets.isEmpty) return null; // release with no APK asset attached — nothing to offer
-    // CI publishes one split APK per ABI (see android/app/build.gradle.kts's
-    // `splits { abi { ... } }`), filenames tagged e.g. `-arm64-v8a-`. Pick
+    // CI publishes one split APK per ABI (`flutter build apk --split-per-abi
+    // --target-platform android-arm,android-arm64` in .github/workflows/
+    // release.yml — there is no `splits {}` block in Gradle, the Flutter tool
+    // drives it), filenames tagged e.g. `-arm64-v8a-`. Pick
     // the one matching this device; on an ABI CI doesn't publish for
     // (x86/x86_64 emulators) there's nothing installable to offer.
     final abiTag = _currentAbiTag();
@@ -61,8 +63,8 @@ class AppRelease {
 }
 
 /// This device's ABI as the tag it appears under in split-APK filenames
-/// (`android/app/build.gradle.kts`'s `splits { abi { include(...) } }`), or
-/// null for ABIs CI doesn't publish an APK for (x86/x86_64 — emulators only).
+/// (CI's `--target-platform android-arm,android-arm64`), or null for ABIs CI
+/// doesn't publish an APK for (x86/x86_64 — emulators only).
 String? _currentAbiTag() => switch (Abi.current()) {
       Abi.androidArm64 => 'arm64-v8a',
       Abi.androidArm => 'armeabi-v7a',

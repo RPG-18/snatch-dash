@@ -247,7 +247,8 @@ the cluster:
 
 So **units, clock and dash language are configurable over the same transport we
 already speak**. [`spec/settings_screen.md`](../spec/settings_screen.md) has
-nothing of the sort — our settings cover pairing, wallpaper and currency only.
+nothing of the sort — our settings cover pairing, offline maps, map theme and
+currency only.
 Only `04 01` (temperature) is pinned down so far; the rest of the `03`/`04`
 families are the obvious place to look next.
 

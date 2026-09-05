@@ -133,7 +133,7 @@
 
 ## Из оригинального приложения (re_app, com.royalenfield.reprime)
 
-По команде — разобран decompiled-эквивалент в [`re_app/jadx_out`](../re_app/jadx_out):
+По команде — разобран decompiled-эквивалент в `re_app/jadx_out` (каталог локальный, в репозиторий не входит):
 `bluconnect/seh.java` (по отладочным символам — обфусцированный
 `NetworkEngine.kt`) + обёртка `bluconnect/ldh.java`. Прямой аналог
 `DashWifiManager`, три существенных отличия:

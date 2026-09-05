@@ -35,7 +35,7 @@ found a regression (note it under **Findings** at the bottom).
 
 ## 2. Streaming / video pipeline
 
-- [x] Dash decoder accepts the stream (map or wallpaper appears on the round
+- [x] Dash decoder accepts the stream (the map appears on the round
       display, not stuck on the loading spinner) — confirms SPS normalization
       (`NalProcessor.normalizeSpsForDash`) still matches fw 11.63's whitelist.
 - [ ] IDR bundling (SPS+PPS+IDR with Annex-B start codes) still satisfies the
@@ -54,9 +54,11 @@ Dart (Phase 2), and the native side only receives a 1 Hz `setNavState` push
 from `NavLoop` instead of computing nav math itself like the original
 `DashViewModel.tick` did in-process.
 
-- [ ] Route line, destination pin, and ETA pill render correctly on the dash
-      during a real route (`MapRenderer` still gets `routePoints`/`remainingM`
-      from `DashEngineController.setNavState`).
+- [ ] Route line and destination pin render correctly on the dash during a
+      real route (`OverlayRenderer` still gets `routePoints`/`remainingM` from
+      `DashEngineController.setNavState`). There is no ETA pill on the frame:
+      it was never wired to a data source and was removed — remaining distance
+      lives on the dash firmware's own widget.
 - [ ] Distance-to-turn and remaining-distance numbers on the dash's own
       turn-by-turn widget look correct at riding speed — confirms the 1 Hz
       Dart→native cadence (`NavLoop`'s `Timer.periodic`) isn't introducing
@@ -86,23 +88,7 @@ code}`) → whatever Dart-side listener is wired to it:
 - [ ] No joystick codes are silently swallowed — full hex dump still logs
       unknown TLVs (`DashSession.dispatchIncoming`'s "DASH EVENT" log line).
 
-## 5. Idle wallpaper (Dart picker/crop → native renderer — new split)
-
-- [ ] A picked image renders correctly on the dash when idle (no
-      destination) — confirms the Dart-side crop/fit render
-      (`DashWallpaperStore._renderToDash`, `image` package) produces a PNG
-      the native `DashIdleRenderer` displays without distortion.
-- [ ] Crop vs. fit-height vs. fit-width all look right for at least one
-      portrait and one landscape source image.
-- [ ] A GIF wallpaper animates on the dash (native `DashIdleRenderer.drawGif`
-      path — Dart just copies the source file for GIFs, no re-encoding).
-- [ ] Switching between wallpaper slots (tap a thumbnail in Settings) updates
-      the dash within one idle-mode redraw cycle (`wallpaperRevision` bump).
-- [ ] **Known gap, not a regression to chase**: video wallpapers aren't
-      pickable from this port's UI (see `models/dash_wallpaper.dart`'s doc
-      comment) — don't spend time debugging a missing video option.
-
-## 6. Voice / chime guidance
+## 5. Voice / chime guidance
 
 - [ ] CHIME mode beeps via the native `playChime()` (ToneGenerator) at the
       far (~450 m) and near (~60 m) announce points, and once on arrival.
@@ -112,7 +98,7 @@ code}`) → whatever Dart-side listener is wired to it:
       immediately, and persists across app restart
       (`VoiceManager`/`SharedPreferences`).
 
-## 7. Media / call bridge (native, new plugin code)
+## 6. Media / call bridge (native, new plugin code)
 
 Requires notification-listener access granted to OpenDash
 (Settings → Apps → Special access → Notification access, or wherever the
@@ -129,7 +115,7 @@ OEM buries it — no in-app shortcut was built for this yet).
 - [ ] Without notification access granted, media/call forwarding no-ops
       silently — no crash, no stuck "loading" state.
 
-## 8. Power / thermals (screen-off ride)
+## 7. Power / thermals (screen-off ride)
 
 Same measurement the original TODO never got to close out — still open:
 
@@ -147,7 +133,7 @@ Same measurement the original TODO never got to close out — still open:
       `location` foreground-service type, already declared — confirm the
       rider dot doesn't freeze at the first fix).
 
-## 9. Regression sweep (screens that don't touch the dash protocol)
+## 8. Regression sweep (screens that don't touch the dash protocol)
 
 Lower risk (pure Dart/SQLite, no hardware dependency) but worth a quick pass
 since this is a full rewrite:

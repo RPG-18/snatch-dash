@@ -10,7 +10,7 @@ import 'nav/voice_manager.dart';
 import 'router/app_router.dart';
 import 'state/dash_button_controller.dart';
 import 'state/dash_connection_alert_controller.dart';
-import 'state/dash_wallpaper_store.dart';
+import 'state/offline_maps_controller.dart';
 import 'theme/app_theme.dart';
 import 'util/app_logger.dart';
 
@@ -67,17 +67,10 @@ class OpenDashApp extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    // Eagerly build dashWallpaperStoreProvider here — it's otherwise only
-    // watched by the Settings screen's wallpaper gallery, so if a session
-    // never visits Settings before connecting to the dash, the Notifier's
-    // build() (which pushes the saved wallpaper to the native engine via
-    // DashEngine.setWallpaper) never runs and the dash idle screen stays
-    // blank/black despite wallpaper slots being configured.
-    ref.watch(dashWallpaperStoreProvider);
-    // Same reasoning for dashButtonControllerProvider: it only does anything
+    // Eagerly build dashButtonControllerProvider here: it only does anything
     // via its build()-time ref.listen, so it has to be watched from
     // somewhere alive for the whole app, or physical dash button presses
-    // (wallpaper cycling, zoom, call answer/reject, media skip) go nowhere.
+    // (zoom, call answer/reject, media skip) go nowhere.
     ref.watch(dashButtonControllerProvider);
     // Same reasoning again for dashConnectionAlertControllerProvider: it only
     // does anything via its own ref.listen, and the whole point is catching a
@@ -85,6 +78,20 @@ class OpenDashApp extends ConsumerWidget {
     // off) screen — so it must be alive for the whole session, not just while
     // the Dash screen happens to be open.
     ref.watch(dashConnectionAlertControllerProvider);
+    // And once more for offlineMapsControllerProvider: its build() is where the
+    // startup reconcile lives — the step that turns a download the system
+    // finished while the app was dead into an installed pack. Left lazy, that
+    // only ran when the rider happened to open the offline-maps screen, so the
+    // navigation gate on Home stayed shut over a map that was sitting on disk,
+    // fully downloaded. That scenario is the reason the system downloader was
+    // chosen at all.
+    // `.notifier`, not the state: the notifier instance is stable for the life
+    // of the provider, while the state is replaced on every poll tick — and
+    // OfflineMapsState has no value equality, so watching it would rebuild the
+    // whole router (every page on the stack) about 1.4 times a second for as
+    // long as any download is running. All that is needed here is that the
+    // provider exists.
+    ref.watch(offlineMapsControllerProvider.notifier);
     return MaterialApp.router(
       title: 'SnatchDash',
       debugShowCheckedModeBanner: false,

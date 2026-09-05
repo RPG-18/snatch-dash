@@ -33,6 +33,12 @@ class AppLocalizationsRu extends AppLocalizations {
   String get actionDelete => 'Удалить';
 
   @override
+  String get actionYes => 'Да';
+
+  @override
+  String get actionNo => 'Нет';
+
+  @override
   String unitKm(String value) {
     return '$value км';
   }
@@ -175,10 +181,6 @@ class AppLocalizationsRu extends AppLocalizations {
   String get routeDestinationSaved => 'Место сохранено';
 
   @override
-  String get routeShareLinkHint =>
-      'Вставьте ссылку Google Maps или geo:широта,долгота';
-
-  @override
   String get routePreview => 'Просмотр';
 
   @override
@@ -188,21 +190,12 @@ class AppLocalizationsRu extends AppLocalizations {
   String get routeSendToDash => 'Отправить на Dash';
 
   @override
-  String get routeErrorNoCoordinates =>
-      'Не удалось найти координаты по этой ссылке';
-
-  @override
   String get routeErrorNoGpsFix =>
       'Пока нет GPS-сигнала для построения маршрута';
 
   @override
   String get routeErrorRoutingFailedConnection =>
       'Не удалось построить маршрут — проверьте соединение';
-
-  @override
-  String routeErrorRoutingFailedDetail(String detail) {
-    return 'Не удалось построить маршрут: $detail';
-  }
 
   @override
   String get voiceModeOff => 'выкл';
@@ -398,6 +391,113 @@ class AppLocalizationsRu extends AppLocalizations {
   }
 
   @override
+  String get offlineMapsTitle => 'Оффлайн-карты';
+
+  @override
+  String get offlineMapsSearchHint => 'Поиск регионов';
+
+  @override
+  String get offlineMapsDownloadedSection => 'Загруженные';
+
+  @override
+  String get offlineMapsNothingDownloaded => 'Нет скачанных карт';
+
+  @override
+  String get offlineMapsNothingDownloadedSub =>
+      'Без карт дэш не покажет навигацию';
+
+  @override
+  String get offlineMapsServerUnavailable => 'Сервер карт не доступен';
+
+  @override
+  String get offlineMapsRetry => 'Повторить';
+
+  @override
+  String get offlineMapsStaleCache => 'Не удалось проверить обновления';
+
+  @override
+  String get offlineMapsAppTooOld =>
+      'Обновите приложение, чтобы работать с картами';
+
+  @override
+  String get offlineMapsLoadingRegions => 'Загружаем список регионов…';
+
+  @override
+  String get offlineMapsNoResults => 'Ничего не найдено';
+
+  @override
+  String get offlineMapsCancelTitle => 'Отменить загрузку';
+
+  @override
+  String get offlineMapsUpdateAvailable => 'Есть обновление';
+
+  @override
+  String get offlineMapsDeleteAction => 'Удалить';
+
+  @override
+  String offlineMapsDeleteTitle(String name) {
+    return 'Удалить $name?';
+  }
+
+  @override
+  String get offlineMapsExitNavigationFirst => 'Выйдите из режима навигации';
+
+  @override
+  String get offlineMapsNoSpace => 'Недостаточно места на устройстве';
+
+  @override
+  String get offlineMapsEnqueueFailed => 'Системный загрузчик недоступен';
+
+  @override
+  String get offlineMapsDownloadFailed => 'Не удалось скачать карту';
+
+  @override
+  String get offlineMapsPackCorrupt =>
+      'Карта на сервере повреждена — попробуйте позже';
+
+  @override
+  String get offlineMapsDeleteFailed => 'Не удалось удалить карту';
+
+  @override
+  String get settingsOfflineMapsTitle => 'Оффлайн-карты';
+
+  @override
+  String settingsOfflineMapsSubtitle(num count, String size) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count карты, $size',
+      many: '$count карт, $size',
+      few: '$count карты, $size',
+      one: '$count карта, $size',
+      zero: 'Ничего не скачано',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String get settingsMapTheme => 'Тема карты';
+
+  @override
+  String get settingsMapThemeLight => 'Светлая';
+
+  @override
+  String get settingsMapThemeDark => 'Тёмная';
+
+  @override
+  String get homeNoOfflineMaps => 'У вас нет скаченных карт';
+
+  @override
+  String get homeNoOfflineMapsSub =>
+      'Скачайте карту региона, чтобы включить навигацию';
+
+  @override
+  String get homeNeedMapsForNavigation => 'Нужны скачанные карты';
+
+  @override
+  String get dashNoOfflineMaps => 'Нет скачанных карт';
+
+  @override
   String get settingsTitle => 'Ещё';
 
   @override
@@ -430,9 +530,6 @@ class AppLocalizationsRu extends AppLocalizations {
       'Повторить поиск по префиксу при следующем подключении';
 
   @override
-  String get settingsDashWallpaper => 'Обои dash';
-
-  @override
   String get settingsCurrency => 'Валюта';
 
   @override
@@ -440,6 +537,9 @@ class AppLocalizationsRu extends AppLocalizations {
 
   @override
   String get settingsLogsSubtitle => 'Просмотр логов приложения';
+
+  @override
+  String get settingsLogsShareSubject => 'Логи SnatchDash';
 
   @override
   String get settingsLogsShareFile => 'Поделиться сохранённым логом';
@@ -490,6 +590,22 @@ class AppLocalizationsRu extends AppLocalizations {
   @override
   String get settingsAboutYandexTermsLink =>
       'Условия использования Яндекс Карт';
+
+  @override
+  String get settingsAboutMapDataTitle => 'Карта на дэше';
+
+  @override
+  String get settingsAboutOsmLink => '© OpenStreetMap contributors (ODbL)';
+
+  @override
+  String get settingsAboutOpenMapTilesLink =>
+      '© OpenMapTiles — стиль и схема (CC BY 4.0)';
+
+  @override
+  String get settingsAboutMapLibreLink => 'MapLibre GL Native (BSD-2-Clause)';
+
+  @override
+  String get settingsAboutFontsLink => 'Noto Sans (SIL Open Font License 1.1)';
 
   @override
   String get settingsUpdatesTitle => 'Обновления';
@@ -571,9 +687,6 @@ class AppLocalizationsRu extends AppLocalizations {
 
   @override
   String get settingsPasswordLabel => 'Пароль';
-
-  @override
-  String get settingsClearAll => 'Очистить всё';
 
   @override
   String get currencyNameInr => 'Индийская рупия';

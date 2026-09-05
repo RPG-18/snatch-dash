@@ -72,19 +72,6 @@ abstract class OpendashDashEnginePlatform extends PlatformInterface {
       throw UnimplementedError();
   Future<void> updateCall(String? caller) => throw UnimplementedError();
 
-  /// [path] is a pre-rendered PNG (images) or the raw source file (GIF/video)
-  /// — Dart owns the picking/cropping (`DashWallpaperStore`), the native
-  /// idle renderer just displays whatever it produced. [kind] is
-  /// "IMAGE"/"GIF"/"VIDEO", [fit] is "CROP"/"FIT_HEIGHT"/"FIT_WIDTH".
-  Future<void> setWallpaper({
-    String? path,
-    String? kind,
-    String? fit,
-    double biasX = 0,
-    double biasY = 0,
-  }) =>
-      throw UnimplementedError();
-
   /// Turn-guidance chime for [VoiceMode.chime] — no Dart/Flutter equivalent
   /// to `ToneGenerator`, so this stays behind the plugin.
   Future<void> playChime() => throw UnimplementedError();

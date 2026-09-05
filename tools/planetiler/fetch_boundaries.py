@@ -2,14 +2,17 @@
 """Overpass API -> tools/planetiler/polygons/<code>.osm
 
 Для каждой enabled-страны с mode: subjects тянет через Overpass релации
-admin_level = subject_admin_level внутри страны и сохраняет для каждой полную
-рекурсивную границу (узлы + пути + релации) как отдельный .osm-файл, названный
+admin_level = subject_admin_level внутри страны и сохраняет границу каждой
+(сама релация + её way-члены + их узлы) как отдельный .osm-файл, названный
 по тегу ISO3166-2 в нижнем регистре (RU-MOW -> polygons/ru-mow.osm).
 
 Формат "osm" (не geojson/poly) выбран специально: `osmium extract` сам умеет
 собирать (мульти)полигон границы из релации в таком файле — не нужно
-самостоятельно собирать геометрию outer/inner колец на стороне Python,
-достаточно скопировать closure релации как есть.
+самостоятельно собирать геометрию outer/inner колец на стороне Python.
+
+Но скопировать closure релации как есть НЕЛЬЗЯ: в файл пишется ровно одна
+релация — граница самого субъекта, без вложенных subarea-релаций муниципальных
+округов, которые Overpass отдаёт вместе с ней. Почему — см. build_osm_xml.
 
 Тег ISO3166-2 на релации границы — не универсальная гарантия (у части
 субъектов его может не быть или он неполный); там, где тега нет, скрипт
@@ -21,6 +24,7 @@ admin_level = subject_admin_level внутри страны и сохраняе�
 from __future__ import annotations
 
 import argparse
+import os
 import json
 import logging
 import sys
@@ -46,6 +50,26 @@ RETRY_DELAY_SECONDS = 5.0
 POLITE_DELAY_SECONDS = 1.0  # пауза между запросами по отдельным релациям — не долбить публичный Overpass
 
 
+class OverpassPartialResult(RuntimeError):
+    """Overpass отдал HTTP 200 с обрезанным ответом.
+
+    При таймауте/переполнении памяти Overpass не возвращает код ошибки: он
+    отдаёт 200 и синтаксически валидный JSON, где часть `elements` просто
+    отсутствует, а в поле `remark` лежит текст вроде «runtime error: Query
+    timed out». Без этой проверки такой ответ уезжает дальше по конвейеру как
+    нормальная граница: build_osm_xml пишет .osm из неполного набора путей,
+    osmium собирает из него рваный полигон, и субъект молча теряет часть
+    территории — города вместе с building/housenumber/place.
+
+    Это профилактика, а не объяснение уже известных поломок: 6 пустых паков
+    сборки 2026-08-31 (ru-kgn, ru-mag, ru-ngr, ru-psk, ru-sak, ru-yan) испортил
+    не Overpass — ответы были целыми, сверено с локальным дампом через
+    `osmium getid -r`. Их, как и частичную потерю территории ещё в 77 паках той
+    же сборки, вызвали вложенные subarea-релации в полигоне — см. build_osm_xml.
+    Проверка на готовых паках — validate_packs.py.
+    """
+
+
 def query_overpass(query: str, url: str, timeout: int) -> dict[str, Any]:
     data = urllib.parse.urlencode({"data": query}).encode("utf-8")
     req = urllib.request.Request(url, data=data, headers={"User-Agent": "snatch-dash-planetiler/1.0"})
@@ -53,8 +77,12 @@ def query_overpass(query: str, url: str, timeout: int) -> dict[str, Any]:
     for attempt in range(1, REQUEST_RETRIES + 1):
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
-                return json.load(resp)
-        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+                result = json.load(resp)
+            remark = result.get("remark")
+            if remark:
+                raise OverpassPartialResult(remark)
+            return result
+        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OverpassPartialResult) as exc:
             last_error = exc
             log.warning("Overpass запрос неудачен (попытка %d/%d): %s", attempt, REQUEST_RETRIES, exc)
             if attempt < REQUEST_RETRIES:
@@ -91,13 +119,50 @@ out body;
     return query_overpass(query, overpass_url, timeout=200)
 
 
-def build_osm_xml(elements: list[dict[str, Any]]) -> ET.ElementTree:
-    """Overpass JSON elements -> минимальный валидный .osm (сначала nodes, потом ways, потом relations)."""
+def build_osm_xml(elements: list[dict[str, Any]], keep_relation_id: int) -> ET.ElementTree:
+    """Overpass JSON elements -> минимальный валидный .osm с ровно одной релацией `keep_relation_id`.
+
+    Ответ на `(._;>>;)` — это полное замыкание: вместе с границей субъекта в нём
+    лежат вложенные subarea-релации (муниципальные округа, admin_level=6/8) со
+    всей своей геометрией. Записать их в файл нельзя. `osmium extract -p` строит
+    площади из ВСЕХ релаций .osm-файла и сливает их в одну; перекрывающиеся
+    полигоны там прямо объявлены undefined behaviour (man osmium-extract, раздел
+    «(MULTI)POLYGON FILE FORMATS»: «The (multi)polygons must not overlap,
+    otherwise the result is undefined»). На практике вложенное кольцо становится
+    дырой, и субъект теряет территорию, покрытую муниципалитетами.
+
+    Замерено на сборке 2026-08-31 (`osmium extract --strategy=smart`, нод):
+    ru-kgn 25 234 против 4 108 905 (одиночная вложенность admin_level=6 —
+    выедает всё), ru-bel 454 882 против 4 909 417, ru-cu 525 766 против
+    2 974 182, ru-mow 6 032 919 против 6 032 919 (двойная вложенность
+    admin_level=5+8 — дыра в дыре, потерь нет). Глубина вложенности и решает,
+    заметят потерю или нет: до фикса validate_packs.py ловил только шесть
+    выеденных подчистую паков, остальные 77 проходили проверку урезанными.
+
+    Достаточно выбросить сами subarea-релации — их пути и узлы безвредны
+    (проверено: экстракт полный). Здесь они всё же не пишутся, чтобы файл
+    полигона не таскал ненужную геометрию: остаются только way-члены
+    топ-релации и их узлы.
+    """
     root = ET.Element("osm", version="0.6", generator="fetch_boundaries.py")
 
     by_type: dict[str, list[dict[str, Any]]] = {"node": [], "way": [], "relation": []}
     for el in elements:
         by_type.setdefault(el["type"], []).append(el)
+
+    top = next((r for r in by_type["relation"] if r["id"] == keep_relation_id), None)
+    if top is None:
+        raise ValueError(f"в ответе Overpass нет самой релации {keep_relation_id}")
+
+    way_refs = {m["ref"] for m in top.get("members", []) if m["type"] == "way"}
+    by_type["way"] = [w for w in by_type["way"] if w["id"] in way_refs]
+
+    node_refs = {m["ref"] for m in top.get("members", []) if m["type"] == "node"}
+    for way in by_type["way"]:
+        node_refs.update(way.get("nodes", []))
+    by_type["node"] = [n for n in by_type["node"] if n["id"] in node_refs]
+
+    by_type["relation"] = [top]
 
     for node in by_type["node"]:
         node_el = ET.SubElement(
@@ -162,10 +227,27 @@ out tags;
         log.error("Пустой ответ Overpass для релации %s (%s)", rel["id"], name)
         return 0, 1
 
-    tree = build_osm_xml(rel_elements)
+    tree = build_osm_xml(rel_elements, rel["id"])
     out_dir.mkdir(parents=True, exist_ok=True)
-    tree.write(out_path, encoding="UTF-8", xml_declaration=True)
+    write_osm_atomic(tree, out_path)
     return 1, 0
+
+
+def write_osm_atomic(tree, out_path: Path) -> None:
+    """Пишет `.osm` через временный файл рядом + `os.replace`.
+
+    Прямая запись в целевой файл вместе с правилом «пропустить, если файл уже
+    есть» консервирует обрезанный полигон: процесс, убитый на полуслове, оставляет
+    валидный по имени, но неполный `.osm`, и следующий запуск его пропускает как
+    готовый. Тот же приём уже применяется в `build_index.py`.
+    """
+    tmp_path = out_path.with_suffix(out_path.suffix + ".tmp")
+    try:
+        tree.write(tmp_path, encoding="UTF-8", xml_declaration=True)
+        os.replace(tmp_path, out_path)
+    except BaseException:
+        tmp_path.unlink(missing_ok=True)
+        raise
 
 
 def process_country(country: common.Country, overpass_url: str, out_dir: Path, force: bool) -> tuple[int, int]:
@@ -180,6 +262,7 @@ def process_country(country: common.Country, overpass_url: str, out_dir: Path, f
     skipped = 0
     total = len(relations)
     out_dir.mkdir(parents=True, exist_ok=True)
+    seen_codes: dict[str, int] = {}
     for i, rel in enumerate(relations, start=1):
         tags = rel.get("tags", {})
         iso_code = tags.get("ISO3166-2", "").strip().lower()
@@ -189,21 +272,52 @@ def process_country(country: common.Country, overpass_url: str, out_dir: Path, f
             skipped += 1
             continue
 
+        if iso_code in seen_codes:
+            # `fetch_single_code` takes the first of a duplicate set and says so;
+            # here every duplicate wrote to the same `<iso>.osm` and the last one
+            # silently won. Whichever relation that turned out to be became the
+            # pack's cut polygon — the kind of difference nobody notices until a
+            # region comes out the wrong shape.
+            log.warning(
+                "[%d/%d] Пропускаю релацию %s (%s) — код %s уже занят релацией %s; сопоставить вручную",
+                i, total, rel["id"], name, iso_code, seen_codes[iso_code],
+            )
+            skipped += 1
+            continue
+        seen_codes[iso_code] = rel["id"]
+
         out_path = out_dir / f"{iso_code}.osm"
         if out_path.exists() and not force:
             log.info("[%d/%d] %s уже существует, пропускаю (--force для перекачки)", i, total, out_path.name)
             continue
 
         log.info("[%d/%d] Тяну границу %s (%s, релация %s)...", i, total, iso_code, name, rel["id"])
-        closure = fetch_relation_closure(rel["id"], overpass_url)
+        try:
+            closure = fetch_relation_closure(rel["id"], overpass_url)
+        except OverpassPartialResult as exc:
+            # Обрезанный ответ пережил все ретраи. Пропускаем регион целиком, а не
+            # пишем неполную границу: лучше отсутствующий субъект (его видно в
+            # итоговом счётчике и в validate_packs.py), чем субъект, тихо
+            # собранный по рваному полигону.
+            log.error("[%d/%d] %s (%s): Overpass отдал неполный ответ — %s. Пропускаю, перезапустите с --force", i, total, iso_code, name, exc)
+            skipped += 1
+            continue
+        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+            # Сеть/зеркало не отдали границу после всех ретраев (обычно 504/400 на
+            # тяжёлых >>-запросах). Пропускаем субъект, а не роняем весь прогон:
+            # повторный запуск докачает пропущенных (существующие файлы
+            # пропускаются) — неполная граница на диск всё так же не пишется.
+            log.error("[%d/%d] %s (%s): Overpass недоступен — %s. Пропускаю, повторный запуск докачает", i, total, iso_code, name, exc)
+            skipped += 1
+            continue
         elements = closure.get("elements", [])
         if not elements:
             log.warning("Пустой ответ Overpass для релации %s (%s), пропускаю", rel["id"], name)
             skipped += 1
             continue
 
-        tree = build_osm_xml(elements)
-        tree.write(out_path, encoding="UTF-8", xml_declaration=True)
+        tree = build_osm_xml(elements, rel["id"])
+        write_osm_atomic(tree, out_path)
         written += 1
         time.sleep(POLITE_DELAY_SECONDS)
 
@@ -228,7 +342,10 @@ def main() -> int:
     if args.code:
         written, skipped = fetch_single_code(args.code, args.overpass_url, args.out_dir, args.force)
         log.info("Готово: записано %d границ, пропущено %d.", written, skipped)
-        return 0
+        # Ненулевой код при пропусках: `--code` — это ровно та команда, которую
+        # `validate_packs.py` печатает в инструкции по восстановлению, и обёртка
+        # вокруг неё не должна считать «границу не нашёл» успехом.
+        return 1 if skipped else 0
 
     countries = [c for c in common.filter_by_iso(common.enabled_countries(args.regions), args.only) if c.mode == "subjects"]
     if not countries:
@@ -242,7 +359,7 @@ def main() -> int:
         total_skipped += skipped
 
     log.info("Готово: записано %d границ, пропущено %d.", total_written, total_skipped)
-    return 0
+    return 1 if total_skipped else 0
 
 
 if __name__ == "__main__":

@@ -37,6 +37,14 @@
 
 ## Заметки
 
+- **Пункт назначения попадает в приложение только отсюда и из сохранённых
+  мест.** Шара из Google Maps (`ACTION_SEND` с `text/plain`, `geo:`,
+  `maps.google.com`/`goo.gl`), которая была в оригинальном open-dash, из порта
+  убрана целиком — вместе с интент-фильтрами в манифесте, `LocationParser` и
+  `RouteController.setDestinationFromShareText`. Это не «не доделано»: любой
+  внешний вход открывал бы навигацию мимо [Главной](./home_screen.md), то есть
+  мимо проверки на скачанные офлайн-карты (см.
+  [оффлайн-карты](./offline_maps_screen.md), «Связь с навигацией»).
 - Живой список подсказок идёт через HTTP Yandex Geosuggest API
   (`api/openapi/yandex-suggest-api.yaml`, реализация — [`lib/nav/suggest_api.dart`](../lib/nav/suggest_api.dart)),
   а не через MapKit `SearchManager`. Ключ передаётся через

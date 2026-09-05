@@ -10,6 +10,7 @@ import '../nav/route.dart' as nav;
 import '../nav/router.dart' as nav;
 import '../state/route_controller.dart';
 import '../util/current_position.dart';
+import '../util/format_distance.dart';
 
 const _routesCount = 3;
 
@@ -106,12 +107,6 @@ class _RoutePreviewScreenState extends ConsumerState<RoutePreviewScreen> {
     return l10n.unitMin(minutes.toString());
   }
 
-  String _formatDistance(AppLocalizations l10n, double meters) {
-    return meters >= 1000
-        ? l10n.unitKm((meters / 1000).toStringAsFixed(1))
-        : l10n.unitM(meters.round().toString());
-  }
-
   String _errorText(AppLocalizations l10n) {
     return switch (_error!) {
       _LoadError.noGpsFix => l10n.routeErrorNoGpsFix,
@@ -156,7 +151,7 @@ class _RoutePreviewScreenState extends ConsumerState<RoutePreviewScreen> {
                     _RouteCard(
                       selected: i == _selectedIndex,
                       duration: _formatDuration(l10n, _routes[i].totalSeconds),
-                      distance: _formatDistance(l10n, _routes[i].totalMeters),
+                      distance: formatDistance(l10n, _routes[i].totalMeters),
                       onTap: () => _selectRoute(i),
                     ),
                   ],

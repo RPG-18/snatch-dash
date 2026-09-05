@@ -4,6 +4,19 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../l10n/app_localizations.dart';
 import '../state/garage_controller.dart';
 
+/// Icon keys a maintenance item can carry, in the order the picker offers
+/// them. Persisted as the key, not the glyph — `iconKey` is a database column
+/// (`GarageScreen.kt`'s `iconFor` used the same set). The first entry is the
+/// fallback for a row whose key predates this list.
+const _serviceIcons = <String, IconData>{
+  'wrench': Icons.build,
+  'chain': Icons.link,
+  'drop': Icons.opacity,
+  'gauge': Icons.speed,
+  'thermo': Icons.thermostat,
+  'fuel': Icons.local_gas_station,
+};
+
 /// Odometer, fuel fill-ups, maintenance intervals/history. Ports
 /// `GarageViewModel` + `GarageScreen.kt` (fuel + maintenance tabs; export
 /// lands in Phase 6, real persistence in Phase 4).
@@ -123,31 +136,49 @@ class _GarageScreenState extends ConsumerState<GarageScreen> with SingleTickerPr
     final l10n = AppLocalizations.of(context)!;
     final name = TextEditingController();
     final interval = TextEditingController(text: '1000');
+    // The icon ends up on the maintenance list next to the name, so the rider
+    // picks it here instead of every item silently becoming a wrench.
+    var iconKey = _serviceIcons.keys.first;
     showDialog<void>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: Text(l10n.garageAddIntervalTitle),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(controller: name, decoration: InputDecoration(labelText: l10n.garageNameLabel)),
-            TextField(controller: interval, keyboardType: TextInputType.number, decoration: InputDecoration(labelText: l10n.garageIntervalKmLabel)),
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: Text(l10n.garageAddIntervalTitle),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(controller: name, decoration: InputDecoration(labelText: l10n.garageNameLabel)),
+              TextField(controller: interval, keyboardType: TextInputType.number, decoration: InputDecoration(labelText: l10n.garageIntervalKmLabel)),
+              const SizedBox(height: 16),
+              Wrap(
+                spacing: 8,
+                children: [
+                  for (final entry in _serviceIcons.entries)
+                    ChoiceChip(
+                      label: Icon(entry.value, size: 20),
+                      showCheckmark: false,
+                      selected: entry.key == iconKey,
+                      onSelected: (_) => setDialogState(() => iconKey = entry.key),
+                    ),
+                ],
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(context), child: Text(l10n.actionCancel)),
+            TextButton(
+              onPressed: () {
+                final n = name.text.trim();
+                final i = int.tryParse(interval.text);
+                if (n.isNotEmpty && i != null) {
+                  ref.read(garageControllerProvider.notifier).addService(n, iconKey, i);
+                }
+                Navigator.pop(context);
+              },
+              child: Text(l10n.actionSave),
+            ),
           ],
         ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: Text(l10n.actionCancel)),
-          TextButton(
-            onPressed: () {
-              final n = name.text.trim();
-              final i = int.tryParse(interval.text);
-              if (n.isNotEmpty && i != null) {
-                ref.read(garageControllerProvider.notifier).addService(n, 'wrench', i);
-              }
-              Navigator.pop(context);
-            },
-            child: Text(l10n.actionSave),
-          ),
-        ],
       ),
     );
   }
@@ -235,14 +266,7 @@ class _MaintenanceTab extends ConsumerWidget {
   }
 
   /// Ported from `GarageScreen.kt`'s `iconFor(iconKey)`.
-  IconData _iconForKey(String iconKey) => switch (iconKey) {
-        'chain' => Icons.link,
-        'drop' => Icons.opacity,
-        'gauge' => Icons.speed,
-        'thermo' => Icons.thermostat,
-        'fuel' => Icons.local_gas_station,
-        _ => Icons.build,
-      };
+  IconData _iconForKey(String iconKey) => _serviceIcons[iconKey] ?? _serviceIcons.values.first;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {

@@ -62,11 +62,21 @@ class DashKeepAliveService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_STOP -> { stopSelf(); return START_NOT_STICKY }
-            else        -> startForegroundLocks()
+            ACTION_START -> startForegroundLocks()
+            // A null intent means the OS restarted us after killing the process
+            // (START_STICKY re-delivers no intent). The streaming pipeline lives
+            // in [DashEngineController] and is driven from Dart — it did NOT
+            // come back with us, so holding the wake and WiFi locks here would
+            // drain the battery behind an ongoing "streaming to dash"
+            // notification with nothing behind it. Dart restarts this service
+            // itself when it reconnects.
+            else -> { stopSelf(); return START_NOT_STICKY }
         }
-        // START_STICKY: if the OS kills us under memory pressure, restart so the
-        // ride keeps streaming.
-        return START_STICKY
+        // NOT sticky, for the same reason: a kill under memory pressure takes the
+        // Flutter engine and the streaming pipeline with it, so a service the OS
+        // brings back alone has nothing to keep alive. It used to be START_STICKY,
+        // which only ever produced the zombie above.
+        return START_NOT_STICKY
     }
 
     private fun startForegroundLocks() {

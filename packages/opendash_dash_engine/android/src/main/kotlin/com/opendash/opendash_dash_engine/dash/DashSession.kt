@@ -73,13 +73,40 @@ class DashSession(private val scope: CoroutineScope) {
 
     @Volatile var destinationName: String = "OpenDash"
 
-    private var sessionJob: Job? = null
-    private var rxJob: Job? = null
-    private var projHbJob: Job? = null
-    private var routeCardJob: Job? = null
-    private var heartbeatJob: Job? = null
-    private var navInfoJob: Job? = null
-    private var mediaInfoJob: Job? = null
+    /**
+     * Which session [runSession] — and everything it launched — is still allowed to speak for.
+     * Bumped by every [connect] and [disconnect].
+     *
+     * A `runSession` cannot be stopped at an arbitrary point: its auth wait is a `delay(100)`
+     * loop that runs for up to [AUTH_TIMEOUT], so a superseded one stays alive and can reach
+     * [fail] long after a newer session has taken over. Without this token that stale [fail]
+     * closes the LIVE session's socket and cancels its jobs — which is exactly what the
+     * bounded auth retry in `DashEngineController` produces: a retry 1.5s after ERROR, against
+     * a 15s timeout still counting down on the session it replaced.
+     *
+     * Checked by both teardown paths, [fail] and [endLink]. Socket identity — which [endLink]
+     * also checks — is not a substitute: it protects the [socket] field alone, while both
+     * methods additionally cancel the shared job fields, drive the state flow and fire
+     * [onError]. It also cannot speak for the paths that have no socket to compare against, such
+     * as a failed bind.
+     */
+    private val sessionSeq = AtomicInteger(0)
+
+    // All of these are written on one thread and cancelled from another with no
+    // happens-before edge between them — [rxJob]/[heartbeatJob]/[ackCounterJob] are written by
+    // [runSession] on Dispatchers.IO and cancelled by [disconnect] on Main; the remaining four
+    // are written by [startStreaming] on Main and cancelled by [endLink] on the RX coroutine's
+    // IO thread. Plain fields let that cancel read a stale null and simply not fire, and two of
+    // these loops do not check the session state at all ([launchStatusHeartbeat],
+    // [launchAckCounterLog]), so an uncancelled one keeps sending at 1 Hz until the whole scope
+    // goes away at plugin detach.
+    @Volatile private var sessionJob: Job? = null
+    @Volatile private var rxJob: Job? = null
+    @Volatile private var projHbJob: Job? = null
+    @Volatile private var routeCardJob: Job? = null
+    @Volatile private var heartbeatJob: Job? = null
+    @Volatile private var navInfoJob: Job? = null
+    @Volatile private var mediaInfoJob: Job? = null
 
     /**
      * Counts the dash's own "I decoded a frame" notifies (09 06 55 IDR / 09 04 55 P-frame,
@@ -101,7 +128,7 @@ class DashSession(private val scope: CoroutineScope) {
     private val pFrameAckCount = AtomicInteger(0)
     private var lastLoggedIdrAcks = 0
     private var lastLoggedPFrameAcks = 0
-    private var ackCounterJob: Job? = null
+    @Volatile private var ackCounterJob: Job? = null
     // One-shot per session — pairs with DashEngineController's own "first video frame sent"
     // line; the gap between the two is this session's dash-side decode latency.
     @Volatile private var loggedFirstIdrAck = false
@@ -166,7 +193,16 @@ class DashSession(private val scope: CoroutineScope) {
     fun connect(ssid: String, network: android.net.Network? = null) {
         if (_state.value != DashState.IDLE && _state.value != DashState.ERROR) return
         DebugLog.i(TAG) { "connect() — ssid='$ssid' network=$network" }
-        sessionJob = scope.launch(Dispatchers.IO) { runSession(ssid, network) }
+        // ERROR is a legal state to reconnect from, and `fail()` can reach it from the RX
+        // coroutine while `runSession` is still sitting in its auth wait — so the previous
+        // session is not necessarily finished just because the state says we may start a new
+        // one. Cancel it, and hand the new one a token so that whatever the old one still does
+        // between here and its next suspension point cannot tear this one down (see
+        // [sessionSeq]). Cancel rather than cancelAndJoin: this is not a suspend function, and
+        // the token makes the leftover harmless either way.
+        sessionJob?.cancel()
+        val seq = sessionSeq.incrementAndGet()
+        sessionJob = scope.launch(Dispatchers.IO) { runSession(seq, ssid, network) }
     }
 
     fun startStreaming() {
@@ -207,6 +243,11 @@ class DashSession(private val scope: CoroutineScope) {
     fun disconnect() {
         // Cancel the session coroutine FIRST so it can't race past auth and flip state to
         // READY after we tear down (which would re-trigger streaming on a dead socket).
+        // Bumping the token along with it closes the other half of the same window: cancel is
+        // cooperative, so that coroutine still runs up to its next suspension point, and a
+        // [fail] from there would put the session back into ERROR after this method has
+        // deliberately left it IDLE.
+        sessionSeq.incrementAndGet()
         sessionJob?.cancel(); sessionJob = null
         rxJob?.cancel(); projHbJob?.cancel(); routeCardJob?.cancel(); heartbeatJob?.cancel()
         navInfoJob?.cancel(); mediaInfoJob?.cancel(); ackCounterJob?.cancel()
@@ -223,13 +264,13 @@ class DashSession(private val scope: CoroutineScope) {
 
     // ── Internal ──────────────────────────────────────────────────────────
 
-    private suspend fun runSession(ssid: String, network: android.net.Network? = null) {
+    private suspend fun runSession(seq: Int, ssid: String, network: android.net.Network? = null) {
         try {
             setState(DashState.CONNECTING)
             val sock = try {
                 DashSocket(network).also { socket = it }
             } catch (e: java.net.BindException) {
-                fail("Port ${DashSocket.RX_PORT}/${DashSocket.CTRL_PORT} in use (${e.message})")
+                fail(seq, "Port ${DashSocket.RX_PORT}/${DashSocket.CTRL_PORT} in use (${e.message})")
                 return
             }
 
@@ -241,7 +282,7 @@ class DashSession(private val scope: CoroutineScope) {
             loggedFirstIdrAck = false
 
             // RX loop MUST be running before the burst (early pubkey + no ICMP).
-            launchReceiveLoop(sock)
+            launchReceiveLoop(seq, sock)
             // 1 Hz status heartbeat throughout the session.
             launchStatusHeartbeat(sock)
             // Periodic "is the dash actually decoding video" sanity check (see the field
@@ -261,7 +302,7 @@ class DashSession(private val scope: CoroutineScope) {
             while (!authConfirmed && System.currentTimeMillis() < deadline) delay(100)
 
             if (!authConfirmed) {
-                fail("Auth timed out — no 07 01 01 from dash. Check SSID matches '$ssid'.")
+                fail(seq, "Auth timed out — no 07 01 01 from dash. Check SSID matches '$ssid'.")
                 return
             }
             DebugLog.i(TAG) { "Authenticated ✓" }
@@ -285,9 +326,16 @@ class DashSession(private val scope: CoroutineScope) {
             }
             setState(DashState.READY)
 
+        } catch (e: CancellationException) {
+            // A cancelled session is a deliberate teardown, not a failure. CancellationException
+            // is an ordinary Exception in Kotlin, so the catch below used to swallow it and call
+            // fail() — which put the session back into ERROR, and fired onError, moments after
+            // disconnect() had settled it at IDLE. The rider saw "CancellationException: …" on
+            // the Dash screen after a clean, deliberate disconnect.
+            throw e
         } catch (e: Exception) {
             DebugLog.e(TAG, { "Session error" }, e)
-            fail("${e.javaClass.simpleName}: ${e.message}")
+            fail(seq, "${e.javaClass.simpleName}: ${e.message}")
         }
     }
 
@@ -311,8 +359,13 @@ class DashSession(private val scope: CoroutineScope) {
         DebugLog.i(TAG) { "Nav mode kick sent" }
     }
 
-    private fun launchReceiveLoop(sock: DashSocket) {
+    private fun launchReceiveLoop(seq: Int, sock: DashSocket) {
         var lastRxAtMs = System.currentTimeMillis()
+        // Like every other launch* here — this was the one that only overwrote the field. A
+        // previous RX loop is not a child of [sessionJob] (it is launched on the plugin scope),
+        // so nothing else stops it, and it would sit in `receive()` on the old socket until
+        // that socket errored — then run [endLink] against whatever session is current by then.
+        rxJob?.cancel()
         rxJob = scope.launch(Dispatchers.IO) {
             while (isActive) {
                 val pkt = try {
@@ -328,7 +381,7 @@ class DashSession(private val scope: CoroutineScope) {
                     // alone would leave the session in STREAMING with a dead socket, and the
                     // state guard in connect() would then refuse every reconnect until the
                     // rider disconnected by hand.
-                    endLink(sock)
+                    endLink(seq, sock)
                     break
                 }
                 if (pkt == null) {
@@ -343,7 +396,7 @@ class DashSession(private val scope: CoroutineScope) {
                         DebugLog.w(TAG) { "RX loop stopped — no data from dash for over ${RX_IDLE_TIMEOUT_MS}ms" }
                         val silentS = (System.currentTimeMillis() - lastRxAtMs) / 1000
                         RideDiagnostics.log("error", "RX watchdog: dash silent ${silentS}s → link lost")
-                        endLink(sock)
+                        endLink(seq, sock)
                         break
                     }
                     continue
@@ -360,7 +413,7 @@ class DashSession(private val scope: CoroutineScope) {
                     throw e
                 } catch (e: Exception) {
                     DebugLog.e(TAG, { "Error handling incoming packet" }, e)
-                    fail("${e.javaClass.simpleName}: ${e.message}")
+                    fail(seq, "${e.javaClass.simpleName}: ${e.message}")
                     break
                 }
             }
@@ -382,7 +435,17 @@ class DashSession(private val scope: CoroutineScope) {
      * [rxJob] is deliberately not cancelled here: the only callers are inside it,
      * and they break out of their own loop on return.
      */
-    private fun endLink(sock: DashSocket) {
+    private fun endLink(seq: Int, sock: DashSocket) {
+        // Unconditional, and first: [sock] belongs to this RX loop whether or not the session
+        // it served is still the current one, and nothing else will close it.
+        runCatching { sock.close() }
+        // Everything past this point is state the LIVE session owns — the periodic senders, the
+        // socket field, the state flow, the error callback — so it needs the same token guard as
+        // [fail]. Socket identity alone (the check further down) covers only one of the four.
+        if (seq != sessionSeq.get()) {
+            DebugLog.w(TAG) { "RX loop of superseded session #$seq ended (now #${sessionSeq.get()}) — not reporting" }
+            return
+        }
         // Read before the teardown below sets IDLE itself: a deliberate disconnect()
         // closes the socket out from under the blocking receive(), so an exception
         // there is the EXPECTED way this loop ends and must not republish state with
@@ -391,7 +454,6 @@ class DashSession(private val scope: CoroutineScope) {
         val deliberate = _state.value == DashState.IDLE
         heartbeatJob?.cancel(); projHbJob?.cancel(); routeCardJob?.cancel()
         navInfoJob?.cancel(); mediaInfoJob?.cancel(); ackCounterJob?.cancel()
-        runCatching { sock.close() }
         // Only if it is still ours: a reconnect that already replaced the field must
         // not have its live socket nulled out by the previous session's loop.
         if (socket === sock) socket = null
@@ -611,7 +673,21 @@ class DashSession(private val scope: CoroutineScope) {
         }
     }
 
-    private fun fail(msg: String) {
+    /**
+     * Ends the session [seq] belongs to with an error — unless it is not the current one any
+     * more, in which case this call is the residue of a session that has already been replaced
+     * and must not touch anything.
+     *
+     * Every line below acts on shared state that the *live* session owns: the job fields, the
+     * socket, the state flow, the error callback. Running them for a superseded session is the
+     * bug this guard exists for — see [sessionSeq] for the retry timing that makes it routine
+     * rather than theoretical.
+     */
+    private fun fail(seq: Int, msg: String) {
+        if (seq != sessionSeq.get()) {
+            DebugLog.w(TAG) { "ignoring fail from superseded session #$seq (now #${sessionSeq.get()}): $msg" }
+            return
+        }
         DebugLog.e(TAG, { "ERROR — $msg" })
         RideDiagnostics.log("error", "session fail: $msg")
         rxJob?.cancel(); heartbeatJob?.cancel(); mediaInfoJob?.cancel(); ackCounterJob?.cancel()

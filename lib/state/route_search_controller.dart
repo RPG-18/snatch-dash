@@ -64,6 +64,11 @@ class RouteSearchController extends Notifier<RouteSearchState> {
   Timer? _debounceTimer;
   int _requestId = 0;
 
+  /// Same idea as [_requestId], for [resolve]: two overlapping resolves (a quick
+  /// second tap on a suggestion) both clear `resolving` in their `finally`, so
+  /// whichever finishes first hides the spinner while the other is still running.
+  int _resolveId = 0;
+
   @override
   RouteSearchState build() {
     ref.onDispose(() {
@@ -117,6 +122,7 @@ class RouteSearchController extends Notifier<RouteSearchState> {
   /// name can be several real places (e.g. a chain store), so the screen is
   /// expected to let the rider disambiguate when there's more than one.
   Future<List<PlaceResult>> resolve(SuggestResult item) async {
+    final resolveId = ++_resolveId;
     state = state.copyWith(resolving: true);
     try {
       return await PlaceSearch.search(item.resolveQuery, near: state.origin);
@@ -124,7 +130,13 @@ class RouteSearchController extends Notifier<RouteSearchState> {
       talker.error('[RouteSearchController] resolve "${item.resolveQuery}" threw', e, st);
       return const [];
     } finally {
-      state = state.copyWith(resolving: false);
+      // Only the newest resolve owns the flag. `ref.mounted` for the usual
+      // reason — this runs after an await, and the provider can be gone by then,
+      // which would make the `finally` throw `UnmountedRefException` over
+      // whatever the caller was actually returning.
+      if (resolveId == _resolveId && ref.mounted) {
+        state = state.copyWith(resolving: false);
+      }
     }
   }
 }

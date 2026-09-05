@@ -56,6 +56,16 @@ const _prefsKeyInstalledNightlyTag = 'installed_nightly_tag';
 /// and `apk_downloader.dart` for the pieces this wires together, and
 /// `settings_screen.dart` / `app_shell.dart` for where it's driven from.
 class AppUpdateController extends Notifier<AppUpdateState> {
+  /// Guards [downloadAndInstall] against being entered twice.
+  ///
+  /// The status only becomes `downloading` — which is what swaps the button out
+  /// of the UI — *after* the `canInstallPackages()` channel round trip, so until
+  /// then the button is still live. And there are three call sites: the Settings
+  /// button, the launch dialog (`app_shell.dart`) and the resume re-drive after
+  /// granting install permission. Two overlapping runs share one destination
+  /// directory, and the loser hands a half-written APK to the system installer.
+  bool _installing = false;
+
   @override
   AppUpdateState build() => const AppUpdateState();
 
@@ -117,32 +127,38 @@ class AppUpdateController extends Notifier<AppUpdateState> {
   Future<void> downloadAndInstall() async {
     final release = state.release;
     if (release == null) return;
+    if (_installing) return; // see the field
+    _installing = true;
 
-    if (!await ApkInstaller.canInstallPackages()) {
-      state = state.copyWith(status: AppUpdateStatus.needsInstallPermission);
-      return;
-    }
-
-    state = state.copyWith(status: AppUpdateStatus.downloading, downloadProgress: 0);
     try {
-      final file = await downloadApk(
-        release.apkUrl,
-        release.apkName,
-        onProgress: (received, total) {
-          if (!ref.mounted) return;
-          state = state.copyWith(downloadProgress: total != null ? received / total : null);
-        },
-      );
-      if (!ref.mounted) return;
-      if (ref.read(updateChannelSettingsProvider) == UpdateChannel.nightly) {
-        await _setInstalledNightlyTag(release.tag);
+      if (!await ApkInstaller.canInstallPackages()) {
+        state = state.copyWith(status: AppUpdateStatus.needsInstallPermission);
+        return;
       }
-      await ApkInstaller.installApk(file.path);
-      if (!ref.mounted) return;
-      state = state.copyWith(status: AppUpdateStatus.available); // installer took over; back to "available" if cancelled
-    } catch (e) {
-      if (!ref.mounted) return;
-      state = AppUpdateState(status: AppUpdateStatus.error, release: release, errorMessage: '$e');
+
+      state = state.copyWith(status: AppUpdateStatus.downloading, downloadProgress: 0);
+      try {
+        final file = await downloadApk(
+          release.apkUrl,
+          release.apkName,
+          onProgress: (received, total) {
+            if (!ref.mounted) return;
+            state = state.copyWith(downloadProgress: total != null ? received / total : null);
+          },
+        );
+        if (!ref.mounted) return;
+        if (ref.read(updateChannelSettingsProvider) == UpdateChannel.nightly) {
+          await _setInstalledNightlyTag(release.tag);
+        }
+        await ApkInstaller.installApk(file.path);
+        if (!ref.mounted) return;
+        state = state.copyWith(status: AppUpdateStatus.available); // installer took over; back to "available" if cancelled
+      } catch (e) {
+        if (!ref.mounted) return;
+        state = AppUpdateState(status: AppUpdateStatus.error, release: release, errorMessage: '$e');
+      }
+    } finally {
+      _installing = false;
     }
   }
 

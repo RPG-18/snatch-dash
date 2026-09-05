@@ -17,12 +17,25 @@ Future<File> downloadApk(
   void Function(int received, int? total)? onProgress,
 }) async {
   final dir = Directory('${(await getTemporaryDirectory()).path}/updates');
-  if (await dir.exists()) {
-    await dir.delete(recursive: true);
-  }
   await dir.create(recursive: true);
 
   final file = File('${dir.path}/$fileName');
+  // Sweep the old APKs one by one instead of deleting the directory wholesale: a
+  // recursive delete also unlinked the file *this* call is about to stream into
+  // if one was already there, and on Linux a writer's descriptor stays valid on
+  // an unlinked inode — the download then runs to 100% while `file.path`, which
+  // is what gets handed to the package installer, points at nothing.
+  //
+  // Listed to completion before deleting anything: mutating a directory while
+  // its own readdir is still open is unspecified and can skip entries.
+  //
+  // This is not concurrency protection — a second download of a *different*
+  // release would still sweep this one's file away. `AppUpdateController` is what
+  // keeps two runs from overlapping at all.
+  for (final entry in await dir.list().toList()) {
+    if (entry.path == file.path) continue;
+    await entry.delete(recursive: true);
+  }
   final request = http.Request('GET', Uri.parse(url));
   final response = await http.Client().send(request);
   if (response.statusCode != 200) {

@@ -212,7 +212,14 @@ class DashWifiManager(
         }
         cellularCallback = cb
         try {
-            cm.requestNetwork(request, cb)
+            // With the main looper's Handler, like the WiFi request below — the two-argument
+            // overload delivers on ConnectivityManager's own internal thread instead, and this
+            // class keeps all of its state main-thread-confined (which is why none of its
+            // fields need @Volatile). Concretely: [releaseCellularDefault] unregisters and then
+            // clears the process binding, and an onAvailable already in flight on that other
+            // thread could re-bind afterwards, leaving the process pinned to a network whose
+            // request we have just given up — including after the plugin detaches.
+            cm.requestNetwork(request, cb, Handler(Looper.getMainLooper()))
         } catch (e: Exception) {
             DebugLog.w(TAG) { "Cellular requestNetwork threw: ${e.message}" }
         }

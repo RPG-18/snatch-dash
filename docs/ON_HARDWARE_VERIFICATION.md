@@ -54,9 +54,11 @@ Dart (Phase 2), and the native side only receives a 1 Hz `setNavState` push
 from `NavLoop` instead of computing nav math itself like the original
 `DashViewModel.tick` did in-process.
 
-- [ ] Route line, destination pin, and ETA pill render correctly on the dash
-      during a real route (`MapRenderer` still gets `routePoints`/`remainingM`
-      from `DashEngineController.setNavState`).
+- [ ] Route line and destination pin render correctly on the dash during a
+      real route (`OverlayRenderer` still gets `routePoints`/`remainingM` from
+      `DashEngineController.setNavState`). There is no ETA pill on the frame:
+      it was never wired to a data source and was removed — remaining distance
+      lives on the dash firmware's own widget.
 - [ ] Distance-to-turn and remaining-distance numbers on the dash's own
       turn-by-turn widget look correct at riding speed — confirms the 1 Hz
       Dart→native cadence (`NavLoop`'s `Timer.periodic`) isn't introducing

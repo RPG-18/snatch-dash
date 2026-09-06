@@ -52,6 +52,7 @@ object CrashGuard {
             appendLine("thread=${thread.name}")
             appendLine("exception=${error.javaClass.name}: ${error.message}")
             appendLine("apk=${BuildId.sha12(context)}")
+            appendLine("commit=${BuildId.gitSha}")
             appendLine("app=${BuildId.versionLabel(context)}")
             appendLine("device=${Build.MANUFACTURER} ${Build.MODEL}")
             appendLine("android=${Build.VERSION.RELEASE} (sdk ${Build.VERSION.SDK_INT})")

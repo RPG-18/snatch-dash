@@ -112,7 +112,7 @@ object ExitInfoCollector {
             appendLine("reason=${reasonName(info.reason)} — ${info.description ?: ""}")
             appendLine("importance=${info.importance} status=${info.status}")
             appendLine("apk=$crashedBuild")
-            appendLine("collected-by=${BuildId.sha12(context)}")
+            appendLine("collected-by=${BuildId.sha12(context)} @${BuildId.gitSha}")
             appendLine("app=${BuildId.versionLabel(context)}")
             appendLine("device=${Build.MANUFACTURER} ${Build.MODEL}")
             appendLine("android=${Build.VERSION.RELEASE} (sdk ${Build.VERSION.SDK_INT})")

@@ -728,6 +728,17 @@ class DashEngineController(
         var framesEncoded = 0
         var idrFramesEncoded = 0
         var rtpPacketsSent = 0
+        // Bytes, not just packets. The packet count alone cannot answer the only
+        // question that matters about this stream — are we inside the dash's own
+        // ~200 kbps profile (see DashEncoder.BITRATE) — because a packet is
+        // anywhere from a few bytes to 1392. On 2026-09-06 that left the measured
+        // rate somewhere between 168 and 470 kbps, which is the difference between
+        // "fine" and "twice the dash's profile", and nothing in the log could
+        // narrow it.
+        var rtpBytesSent = 0L
+        // Which profile the encoder is currently on, so it is poked only on a
+        // transition rather than every frame.
+        var idleBitrate = false
         // One-shot timing, paired with DashSession's own "dash DECODED first IDR" line — the
         // gap between the two is exactly the dash's own decode latency for this session. Ported
         // idea from OpenMotoDash/NorthStar's `loggedFirstFrame` (see
@@ -744,7 +755,11 @@ class DashEngineController(
         // more correct RTP practice regardless, just not proven to fix anything real here.
         var videoPtsMs = 0L
 
-        val packetizer = RtpPacketizer { rtpPkt -> session.sendRtp(rtpPkt); rtpPacketsSent++ }
+        val packetizer = RtpPacketizer { rtpPkt ->
+            session.sendRtp(rtpPkt)
+            rtpPacketsSent++
+            rtpBytesSent += rtpPkt.size
+        }
         // endOfAU comes from NalProcessor, which knows which NAL closes the access unit —
         // this used to be hardcoded `true`, marking every packet. Harmless while each AU
         // was exactly one NAL, but wrong the moment an IDR goes out as separate
@@ -837,7 +852,7 @@ class DashEngineController(
                 var lastEncoderLogAt = System.currentTimeMillis()
                 var lastRenderLogAt = lastEncoderLogAt
                 var lastFrameSentAt = 0L
-                var loggedFrames = 0; var loggedIdr = 0; var loggedRtp = 0
+                var loggedFrames = 0; var loggedIdr = 0; var loggedRtp = 0; var loggedBytes = 0L
                 // Declared outside the try/catch and assigned fresh once per iteration, so the
                 // trailing delay() below can reuse the SAME value the PTS advance used — both must
                 // agree on "how long is this frame", or the RTP timeline and the actual send
@@ -872,6 +887,18 @@ class DashEngineController(
                         // Sending it anyway put garbage on the dash for as long as the
                         // first, most expensive snapshot took.
                         if (bmp != null && enc != null && haveFrame) {
+                            // Match the encoder's target to the dash's own two profiles,
+                            // on the transition only. [camMoving] is already what picks
+                            // the frame rate, so reusing it keeps one notion of "the map
+                            // is going somewhere" instead of introducing a second that
+                            // could disagree with the first.
+                            if (camMoving && idleBitrate) {
+                                enc.requestBitrate(DashEncoder.BITRATE)
+                                idleBitrate = false
+                            } else if (!camMoving && !idleBitrate) {
+                                enc.requestBitrate(DashEncoder.BITRATE_IDLE)
+                                idleBitrate = true
+                            }
                             val encodeStart = System.currentTimeMillis()
                             enc.renderFrame { canvas -> canvas.drawBitmap(bmp, 0f, 0f, null) }
                             // Advance the presentation clock by THIS frame's interval BEFORE
@@ -918,7 +945,9 @@ class DashEngineController(
                             val dFrames = framesEncoded - loggedFrames
                             val dIdr = idrFramesEncoded - loggedIdr
                             val dRtp = rtpPacketsSent - loggedRtp
+                            val dBytes = rtpBytesSent - loggedBytes
                             loggedFrames = framesEncoded; loggedIdr = idrFramesEncoded; loggedRtp = rtpPacketsSent
+                            loggedBytes = rtpBytesSent
                             lastEncoderLogAt = now
                             val intervalS = ENCODER_LOG_INTERVAL_MS / 1_000
                             val thermal = thermalLabel()
@@ -946,7 +975,10 @@ class DashEngineController(
                             } else {
                                 RideDiagnostics.log(
                                     "stream",
-                                    "frames=$dFrames (idr=$dIdr) rtp=$dRtp thermal=$thermal in the last ${intervalS}s",
+                                    "frames=$dFrames (idr=$dIdr) rtp=$dRtp ${dBytes / 1024}KiB " +
+                                        "${dBytes * 8 / 1000 / intervalS}kbps " +
+                                        "bitrate=${if (idleBitrate) "idle" else "moving"} " +
+                                        "thermal=$thermal in the last ${intervalS}s",
                                 )
                             }
                         }

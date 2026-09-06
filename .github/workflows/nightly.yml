@@ -68,12 +68,23 @@ jobs:
         id: vars
         run: |
           echo "date=$(date -u +%Y%m%d)" >> "$GITHUB_OUTPUT"
-          echo "short_sha=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+          # --short=9 to match the length stamped into the APK
+          # (opendash_dash_engine/android/build.gradle.kts, GIT_SHA): the file
+          # name and the ride log's `@sha` are matched by eye, and two different
+          # abbreviations of the same commit do not look like the same commit.
+          echo "short_sha=$(git rev-parse --short=9 HEAD)" >> "$GITHUB_OUTPUT"
 
   build:
     needs: check
     if: needs.check.outputs.should_build == 'true'
     runs-on: ubuntu-latest
+    env:
+      # Stamped into the APK and printed in every ride log — see GIT_SHA in
+      # packages/opendash_dash_engine/android/build.gradle.kts. Passed in rather
+      # than left to `git rev-parse` inside the build: this checkout is shallow,
+      # and on a pull_request it would be an ephemeral merge commit that exists
+      # in no history anyone can check out.
+      SNATCH_BUILD_SHA: ${{ github.sha }}
     steps:
       - uses: actions/checkout@v4
 

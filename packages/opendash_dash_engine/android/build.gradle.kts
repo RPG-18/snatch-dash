@@ -53,10 +53,26 @@ fun gitOrNull(vararg args: String): String? = runCatching {
     }
 }.getOrNull()
 
+// CI passes the authoritative SHA instead of letting us ask git, because asking
+// git there answers the wrong question in two ways. On a `pull_request` checkout
+// `HEAD` is an ephemeral merge commit that exists in nobody's history, so the
+// stamp would point at a commit you cannot check out. And a container or shallow
+// checkout can leave git refusing to answer at all ("detected dubious
+// ownership"), which quietly degrades to "unknown" for exactly the builds that
+// get handed to someone else. The workflows set SNATCH_BUILD_SHA; GITHUB_SHA is
+// the fallback for a CI job that forgot to.
+//
+// Nothing here appends `+dirty`: a CI checkout is clean by construction, and a
+// dirty flag derived from a workspace we did not create would be noise.
+val ciSha: String? = sequenceOf("SNATCH_BUILD_SHA", "GITHUB_SHA")
+    .mapNotNull { System.getenv(it)?.trim() }
+    .firstOrNull { it.isNotEmpty() }
+    ?.take(9)
+
 // "unknown" rather than a failed build: this module is also consumable from a
 // pub cache checkout with no .git at all, and provenance is diagnostics, not a
 // build requirement.
-val gitLabel: String = gitOrNull("rev-parse", "--short=9", "HEAD")?.let { sha ->
+val gitLabel: String = ciSha ?: gitOrNull("rev-parse", "--short=9", "HEAD")?.let { sha ->
     if (gitOrNull("status", "--porcelain", "--untracked-files=no").isNullOrEmpty()) sha else "$sha+dirty"
 } ?: "unknown"
 

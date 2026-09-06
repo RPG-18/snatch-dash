@@ -525,11 +525,15 @@ class DashSession(private val scope: CoroutineScope) {
                 // there. Split across two files they could not be lined up — and
                 // app_log.txt is a ring buffer that a long ride overwrites.
                 // Cheap at this rate: 188 presses across the whole 2026-09-05 log.
+                // Ack first, log second. This runs on the socket RX loop and the dash
+                // is waiting on the echo; the line it replaced was a DebugLog lambda
+                // that cost nothing, while this one appends to external storage. A
+                // press should not wait on a file write to be acknowledged.
+                sock.send(DashCommands.buttonAck(btn))
                 RideDiagnostics.log(
                     "joystick",
                     "09 00 code=0x${(btn.toInt() and 0xFF).toString(16).uppercase()} full=${tlv.value.toHexFull()}",
                 )
-                sock.send(DashCommands.buttonAck(btn))
                 scope.launch(Dispatchers.Main) { onButton?.invoke(btn) }
                 continue
             }

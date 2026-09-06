@@ -31,6 +31,7 @@ import com.opendash.opendash_dash_engine.media.CallInfoProvider
 import com.opendash.opendash_dash_engine.media.MediaInfoProvider
 import com.opendash.opendash_dash_engine.util.DebugLog
 import com.opendash.opendash_dash_engine.util.RideDiagnostics
+import java.util.Locale
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -548,7 +549,10 @@ class DashEngineController(
 
     fun setFollowMode(enabled: Boolean) {
         followMode = enabled
-        if (enabled) { panX = 0f; panY = 0f }
+        // Cleared with the pan itself, here and in the other two places pan resets:
+        // a stale flag would swallow the log line for the next genuine bound-hit,
+        // which is the one thing this flag exists to report.
+        if (enabled) { panX = 0f; panY = 0f; panAtBound = false }
     }
 
     /**
@@ -597,6 +601,12 @@ class DashEngineController(
      * line per press at a rate a thumb sets.
      */
     private fun stepZoom(delta: Int, action: String) {
+        // Logged on the calling (Flutter platform) thread, unlike [panBy], and that
+        // is the deliberate half of the asymmetry: this arrives at thumb rate from a
+        // physical button — 110 presses across the whole 2026-09-05 ride — where
+        // panBy is exposed to a drag gesture that could call it at frame rate. One
+        // small append per press is worth the line that told us the ceiling was too
+        // low; a per-frame append would not be.
         val before = zoom
         zoom = (zoom + delta).coerceIn(ZOOM_MIN, ZOOM_MAX)
         RideDiagnostics.log(
@@ -625,6 +635,7 @@ class DashEngineController(
         followMode = true
         panX = 0f
         panY = 0f
+        panAtBound = false
         RideDiagnostics.log("camera", "recenter — follow on, pan cleared")
     }
 
@@ -937,7 +948,7 @@ class DashEngineController(
      */
     private suspend fun tick(frameIntervalMs: Long) {
         if (!followMode && System.currentTimeMillis() - lastManualPanAt > MANUAL_IDLE_MS) {
-            panX = 0f; panY = 0f; followMode = true
+            panX = 0f; panY = 0f; followMode = true; panAtBound = false
         }
 
         val loc = locationTracker.location.value
@@ -1076,9 +1087,12 @@ class DashEngineController(
     ): Boolean {
         val bmp = frameBitmap ?: return false
 
+        // One read of the volatile [headingUp] for both the padding and the log, so
+        // a toggle landing mid-frame cannot make them disagree about the mode.
+        val headingUpNow = headingUp
         val camera = cameraFor(centerLat, centerLng, heading)
-        val padding = DashCamera.padding(DashEncoder.WIDTH, DashEncoder.HEIGHT, headingUp, panX, panY)
-        logCameraSend(camera, padding)
+        val padding = DashCamera.padding(DashEncoder.WIDTH, DashEncoder.HEIGHT, headingUpNow, panX, panY)
+        logCameraSend(camera, padding, headingUpNow)
 
         val snapshotStart = System.currentTimeMillis()
         val snapshot = snapshots.capture(
@@ -1152,13 +1166,18 @@ class DashEngineController(
      * read, months later, as a map that stopped rotating. The mode is the part
      * that actually holds still, and it is the part a dead control would break.
      */
-    private fun logCameraSend(camera: CameraPosition, padding: IntArray) {
-        val key = "$zoom/${panX.toInt()}/${panY.toInt()}/$headingUp"
+    private fun logCameraSend(camera: CameraPosition, padding: IntArray, headingUp: Boolean) {
+        // Keyed and printed from the arguments, never from the live fields. A press
+        // landing between [cameraFor] and here would otherwise print a zoom MapLibre
+        // was never given — and commit that key, so the frame that does use it says
+        // nothing. The parameter deliberately shadows the field for the same reason.
+        val key = "${camera.zoom}/${camera.tilt}/$headingUp/${padding.joinToString(",")}"
         if (key == lastCameraLogKey) return
         lastCameraLogKey = key
         RideDiagnostics.log(
             "camera",
-            "→ MapLibre zoom=${zoomText(zoom)} ${if (headingUp) "heading-up" else "north-up"} " +
+            "→ MapLibre zoom=${String.format(Locale.ROOT, "%.2f", camera.zoom)} " +
+                "${if (headingUp) "heading-up" else "north-up"} " +
                 "tilt=${camera.tilt.toInt()} padding=[${padding.joinToString(" ")}]",
         )
     }

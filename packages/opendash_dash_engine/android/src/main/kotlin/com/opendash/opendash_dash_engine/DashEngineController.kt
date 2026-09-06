@@ -265,6 +265,20 @@ class DashEngineController(
     @Volatile private var camHdg = 0f
     @Volatile private var camInit = false
     private var camMoving = false
+
+    /**
+     * Metres the camera centre has travelled since the last `[map]` line.
+     *
+     * The camera's own movement, not the raw fix: after smoothing, and after the
+     * `haveTarget` gate, this is what the snapshot was actually taken at. That is
+     * the question a frozen-map report asks — "did the view follow me" — and
+     * until 2026-09-06 nothing in a ride file could answer it. `redraws` could
+     * not: the redraw signature carries heading at 0.1°, which jitters on its own,
+     * so a full `redraws=120/120` window is consistent with a centre that never
+     * moved a metre.
+     */
+    private var windowMovedM = 0.0
+
     /**
      * The controllable part of the last camera [logCameraSend] reported, so it
      * only speaks when one of those parts actually changed.
@@ -626,6 +640,15 @@ class DashEngineController(
     private fun zoomText(hundredths: Int) =
         "${hundredths / 100}.${(hundredths % 100).toString().padStart(2, '0')}"
 
+    /**
+     * A coordinate for the log: five decimals, about a metre, and a decimal POINT.
+     *
+     * `Locale.ROOT` for the same reason [zoomText] avoids `format` entirely — the
+     * default locale on this device writes "60,24647", and a comma is what
+     * separates the pair.
+     */
+    private fun geoText(v: Double) = String.format(Locale.ROOT, "%.5f", v)
+
     fun toggleHeadingUp() {
         headingUp = !headingUp
         RideDiagnostics.log("camera", "headingUp=$headingUp")
@@ -764,6 +787,7 @@ class DashEngineController(
         lastSignature = ""
         camInit = false; lastTickNs = 0L
         haveFrame = false
+        windowMovedM = 0.0
         // Cleared so every session's file opens with the camera it started on.
         // The zoom a rider left behind survives the disconnect (the field does),
         // and without this the one line saying what it is would be in the PREVIOUS
@@ -884,8 +908,11 @@ class DashEngineController(
                                     abandoned = snapshots.abandoned,
                                     errors = snapshots.errors,
                                     rebuilds = snapshots.rebuilds,
-                                ) + " zoom=${zoomText(zoom)}",
+                                ) + " zoom=${zoomText(zoom)}" +
+                                    " center=${geoText(camLat)},${geoText(camLng)}" +
+                                    " moved=${windowMovedM.toInt()}m",
                             )
+                            windowMovedM = 0.0
                         }
                         if (now - lastEncoderLogAt > ENCODER_LOG_INTERVAL_MS) {
                             val dFrames = framesEncoded - loggedFrames
@@ -895,15 +922,32 @@ class DashEngineController(
                             lastEncoderLogAt = now
                             val intervalS = ENCODER_LOG_INTERVAL_MS / 1_000
                             val thermal = thermalLabel()
+                            // Into the ride file, not just app_log.txt. This is the
+                            // only number that says whether anything reached the
+                            // socket, and a frozen-map report is exactly when it is
+                            // wanted — but app_log.txt is a ring buffer that a long
+                            // ride overwrites, so on 2026-09-06 the question "did the
+                            // stream keep flowing" had no answer left by the time the
+                            // phone was back on the cable.
                             if (dFrames == 0) {
+                                // Both: the ride file needs it because that is where a
+                                // post-mortem starts, and app_log/`/more/logs` need it at
+                                // W or the level filters stop surfacing it. Duplicated
+                                // only on this branch, which by definition is rare.
                                 DebugLog.w(TAG) {
                                     "Encoder output: 0 frames in the last ${intervalS}s while STREAMING " +
                                         "— render/encode loop itself stalled (nothing to even send) — thermal=$thermal"
                                 }
+                                RideDiagnostics.log(
+                                    "stream",
+                                    "WARN encoder output: 0 frames in the last ${intervalS}s while STREAMING " +
+                                        "— render/encode loop itself stalled — thermal=$thermal",
+                                )
                             } else {
-                                DebugLog.i(TAG) {
-                                    "Encoder output: frames=$dFrames (idr=$dIdr) rtp=$dRtp thermal=$thermal in the last ${intervalS}s"
-                                }
+                                RideDiagnostics.log(
+                                    "stream",
+                                    "frames=$dFrames (idr=$dIdr) rtp=$dRtp thermal=$thermal in the last ${intervalS}s",
+                                )
                             }
                         }
                     } catch (e: CancellationException) {
@@ -977,6 +1021,15 @@ class DashEngineController(
         lastTickNs = nowNs
         val a = if (camInit) (1.0 - exp(-dt / SMOOTH_TAU)) else 1.0
 
+        // Read BEFORE the block below, which sets it. Afterwards it says "the
+        // camera has a position", not "it had one to move from" — and the first
+        // tick moves it from (0,0) to the rider, so a distance measured against
+        // the post-block flag is a 6700 km teleport across the Gulf of Guinea.
+        // That lands in `moved=` as the opening number of every fresh process,
+        // and in [camMoving] as a spurious "riding" verdict that puts the first
+        // frames at 4 fps. [startStream] clears camInit without clearing
+        // camLat/camLng, so a later stream jumps by less but jumps all the same.
+        val wasInit = camInit
         val prevLat = camLat; val prevLng = camLng
         if (haveTarget) {
             if (!camInit) { camLat = targetLat; camLng = targetLng; camHdg = heading; camInit = true }
@@ -987,7 +1040,8 @@ class DashEngineController(
                 camHdg += dh * a.toFloat()
             }
         }
-        val movedM = if (camInit) distMeters(prevLat, prevLng, camLat, camLng) else 0.0
+        val movedM = if (wasInit) distMeters(prevLat, prevLng, camLat, camLng) else 0.0
+        windowMovedM += movedM
         camMoving = movedM > 0.25 || (loc?.speed ?: 0f) > 0.8f
 
         val centerLat = if (haveTarget) camLat else 0.0

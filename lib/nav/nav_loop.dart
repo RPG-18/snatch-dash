@@ -99,6 +99,15 @@ class NavLoop {
 
     final pos = GeoPoint(lat, lng);
     final progress = NavEngine.progress(_route, pos, _speedMps);
+    // Re-asserted every tick rather than only in [start]/[stop], because [stop] is
+    // reached from exactly one place a rider can tap (the Dash screen's "exit
+    // navigation") and arriving is not it: this loop keeps ticking after arrival,
+    // so a flag set once in [start] would hold MapKit open for the rest of the
+    // process — a battery cost paid with the screen off, which is the whole point
+    // of the app. Nothing left to reroute towards once we are there; and if the
+    // rider moves off again, `arrived` goes false and this puts MapKit back long
+    // before the off-route debounce could ask for a route.
+    MapkitLifecycle.setNavigating(!progress.arrived);
     final eta = DateTime.now().add(Duration(seconds: progress.etaSeconds.round()));
     final etaHHMM =
         '${eta.hour.toString().padLeft(2, '0')}${eta.minute.toString().padLeft(2, '0')}';

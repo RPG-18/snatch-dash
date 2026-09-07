@@ -275,12 +275,20 @@ class DashSession(private val scope: CoroutineScope) {
         // plugin cancels that scope on the very next line, so a launched send would simply
         // never run. Two UDP datagrams to a broadcast address — no name resolution, no ARP, no
         // handshake — is a syscall each, not a network round trip.
+        //
+        // The whole thing under runCatching: nothing below the socket may keep this method from
+        // reaching IDLE. A disconnect() that threw on its way out would leave the session
+        // advertising STREAMING over a socket that is already gone — and that is exactly the
+        // state [connect]'s guard refuses to reconnect from, so the rider would be stuck until
+        // the process restarted.
         socket?.let { sock ->
             socket = null
-            runBlocking(Dispatchers.IO) {
-                runCatching { sock.send(DashCommands.projectionStop()) }
-                runCatching { sock.send(DashCommands.projectionOff()) }
-                sock.close()
+            runCatching {
+                runBlocking(Dispatchers.IO) {
+                    runCatching { sock.send(DashCommands.projectionStop()) }
+                    runCatching { sock.send(DashCommands.projectionOff()) }
+                    sock.close()
+                }
             }
         }
         setState(DashState.IDLE)

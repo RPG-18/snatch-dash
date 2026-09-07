@@ -217,7 +217,8 @@ class DashEngineController(
     // True once the WiFi link came up and a session was started on it, cleared when the link
     // goes away again (and on every fresh [connect]). Both watch jobs are main-confined, so no
     // @Volatile: [wifiWatchJob] writes it, the session watcher reads it to tell "the link never
-    // came up" apart from "the link is up and the session on it died".
+    // came up" apart from "the link is up and the session on it died". It says nothing about
+    // *when* that session was started — see the re-check in the retry branch.
     private var sessionStarted = false
     // Armed whenever session.state isn't STREAMING, cancelled once it is — see
     // RECONNECT_GIVEUP_MS's doc.
@@ -447,16 +448,29 @@ class DashEngineController(
                     // through). That is spec/wifi_retry_policy.md's scenario C, the RX watchdog
                     // firing while WifiManager still reports CONNECTED, so [wifiWatchJob] never
                     // sees a state change and nothing at all reconnected: the ride ended at the
-                    // 120-second give-up timer. [sessionStarted] is what keeps this branch off
-                    // the IDLE that StateFlow replays to a brand-new collector, before any link
-                    // exists; a deliberate disconnect() never reaches here at all, since it
-                    // cancels this job before touching the session.
+                    // 120-second give-up timer. A deliberate disconnect() never reaches here at
+                    // all — it cancels this job before it touches the session.
+                    //
+                    // Both checks are made AFTER the wait, and the counter is spent only if the
+                    // retry actually happens, because the value that opens this branch can be
+                    // stale before the delay even starts: StateFlow replays its current value to
+                    // a brand-new collector, and on a `connect()` over an already-live WiFi link
+                    // that value is the PREVIOUS attempt's ERROR. [wifiWatchJob] runs first and
+                    // has already called session.connect() by then — but that only launches
+                    // runSession on Dispatchers.IO, so CONNECTING is not published yet, and this
+                    // collector sees the corpse of the old session. Retrying on it cancels a
+                    // handshake that is 1.5 s into its own life, every single time. Re-reading
+                    // the state after the delay is what tells the two apart: a session that
+                    // really is dead is still IDLE/ERROR, a replayed one has moved on.
                     DashState.ERROR, DashState.IDLE -> {
                         val wifi = wifiManager.state.value
                         if (sessionStarted && wifi.status == WifiConnStatus.CONNECTED && authRetries < MAX_AUTH_RETRIES) {
-                            authRetries++
                             delay(AUTH_RETRY_DELAY_MS)
-                            if (wifiManager.state.value.status == WifiConnStatus.CONNECTED) {
+                            val settled = session.state.value
+                            if (wifiManager.state.value.status == WifiConnStatus.CONNECTED &&
+                                (settled == DashState.IDLE || settled == DashState.ERROR)
+                            ) {
+                                authRetries++
                                 session.connect(wifi.ssid, wifiManager.network)
                             }
                         }

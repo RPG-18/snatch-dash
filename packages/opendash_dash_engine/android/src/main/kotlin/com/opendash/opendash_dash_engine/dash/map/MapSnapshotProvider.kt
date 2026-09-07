@@ -476,27 +476,30 @@ class MapSnapshotProvider(private val context: Context) {
          * How many pixels MapLibre draws per frame pixel. Below 1 it draws the
          * same ground into fewer of them and the frame loop scales the result up.
          *
-         * **This is a compression lever, not a performance one.** The dash froze
-         * on a stream measured at 159 kbps — inside its own 204800 profile — so
-         * the failure is not bandwidth. What the 2026-09-06 numbers point at is
-         * fragment count: an IDR of 15-20 KB goes out as 11-15 FU-A fragments and
-         * every one of them must arrive, on a link that dropped 8 times in 14
-         * minutes. The same ride over empty water, where frames cost 2.0 packets,
-         * worked. Halving the rendered resolution is the cheapest way to make a
-         * keyframe fit in one or two packets: it is exactly the low-pass the old
-         * raster pipeline got for free from bilinear-scaled 256 px tiles, and
-         * losing it is what made every frame expensive (see «Битрейт: вектор
-         * кодируется дороже растра» in spec/drawing_from_local_tiles.md).
+         * **Back at 1.0 because 0.5 was tried and did not work.** The idea was to
+         * shrink the encoded frame — an IDR of 15-20 KB goes out as 11-15 FU-A
+         * fragments, all of which must arrive, on a link that keeps dropping — by
+         * feeding the encoder a softer picture. It does not work, and cannot:
+         * `KEY_BIT_RATE` is a target the encoder FILLS, not a ceiling derived from
+         * the content. Hand it an easier image and it lowers the quantiser and
+         * spends the same bits on a cleaner result.
          *
-         * The map keeps its apparent size — same extent, same zoom, softer. Text
-         * softens with it, which is the cost and the reason this is a tunable
-         * constant rather than a decision buried in a call.
+         * Measured 2026-09-07 at 0.5: first IDR 21.6 and 22.5 KB against 13.7-22.2
+         * KB at full resolution, and the stream went from 159 kbps to 204 and 243 —
+         * *above* the dash's own 204800 profile. Not smaller. Bigger.
          *
-         * Anything that reads the snapshot's own projection must scale by
-         * `1 / PIXEL_RATIO`; [MapSnapshotProvider] does not draw overlays, so
-         * that duty sits with the frame loop.
+         * The lever for frame size is the bitrate target and a cap on what an
+         * I-frame may spend (`video-qp-i-min`), not the complexity of the picture.
+         * See «Битрейт: вектор кодируется дороже растра» in
+         * spec/drawing_from_local_tiles.md — its cost analysis holds, its
+         * conclusion did not.
+         *
+         * Kept as a constant rather than deleted: the plumbing around it (upscale
+         * with a bilinear filter, projection scaled by `1 / PIXEL_RATIO`) is
+         * correct and measured, so the knob costs nothing at 1.0 and is there if
+         * a reason to render smaller ever turns up that is not this one.
          */
-        const val PIXEL_RATIO = 0.5f
+        const val PIXEL_RATIO = 1.0f
 
         /**
          * How long a snapshot may stay out past its deadline before it counts as

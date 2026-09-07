@@ -24,9 +24,12 @@ import com.opendash.opendash_dash_engine.util.DebugLog
  * canvas — call [renderFrame] with a draw lambda, then [drain] to pull
  * encoded NAL data out.
  *
- * @param onEncodedData  called with (annexBBytes, isKeyFrame) for each output buffer.
+ * @param onEncodedData  called with (annexBBytes, isKeyFrame, isCodecConfig) for each
+ *   output buffer. `isCodecConfig` marks the SPS/PPS buffer, which is passed through like
+ *   any other (NalProcessor needs it) but is not a frame — anything counting frames or
+ *   measuring their size has to skip it or it reports 30 bytes of parameter sets.
  */
-class DashEncoder(private val onEncodedData: (ByteArray, Boolean) -> Unit) {
+class DashEncoder(private val onEncodedData: (ByteArray, Boolean, Boolean) -> Unit) {
     companion object {
         const val WIDTH   = 526
         const val HEIGHT  = 300
@@ -126,12 +129,13 @@ class DashEncoder(private val onEncodedData: (ByteArray, Boolean) -> Unit) {
                         codec.releaseOutputBuffer(idx, false); continue
                     }
                     val isKey = (info.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0
+                    val isConfig = (info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0
                     // Pass EVERY buffer through, including CODEC_CONFIG (SPS/PPS) — the
                     // NAL processor needs the parameter sets to bundle them with each IDR,
                     // otherwise the dash can't initialise its decoder and times out.
                     if (info.size > 0) {
                         val data = ByteArray(info.size).also { buf.get(it) }
-                        onEncodedData(data, isKey)
+                        onEncodedData(data, isKey, isConfig)
                     }
                     codec.releaseOutputBuffer(idx, false)
                     if ((info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) break

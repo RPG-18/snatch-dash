@@ -564,9 +564,16 @@ class MapSnapshotProvider(private val context: Context) {
 
         /**
          * One abandoned snapshot's bitmap, for turning [abandoned] into the number
-         * that actually matters: 526×300 at ARGB_8888.
+         * that actually matters.
+         *
+         * Sized from what MapLibre actually renders, not from the frame: with
+         * [PIXEL_RATIO] below 1 the snapshot is smaller than 526×300, and quoting
+         * the frame's size would overstate a leak by `1/ratio²` — four times over
+         * at 0.5. A diagnostic that exaggerates is worse than none: it sends the
+         * next reader hunting a leak that is a quarter the size they were told.
          */
-        private const val BITMAP_KB = 526L * 300 * 4 / 1024
+        private const val BITMAP_KB =
+            (526L * PIXEL_RATIO).toLong() * (300L * PIXEL_RATIO).toLong() * 4 / 1024
 
         /**
          * Whether the snapshot came back with no map on it — every sampled pixel

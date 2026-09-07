@@ -797,12 +797,18 @@ class DashEngineController(
         val nalProc = NalProcessor { nal, endOfAU ->
             packetizer.packetize(nal, endOfAU = endOfAU, ptsMs = videoPtsMs)
         }
-        val onEncoded: (ByteArray, Boolean) -> Unit = { annexB, isKey ->
-            framesEncoded++
-            lastEncodedBytes = annexB.size
-            framesSentTotal = framesEncoded
-            if (isKey) idrFramesEncoded++
-            if (!loggedFirstFrame) {
+        val onEncoded: (ByteArray, Boolean, Boolean) -> Unit = { annexB, isKey, isConfig ->
+            // The SPS/PPS buffer goes to the packetizer like any other but is not a
+            // frame: counting it would put 30 bytes of parameter sets in front of
+            // anyone reading "size of the last frame", once per session, at exactly
+            // the moment they start looking.
+            if (!isConfig) {
+                framesEncoded++
+                lastEncodedBytes = annexB.size
+                framesSentTotal = framesEncoded
+                if (isKey) idrFramesEncoded++
+            }
+            if (!loggedFirstFrame && !isConfig) {
                 loggedFirstFrame = true
                 RideDiagnostics.log("stream", "first video frame sent (key=$isKey, ${annexB.size}B)")
             }

@@ -226,9 +226,11 @@ class OpendashDashEnginePlugin : FlutterPlugin, MethodCallHandler, EventChannel.
         eventChannel.setStreamHandler(null)
         logChannel.setStreamHandler(null)
         frameChannel.setStreamHandler(null)
-        // Cleared explicitly: the controller outlives this handler's cancel in a
-        // detach, and a stale lambda would keep compressing PNGs for a sink that
-        // is gone.
+        // Both, not just the controller's copy: the sink closes over an EventSink
+        // that dies with this engine, so keeping it would let the next attach
+        // re-arm a dead lambda — and the controller would then PNG-compress every
+        // frame, for nobody, for the rest of the process.
+        frameSink = null
         controller?.onFramePreview = null
         if (DebugLog.sink === debugLogSink) DebugLog.sink = null
         debugLogSink = null

@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:opendash_dash_engine/opendash_dash_engine.dart';
 
 import 'geo_point.dart';
+import 'mapkit_lifecycle.dart';
 import 'nav_engine.dart';
 import 'route.dart';
 import 'router.dart';
@@ -55,6 +56,10 @@ class NavLoop {
   int _consecutiveFailures = 0;
 
   void start() {
+    // Keeps MapKit running even with the screen off, which is where this loop
+    // does most of its work — see [MapkitLifecycle] for what a stopped MapKit
+    // does to [_reroute].
+    MapkitLifecycle.setNavigating(true);
     VoiceManager.instance.resetTrip();
     DashEngine.instance.setNavState(
       remainingMeters: _route.totalMeters,
@@ -69,6 +74,7 @@ class NavLoop {
 
   void stop() {
     _stopped = true;
+    MapkitLifecycle.setNavigating(false);
     _sub?.cancel();
     _sub = null;
     _timer?.cancel();

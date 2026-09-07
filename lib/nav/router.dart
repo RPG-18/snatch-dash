@@ -4,6 +4,7 @@ import 'package:flutter/widgets.dart' show WidgetsBinding;
 import 'package:yandex_maps_mapkit/directions.dart' as ymk;
 import 'package:yandex_maps_mapkit/mapkit.dart' as ymk;
 
+import '../util/app_logger.dart';
 import 'geo_point.dart';
 import 'route.dart';
 
@@ -36,6 +37,14 @@ class Router {
   /// Keeps in-flight [ymk.DrivingSession]s reachable — see the comment in
   /// [routes] for why this is necessary.
   static final _pending = <ymk.DrivingSession>{};
+
+  /// Neither MapKit's listener contract nor its transport promises that one of
+  /// the two callbacks always fires: a session that is never answered leaves
+  /// `NavLoop._rerouting` latched true for the rest of the ride, and with it
+  /// every further reroute attempt. Generous enough not to cut off a slow
+  /// mobile link (the routes still arrive over EDGE in a dead zone), short
+  /// enough that the next off-route tick gets a fresh try.
+  static const _requestTimeout = Duration(seconds: 30);
 
   static const _jamLevelByType = {
     ymk.JamType.Unknown: JamLevel.unknown,
@@ -120,7 +129,13 @@ class Router {
 
     final List<ymk.DrivingRoute> raw;
     try {
-      raw = await completer.future;
+      raw = await completer.future.timeout(_requestTimeout);
+    } on TimeoutException {
+      // Cancelling releases the native request; the listener is contractually
+      // silent afterwards, which is fine — nothing awaits `completer` any more.
+      session.cancel();
+      talker.warning('[Router] no answer in ${_requestTimeout.inSeconds}s — giving up on this request');
+      return null;
     } catch (_) {
       return null;
     } finally {

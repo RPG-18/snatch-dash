@@ -263,12 +263,26 @@ class DashSession(private val scope: CoroutineScope) {
         rxJob?.cancel(); projHbJob?.cancel(); routeCardJob?.cancel(); heartbeatJob?.cancel()
         navInfoJob?.cancel(); mediaInfoJob?.cancel(); ackCounterJob?.cancel()
         navActive = false
-        socket?.let {
-            runCatching { it.send(DashCommands.projectionStop()) }
-            runCatching { it.send(DashCommands.projectionOff()) }
-            it.close()
+        // On an IO thread, and blocking: DatagramSocket.send with an address goes through
+        // BlockGuardOs.sendto → onNetwork(), and the OS arms the main thread with
+        // penaltyDeathOnNetwork for every targetSdk >= 11 app. Both packets were therefore
+        // dying as NetworkOnMainThreadException inside DashSocket.send's catch-all, logged as
+        // "TX send failed (link down?): null" (that null message is the giveaway) — so the dash
+        // never got the command to leave projection mode and sat on the last frame until its
+        // own timeout. Every caller of this method is on Dispatchers.Main.
+        //
+        // runBlocking rather than scope.launch(Dispatchers.IO): dispose() reaches here and the
+        // plugin cancels that scope on the very next line, so a launched send would simply
+        // never run. Two UDP datagrams to a broadcast address — no name resolution, no ARP, no
+        // handshake — is a syscall each, not a network round trip.
+        socket?.let { sock ->
+            socket = null
+            runBlocking(Dispatchers.IO) {
+                runCatching { sock.send(DashCommands.projectionStop()) }
+                runCatching { sock.send(DashCommands.projectionOff()) }
+                sock.close()
+            }
         }
-        socket = null
         setState(DashState.IDLE)
         DebugLog.i(TAG) { "Disconnected" }
     }
@@ -714,7 +728,24 @@ class DashSession(private val scope: CoroutineScope) {
         }
         DebugLog.e(TAG, { "ERROR — $msg" })
         RideDiagnostics.log("error", "session fail: $msg")
+        // Retire the token before tearing anything down, exactly as [disconnect] does. Without
+        // this the RX loop reported the teardown as a second, contradictory failure: cancel()
+        // is cooperative and cannot interrupt a blocking receive(), so it is the close() below
+        // that ends it — with a SocketException, which withContext hands out in preference to
+        // the CancellationException (kotlinx picks the non-cancellation cause). The loop's
+        // catch-all then ran [endLink] with a token that was still current: ERROR → IDLE, a
+        // bogus "[error] RX loop stopped — socket error: EBADF" in the ride file, and
+        // onError("Lost connection to dash") overwriting the real message. Field log
+        // 2026-09-07 21:38:27: "ERROR — Auth timed out" → 70 ms later "state ERROR -> IDLE" —
+        // auth timeout being the most common failure in the wild, the ride file lied about
+        // exactly the case it exists to explain. [endLink] still closes its own socket
+        // unconditionally before that guard, so nothing leaks.
+        sessionSeq.incrementAndGet()
+        // The full set, matching [endLink] — with the token retired, the RX loop's teardown no
+        // longer runs behind this one, and [projHbJob]/[routeCardJob]/[navInfoJob] would
+        // otherwise be left to notice on their own that the state is no longer STREAMING.
         rxJob?.cancel(); heartbeatJob?.cancel(); mediaInfoJob?.cancel(); ackCounterJob?.cancel()
+        projHbJob?.cancel(); routeCardJob?.cancel(); navInfoJob?.cancel()
         socket?.close(); socket = null
         setState(DashState.ERROR)
         onError?.invoke(msg)

@@ -214,6 +214,11 @@ class DashEngineController(
     // MAX_AUTH_RETRIES's doc. Reset on READY (auth actually succeeded) and on every fresh
     // top-level [connect] call.
     private var authRetries = 0
+    // True once the WiFi link came up and a session was started on it, cleared when the link
+    // goes away again (and on every fresh [connect]). Both watch jobs are main-confined, so no
+    // @Volatile: [wifiWatchJob] writes it, the session watcher reads it to tell "the link never
+    // came up" apart from "the link is up and the session on it died".
+    private var sessionStarted = false
     // Armed whenever session.state isn't STREAMING, cancelled once it is — see
     // RECONNECT_GIVEUP_MS's doc.
     private var giveupJob: Job? = null
@@ -334,6 +339,22 @@ class DashEngineController(
     // ── Public API (invoked by the plugin's MethodChannel handler) ────────
 
     fun connect() {
+        // Idempotent on a live connection, which spec/fsm.md already promises for the
+        // `idleMap → navigating` transition ("connect() — no-op"): only DashSession.connect()
+        // had that guard, this method had none and ran the whole cycle again on a connected
+        // dash. That re-request tore down the WiFi link the running session's sockets are bound
+        // to (see DashWifiManager.connect's own guard), reset [hasConnectedOnce] and
+        // [authRetries], opened a second ride file mid-ride and restarted media forwarding —
+        // for a rider, "Send to Dash" killed the picture ~10s later. Nothing is lost by
+        // returning here: [setDestination] pushes the new destination to the session itself.
+        val sessionState = session.state.value
+        if (sessionState != DashState.IDLE && sessionState != DashState.ERROR &&
+            wifiManager.state.value.status == WifiConnStatus.CONNECTED
+        ) {
+            DebugLog.i(TAG) { "connect() ignored — session already $sessionState on a live WiFi link" }
+            RideDiagnostics.log("connect", "connect() ignored — already $sessionState, link up")
+            return
+        }
         RideDiagnostics.init(context)
         RideDiagnostics.start("connect")
         RideDiagnostics.log(
@@ -348,8 +369,8 @@ class DashEngineController(
 
         val ssid = dashConfig.ssid
         wifiWatchJob?.cancel()
+        sessionStarted = false
         wifiWatchJob = scope.launch {
-            var sessionStarted = false
             wifiManager.onSsidResolved = { resolved ->
                 if (dashConfig.needsDiscovery) dashConfig.ssid = resolved
             }
@@ -419,9 +440,20 @@ class DashEngineController(
                     // spec/wifi_retry_policy.md's "Из живого форка"). Just retry the handshake
                     // directly, same network, bounded so a genuinely dead dash still ends in
                     // ERROR rather than retrying forever.
-                    DashState.ERROR -> {
+                    //
+                    // IDLE alongside ERROR, and for the same reason: DashSession.endLink puts a
+                    // link that died under a live WiFi network into IDLE, not ERROR (its own doc
+                    // explains why — the state guard in DashSession.connect must let the retry
+                    // through). That is spec/wifi_retry_policy.md's scenario C, the RX watchdog
+                    // firing while WifiManager still reports CONNECTED, so [wifiWatchJob] never
+                    // sees a state change and nothing at all reconnected: the ride ended at the
+                    // 120-second give-up timer. [sessionStarted] is what keeps this branch off
+                    // the IDLE that StateFlow replays to a brand-new collector, before any link
+                    // exists; a deliberate disconnect() never reaches here at all, since it
+                    // cancels this job before touching the session.
+                    DashState.ERROR, DashState.IDLE -> {
                         val wifi = wifiManager.state.value
-                        if (wifi.status == WifiConnStatus.CONNECTED && authRetries < MAX_AUTH_RETRIES) {
+                        if (sessionStarted && wifi.status == WifiConnStatus.CONNECTED && authRetries < MAX_AUTH_RETRIES) {
                             authRetries++
                             delay(AUTH_RETRY_DELAY_MS)
                             if (wifiManager.state.value.status == WifiConnStatus.CONNECTED) {
@@ -452,6 +484,7 @@ class DashEngineController(
         streamJob?.cancel()
         sessionWatchJob?.cancel(); sessionWatchJob = null
         wifiWatchJob?.cancel(); wifiWatchJob = null
+        sessionStarted = false
         stopMediaForwarding()
         session.disconnect()
         wifiManager.disconnect()

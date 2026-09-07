@@ -125,6 +125,30 @@ class DashWifiManager(
      *   any rider's Tripper without hardcoding their SSID. When false, exact-match.
      */
     fun connect(ssid: String, password: String = "", prefixMatch: Boolean = false) {
+        // Already holding exactly this network: keep the request that holds it and return.
+        // [requestNetwork] starts with an unconditional [release], and for a link brought up by
+        // WifiNetworkSpecifier that release IS the disconnect — the platform tears the network
+        // down the moment the request holding it goes away (spec/wifi_retry_policy.md, scenario
+        // D). Worse than the drop itself: the teardown is asynchronous, so
+        // [findAlreadyConnectedDashNetwork] a few lines later still sees the SSID, returns
+        // early and calls [markConnected] with NO callback registered — a link that is already
+        // dying and can now never report onLost. Field log 2026-09-07 21:38:29: "Requesting
+        // WiFi" → "Using already-connected matching WiFi" → CONNECTED → ENETUNREACH on the very
+        // next TX. Reached whenever `connect()` runs on a live dash — "Send to Dash" mid-ride.
+        val live = _state.value
+        if (live.status == WifiConnStatus.CONNECTED &&
+            network != null &&
+            (if (prefixMatch) live.ssid.startsWith(ssid) else live.ssid == ssid)
+        ) {
+            // The session counters (hasConnectedOnce, reconnectCount, downtime) deliberately
+            // keep running: this is the same connection, not a new one.
+            wantConnected   = true
+            pendingSsid     = ssid
+            pendingPassword = password
+            pendingPrefix   = prefixMatch
+            DebugLog.i(TAG) { "connect() — already on '${maskSsid(live.ssid)}', keeping the live request" }
+            return
+        }
         wantConnected    = true
         pendingSsid      = ssid
         pendingPassword  = password

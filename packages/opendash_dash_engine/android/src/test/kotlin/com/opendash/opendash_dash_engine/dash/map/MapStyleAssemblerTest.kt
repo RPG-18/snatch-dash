@@ -19,7 +19,7 @@ class MapStyleAssemblerTest {
         {
           "version": 8,
           "glyphs": "asset://glyphs/{fontstack}/{range}.pbf",
-          "sprite": "asset://sprites/positron",
+          "sprite": "asset://sprites/osm-bright",
           "sources": {"openmaptiles": {"type": "vector", "url": "pmtiles://placeholder"}},
           "layers": [
             {"id": "background", "type": "background"},
@@ -122,7 +122,7 @@ class MapStyleAssemblerTest {
         assertEquals(MapTheme.DARK, MapTheme.from("dark"))
         // Anything unexpected falls back to the default rather than failing.
         assertEquals(MapTheme.LIGHT, MapTheme.from("solarized"))
-        assertEquals("positron", MapTheme.LIGHT.asset)
+        assertEquals("osm-bright", MapTheme.LIGHT.asset)
         assertEquals("dark-matter", MapTheme.DARK.asset)
     }
 }

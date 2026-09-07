@@ -27,8 +27,13 @@ import zipfile
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 ASSETS = ROOT / "packages/opendash_dash_engine/android/src/main/assets"
 
+# osm-bright вместо positron с 2026-09-07: Positron задуман бледной подложкой
+# под данные, а на панели 526×300 при солнце его контраста не хватает. У
+# osm-bright цветные дороги и нормальная читаемость, та же схема OpenMapTiles и
+# та же открытая лицензия, а фонтстеки у него уже одиночные — правок transform()
+# не потребовалось. Цена: 121 слой против 46, стиль тяжелее и снапшот дороже.
 STYLES = {
-    "positron": "https://raw.githubusercontent.com/openmaptiles/positron-gl-style/master/style.json",
+    "osm-bright": "https://raw.githubusercontent.com/openmaptiles/osm-bright-gl-style/master/style.json",
     "dark-matter": "https://raw.githubusercontent.com/openmaptiles/dark-matter-gl-style/master/style.json",
 }
 SPRITE_BASE = "https://openmaptiles.github.io/{style}-gl-style/{file}"

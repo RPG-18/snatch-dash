@@ -1,7 +1,9 @@
+import 'package:flutter/foundation.dart';
 import 'package:go_router/go_router.dart';
 import 'package:talker_flutter/talker_flutter.dart';
 
 import '../screens/dash_screen.dart';
+import '../screens/debug/dash_debug_screen.dart';
 import '../screens/expenses_screen.dart';
 import '../screens/garage_screen.dart';
 import '../screens/home_screen.dart';
@@ -41,7 +43,18 @@ final appRouter = GoRouter(
                 ),
                 GoRoute(
                   path: 'dash',
-                  builder: (context, state) => const DashScreen(),
+                  // The substitution lives HERE, not at the two call sites that
+                  // navigate to /home/dash (the Home tile and «Поехали» on route
+                  // preview). One point of substitution means a third entry point
+                  // cannot miss it by forgetting — see spec/dash_screen.md.
+                  builder: (context, state) =>
+                      kDebugMode ? const DashDebugScreen() : const DashScreen(),
+                ),
+                GoRoute(
+                  // Reachable directly as well, to open the debug screen without
+                  // going through the substitution above.
+                  path: 'dash-debug',
+                  builder: (context, state) => const DashDebugScreen(),
                 ),
                 GoRoute(
                   path: 'rides',

@@ -310,6 +310,27 @@ class DashEngineController(
 
     var onButton: ((Int) -> Unit)? = null
 
+    /**
+     * Set while the debug screen is on screen; null the rest of the time.
+     *
+     * **The null check is the feature.** Handing the composed frame to Dart means
+     * compressing 526×300 to PNG on the frame thread, four times a second, and
+     * a ride pays nothing for a screen nobody is looking at — the whole premise
+     * of this app is that the phone rides with its display off. So the cost is
+     * bought only by an attached listener, and detaching stops it dead.
+     *
+     * PNG, not JPEG: the screen exists to look at frame sharpness (see
+     * spec/dash_screen_debug.md), and a lossy codec in the path would be
+     * answering the question with its own artefacts.
+     */
+    @Volatile var onFramePreview: ((Map<String, Any?>) -> Unit)? = null
+
+    /** Size the encoder produced for the most recent frame — one of the debug screen's numbers. */
+    @Volatile private var lastEncodedBytes = 0
+
+    /** Frames handed to the encoder since [startStream]; mirrors its local counter. */
+    @Volatile private var framesSentTotal = 0
+
     // ── Public API (invoked by the plugin's MethodChannel handler) ────────
 
     fun connect() {
@@ -778,6 +799,8 @@ class DashEngineController(
         }
         val onEncoded: (ByteArray, Boolean) -> Unit = { annexB, isKey ->
             framesEncoded++
+            lastEncodedBytes = annexB.size
+            framesSentTotal = framesEncoded
             if (isKey) idrFramesEncoded++
             if (!loggedFirstFrame) {
                 loggedFirstFrame = true
@@ -925,6 +948,7 @@ class DashEngineController(
                                 intendedIntervalMs = frameIntervalMs,
                             )
                             lastFrameSentAt = sentAt
+                            emitFramePreview(bmp, frameIntervalMs)
                         }
                         failures = 0
                         val now = System.currentTimeMillis()
@@ -1296,6 +1320,35 @@ class DashEngineController(
                 "${if (headingUp) "heading-up" else "north-up"} " +
                 "tilt=${camera.tilt.toInt()} padding=[${padding.joinToString(" ")}]",
         )
+    }
+
+    /**
+     * One frame plus its numbers to the debug screen, or nothing at all.
+     *
+     * Compression happens here rather than in Dart because the bitmap never
+     * crosses the boundary otherwise — and it happens only when someone is
+     * listening, see [onFramePreview]. A failure is swallowed: a debug preview
+     * that cannot compress must not take the ride down with it.
+     */
+    private fun emitFramePreview(bmp: Bitmap, frameIntervalMs: Long) {
+        val sink = onFramePreview ?: return
+        runCatching {
+            val out = java.io.ByteArrayOutputStream(64 * 1024)
+            bmp.compress(Bitmap.CompressFormat.PNG, 100, out)
+            sink(
+                mapOf(
+                    "png" to out.toByteArray(),
+                    "zoom" to zoom / ZOOM_SCALE,
+                    "encodedBytes" to lastEncodedBytes,
+                    "framesSent" to framesSentTotal,
+                    // NOT "frames confirmed" — this is a one-shot "decoder opened"
+                    // signal, 1-3 per session. See spec/video.md.
+                    "decoderOpens" to session.decoderOpenCount,
+                    "fps" to (1000L / frameIntervalMs).toInt(),
+                    "renderScale" to MapSnapshotProvider.PIXEL_RATIO,
+                ),
+            )
+        }.onFailure { DebugLog.w(TAG) { "frame preview failed: ${it.message}" } }
     }
 
     private fun toDashDistance(meters: Double): Pair<Int, Int> =

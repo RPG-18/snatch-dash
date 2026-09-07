@@ -124,6 +124,17 @@ class DashSession(private val scope: CoroutineScope) {
      * still tracks something real (whether/when the dash first confirms it's decoding at all),
      * just not "is the map frozen right now".
      */
+    /**
+     * Both notify counters as one number for the debug screen.
+     *
+     * Named for what it is, not what better-dash called it: `09 06/04 55` is a
+     * one-shot "decoder opened" milestone, 1-3 per session, NOT a per-frame ack —
+     * see this field's neighbours below and spec/video.md. A UI labelling it
+     * "frames confirmed" would put a twice-falsified reading in front of the next
+     * person to look.
+     */
+    val decoderOpenCount: Int get() = idrAckCount.get() + pFrameAckCount.get()
+
     private val idrAckCount = AtomicInteger(0)
     private val pFrameAckCount = AtomicInteger(0)
     private var lastLoggedIdrAcks = 0

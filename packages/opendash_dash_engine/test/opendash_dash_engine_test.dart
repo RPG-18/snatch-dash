@@ -17,6 +17,9 @@ class MockOpendashDashEnginePlatform
   Stream<Map<String, dynamic>> get logStream => const Stream.empty();
 
   @override
+  Stream<Map<String, dynamic>> get frameStream => const Stream.empty();
+
+  @override
   Future<void> connect() async {}
 
   @override

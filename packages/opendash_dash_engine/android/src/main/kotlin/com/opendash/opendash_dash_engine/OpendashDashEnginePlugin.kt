@@ -37,6 +37,41 @@ class OpendashDashEnginePlugin : FlutterPlugin, MethodCallHandler, EventChannel.
     private var logSink: EventChannel.EventSink? = null
 
     /**
+     * Composed dash frames for the debug screen (spec/dash_screen_debug.md).
+     *
+     * A separate channel from the state stream on purpose: the payload is a PNG
+     * per frame at 2-4 Hz, and subscribing to it is what makes the engine start
+     * paying for it at all — see [DashEngineController.onFramePreview]. Nobody
+     * listening, nothing produced.
+     */
+    private lateinit var frameChannel: EventChannel
+
+    /**
+     * Held rather than pushed straight at the controller, because the two have no
+     * ordering: [onAttachedToEngine] builds the channel before the controller, and
+     * a re-attach rebuilds the controller under a subscription that never went
+     * away. Keeping the lambda here and applying it at both moments means the
+     * preview cannot end up wired to a controller that has since been replaced —
+     * or silently unwired because Dart happened to subscribe first.
+     */
+    private var frameSink: ((Map<String, Any?>) -> Unit)? = null
+
+    private val frameStreamHandler = object : EventChannel.StreamHandler {
+        override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
+            // Hops to Main: EventSink.success must be called on the platform
+            // thread, and the frame loop runs on Dispatchers.Default.
+            val sink: (Map<String, Any?>) -> Unit = { payload -> scope.launch { events?.success(payload) } }
+            frameSink = sink
+            controller?.onFramePreview = sink
+        }
+
+        override fun onCancel(arguments: Any?) {
+            frameSink = null
+            controller?.onFramePreview = null
+        }
+    }
+
+    /**
      * Our own [DebugLog.sink] lambda, kept so detach can clear the global only
      * when it's still ours — with a second FlutterEngine attached, the first one
      * to detach would otherwise silence native logging for the engine that's
@@ -68,6 +103,9 @@ class OpendashDashEnginePlugin : FlutterPlugin, MethodCallHandler, EventChannel.
 
         logChannel = EventChannel(binding.binaryMessenger, "opendash_dash_engine/log")
         logChannel.setStreamHandler(logStreamHandler)
+
+        frameChannel = EventChannel(binding.binaryMessenger, "opendash_dash_engine/frames")
+        frameChannel.setStreamHandler(frameStreamHandler)
         val sink: (String, String, String) -> Unit = { tag, level, message ->
             scope.launch {
                 logSink?.success(mapOf("tag" to tag, "level" to level, "message" to message))
@@ -87,12 +125,15 @@ class OpendashDashEnginePlugin : FlutterPlugin, MethodCallHandler, EventChannel.
             android.os.Process.getStartElapsedRealtime()
         DebugLog.i(TAG) { "Plugin attached — pid=$pid processUptime=${processUptimeMs}ms" }
 
+        // Reattach a subscription that outlived the previous controller.
+        controller?.onFramePreview = null
         controller = DashEngineController(
             context = binding.applicationContext,
             scope = scope,
             onState = { state -> scope.launch { eventSink?.success(state) } },
         ).also { c ->
             c.onButton = { code -> scope.launch { eventSink?.success(mapOf("button" to code)) } }
+            c.onFramePreview = frameSink
         }
     }
 
@@ -184,6 +225,11 @@ class OpendashDashEnginePlugin : FlutterPlugin, MethodCallHandler, EventChannel.
         channel.setMethodCallHandler(null)
         eventChannel.setStreamHandler(null)
         logChannel.setStreamHandler(null)
+        frameChannel.setStreamHandler(null)
+        // Cleared explicitly: the controller outlives this handler's cancel in a
+        // detach, and a stale lambda would keep compressing PNGs for a sink that
+        // is gone.
+        controller?.onFramePreview = null
         if (DebugLog.sink === debugLogSink) DebugLog.sink = null
         debugLogSink = null
         controller?.dispose()

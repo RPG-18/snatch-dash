@@ -4,7 +4,7 @@
 Upstream Positron and Dark Matter cannot be used as they ship: they point at
 MapTiler for glyphs (the very dependency offline maps exist to remove), at
 GitHub Pages for sprites, and they style layers our tile corpus does not carry.
-This script downloads them and applies exactly those three fixes, so the result
+This script downloads them and applies exactly those four fixes, so the result
 can be regenerated when upstream moves instead of being hand-patched once.
 
 Output lands in the engine module's Android assets — *not* Flutter's `assets:`.
@@ -53,6 +53,10 @@ FONTS_ZIP = "https://github.com/openmaptiles/fonts/releases/download/v2.0/noto-s
 # Верхние Осельки carries a character out of that block (U+02BC and friends turn
 # up in transliterated names), and without the file the map froze for the rest of
 # the session — see GLYPH_RANGE_COUNT for why one missing file could do that.
+#
+# That particular route into the block is gone now that labels show `name` alone
+# (see LOCAL_NAME_FIELD), but the Latin blocks stay: `name` in OSM is whatever
+# the mapper typed, Latin included, and 220 KiB is not worth guessing about.
 GLYPH_RANGES = ["0-255", "256-511", "512-767", "1024-1279", "8192-8447"]
 GLYPH_FONTS = ["Noto Sans Regular", "Noto Sans Bold"]
 
@@ -124,6 +128,22 @@ def empty_glyph_pbf(font: str, rng: str) -> bytes:
     return _pbf_bytes(1, stack)
 
 
+# Upstream labels every place twice: the transliteration on one line and the
+# local name on the other (`{name:latin}\n{name:nonlatin}`), and countries by
+# transliteration alone. On a 526x300 dash that is a two-line label saying the
+# same thing twice, in a script the rider does not read the map in — so every
+# text-field collapses to plain `name`, which OpenMapTiles fills with the local
+# name (Cyrillic across our corpus).
+LOCAL_NAME_FIELD = ["get", "name"]
+
+
+def local_name_only(layout: dict) -> None:
+    """Drops the transliterated half of a label; leaves `{ref}` shields alone."""
+    field = layout.get("text-field")
+    if field is not None and "name:" in json.dumps(field):
+        layout["text-field"] = list(LOCAL_NAME_FIELD)
+
+
 def single_font(fonts: list[str]) -> list[str]:
     """Maps a paired upstream stack onto one of our two faces."""
     joined = " ".join(fonts).lower()
@@ -144,8 +164,10 @@ def transform(style: dict, name: str) -> tuple[dict, list[str]]:
             dropped.append(f"{layer['id']} ({source_layer})")
             continue
         layout = layer.get("layout")
-        if layout and "text-font" in layout:
-            layout["text-font"] = single_font(layout["text-font"])
+        if layout:
+            if "text-font" in layout:
+                layout["text-font"] = single_font(layout["text-font"])
+            local_name_only(layout)
         kept.append(layer)
 
     style["layers"] = kept

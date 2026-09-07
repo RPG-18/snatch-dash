@@ -3,6 +3,9 @@ package com.opendash.opendash_dash_engine
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
+import android.graphics.Paint
+import android.graphics.PointF
+import android.graphics.Rect
 import android.media.AudioManager
 import android.media.ToneGenerator
 import android.os.Build
@@ -288,6 +291,12 @@ class DashEngineController(
      * and by [startStream] before the loop launches, so it needs no @Volatile.
      */
     private var lastCameraLogKey: String? = null
+
+    /** Destination rect for the snapshot upscale; reused, this runs 4 times a second. */
+    private val frameRect = Rect(0, 0, DashEncoder.WIDTH, DashEncoder.HEIGHT)
+
+    /** See the note at its use — the bilinear filter is the whole reason it exists. */
+    private val upscalePaint = Paint(Paint.FILTER_BITMAP_FLAG)
     private var lastTickNs = 0L
     private var lastSignature = ""
     private var lastRedrawAt = 0L
@@ -827,7 +836,10 @@ class DashEngineController(
         snapshotGeneration = snapshots.currentGeneration()
         RideDiagnostics.log(
             "map",
-            "style ${style.theme} from ${style.packs} pack(s), ${style.json.length / 1024} KiB",
+            "style ${style.theme} from ${style.packs} pack(s), ${style.json.length / 1024} KiB, " +
+                "render ${(DashEncoder.WIDTH * MapSnapshotProvider.PIXEL_RATIO).toInt()}×" +
+                "${(DashEncoder.HEIGHT * MapSnapshotProvider.PIXEL_RATIO).toInt()}" +
+                "@${MapSnapshotProvider.PIXEL_RATIO}",
         )
 
         } catch (e: Throwable) {
@@ -1192,7 +1204,12 @@ class DashEngineController(
         val map = snapshot.bitmap
         val blank = MapSnapshotProvider.isBlank(map)
         val canvas = Canvas(bmp)
-        canvas.drawBitmap(map, 0f, 0f, null)
+        // Scaled up when MapLibre rendered smaller than the frame (see
+        // MapSnapshotProvider.PIXEL_RATIO). FILTER_BITMAP_FLAG is the point, not a
+        // detail: the bilinear smoothing is the low-pass that makes the frame
+        // cheap to encode, and a nearest-neighbour upscale would put the hard
+        // edges straight back while also looking worse.
+        canvas.drawBitmap(map, null, frameRect, upscalePaint)
         // Snapshot bitmaps are allocated natively and arrive one per redraw. Since
         // API 26 their pixels live outside the Java heap, so the GC feels no
         // pressure from them and would leave the free to a finalizer — at 631 KB a
@@ -1214,8 +1231,21 @@ class DashEngineController(
             gpsLost = gpsLost,
         )
         // The projection comes off the snapshot that was just drawn, so overlays
-        // and map can never disagree about where a coordinate is.
-        overlays.draw(canvas, frame, MapProjection { lat, lng -> snapshot.pixelForLatLng(LatLng(lat, lng)) })
+        // and map can never disagree about where a coordinate is — but it speaks
+        // in the SNAPSHOT's pixels, and the snapshot is smaller than the frame
+        // whenever PIXEL_RATIO is below 1. Scaling here keeps that guarantee: the
+        // same coordinate lands on the same road after the upscale above. Miss
+        // this and the route floats off the map by a factor of two, on a screen
+        // nobody is looking at while it happens.
+        val projScale = 1f / MapSnapshotProvider.PIXEL_RATIO
+        overlays.draw(
+            canvas,
+            frame,
+            MapProjection { lat, lng ->
+                val p = snapshot.pixelForLatLng(LatLng(lat, lng))
+                if (projScale == 1f) p else PointF(p.x * projScale, p.y * projScale)
+            },
+        )
 
         renderStats.mapDrawn(
             snapshotMs = snapshotMs,

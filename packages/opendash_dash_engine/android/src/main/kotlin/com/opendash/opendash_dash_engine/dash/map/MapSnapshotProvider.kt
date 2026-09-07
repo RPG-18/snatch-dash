@@ -216,9 +216,9 @@ class MapSnapshotProvider(private val context: Context) {
      */
     private fun buildSnapshotter(styleJson: String, width: Int, height: Int): MapSnapshotter {
         val options = MapSnapshotter.Options(width, height)
-            // The frame is 526×300 device pixels exactly — there is no screen
-            // density involved, the panel is on the other end of a video stream.
-            .withPixelRatio(1f)
+            // Renders the same ground into FEWER pixels, then the frame loop
+            // scales it back up — see [PIXEL_RATIO].
+            .withPixelRatio(PIXEL_RATIO)
             // Both default to ON, so both have to be turned off by name. Decided
             // 2026-09-04 (review-spec.md, C6) without waiting for the hardware:
             // on 526×300 under a round bezel they cost a visible share of the
@@ -471,6 +471,32 @@ class MapSnapshotProvider(private val context: Context) {
 
     companion object {
         private const val TAG = "MapSnapshotProvider"
+
+        /**
+         * How many pixels MapLibre draws per frame pixel. Below 1 it draws the
+         * same ground into fewer of them and the frame loop scales the result up.
+         *
+         * **This is a compression lever, not a performance one.** The dash froze
+         * on a stream measured at 159 kbps — inside its own 204800 profile — so
+         * the failure is not bandwidth. What the 2026-09-06 numbers point at is
+         * fragment count: an IDR of 15-20 KB goes out as 11-15 FU-A fragments and
+         * every one of them must arrive, on a link that dropped 8 times in 14
+         * minutes. The same ride over empty water, where frames cost 2.0 packets,
+         * worked. Halving the rendered resolution is the cheapest way to make a
+         * keyframe fit in one or two packets: it is exactly the low-pass the old
+         * raster pipeline got for free from bilinear-scaled 256 px tiles, and
+         * losing it is what made every frame expensive (see «Битрейт: вектор
+         * кодируется дороже растра» in spec/drawing_from_local_tiles.md).
+         *
+         * The map keeps its apparent size — same extent, same zoom, softer. Text
+         * softens with it, which is the cost and the reason this is a tunable
+         * constant rather than a decision buried in a call.
+         *
+         * Anything that reads the snapshot's own projection must scale by
+         * `1 / PIXEL_RATIO`; [MapSnapshotProvider] does not draw overlays, so
+         * that duty sits with the frame loop.
+         */
+        const val PIXEL_RATIO = 0.5f
 
         /**
          * How long a snapshot may stay out past its deadline before it counts as

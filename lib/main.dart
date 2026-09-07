@@ -3,9 +3,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/date_symbol_data_local.dart';
 import 'package:talker_riverpod_logger/talker_riverpod_logger.dart';
 import 'package:yandex_maps_mapkit/init.dart' as ymk;
-import 'package:yandex_maps_mapkit/mapkit_factory.dart' show mapkit;
 
 import 'l10n/app_localizations.dart';
+import 'nav/mapkit_lifecycle.dart';
 import 'nav/voice_manager.dart';
 import 'router/app_router.dart';
 import 'state/dash_button_controller.dart';
@@ -33,8 +33,10 @@ void main() async {
   await ymk.initMapkit(apiKey: _yandexApiKey);
   // MapKit stays idle — search/routing requests never leave the device —
   // until onStart() is called, mirroring Activity.onStart()/onStop() on the
-  // native Android SDK this wraps.
-  mapkit.onStart();
+  // native Android SDK this wraps. When it may be stopped again is
+  // [MapkitLifecycle]'s call, not this observer's: a reroute needs MapKit
+  // running long after the rider's screen has gone dark.
+  MapkitLifecycle.start();
   WidgetsBinding.instance.addObserver(_MapkitLifecycleObserver());
   attachNativeLogBridge();
   runApp(ProviderScope(
@@ -51,9 +53,9 @@ class _MapkitLifecycleObserver extends WidgetsBindingObserver {
   void didChangeAppLifecycleState(AppLifecycleState state) {
     switch (state) {
       case AppLifecycleState.resumed:
-        mapkit.onStart();
+        MapkitLifecycle.setForeground(true);
       case AppLifecycleState.paused:
-        mapkit.onStop();
+        MapkitLifecycle.setForeground(false);
       case AppLifecycleState.inactive:
       case AppLifecycleState.detached:
       case AppLifecycleState.hidden:

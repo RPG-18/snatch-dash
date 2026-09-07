@@ -2,6 +2,7 @@ package com.opendash.opendash_dash_engine.util
 
 import android.content.Context
 import android.os.Build
+import com.opendash.opendash_dash_engine.BuildConfig
 import java.io.File
 import java.security.MessageDigest
 
@@ -22,6 +23,22 @@ object BuildId {
         cached ?: synchronized(this) {
             cached ?: runCatching { compute(context) }.getOrDefault("unknown").also { cached = it }
         }
+
+    /**
+     * The commit this module was compiled from — nine hex, plus `+dirty` when the
+     * tree had tracked edits that are in no commit at all.
+     *
+     * Complements [sha12] rather than replacing it, because the two answer
+     * different questions. [sha12] hashes the installed APK: it proves which
+     * binary produced a log, and catches the "I thought I installed that" case.
+     * This one points back at source. Only the pair can answer the question that
+     * actually gets asked of a field log — "is the change I am looking at in the
+     * build that produced this?" — and on 2026-09-06 neither half existed for
+     * source, which turned a bisect over four builds into guesswork.
+     *
+     * `"unknown"` when built outside a git checkout; see the build script.
+     */
+    val gitSha: String get() = BuildConfig.GIT_SHA
 
     /** Warm the cache off the main thread (call once from Application.onCreate). */
     fun warm(context: Context) {

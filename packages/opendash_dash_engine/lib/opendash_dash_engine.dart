@@ -25,6 +25,19 @@ class DashEngine {
   Stream<Map<String, dynamic>> get stateStream =>
       OpendashDashEnginePlatform.instance.stateStream;
 
+  /// One composed dash frame per sent frame, for the debug screen. Keys: `png`
+  /// (`Uint8List`, the 526×300 frame losslessly compressed), `zoom`,
+  /// `encodedBytes`, `framesSent`, `decoderOpens`, `fps`, `renderScale`.
+  ///
+  /// **Subscribing turns frame production on**; dropping the subscription turns
+  /// it off. Nothing is produced — and nothing is compressed — while nobody
+  /// listens, which is what keeps a ride with the screen off free of it.
+  ///
+  /// `decoderOpens` is NOT "frames confirmed": `09 06/04 55` is a one-shot
+  /// "decoder opened" milestone, 1-3 per session. See `spec/video.md`.
+  Stream<Map<String, dynamic>> get frameStream =>
+      OpendashDashEnginePlatform.instance.frameStream;
+
   /// Mirrors every native `DebugLog` line — keys `tag`, `level` (D/I/W/E),
   /// `message`. Meant to be piped into the app's own logger (see
   /// `util/app_logger.dart`), not read directly by feature code.

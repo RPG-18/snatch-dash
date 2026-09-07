@@ -8,7 +8,7 @@ import org.json.JSONObject
 
 /** Which of the two prepared styles to draw with. */
 enum class MapTheme(val asset: String) {
-    LIGHT("positron"),
+    LIGHT("osm-bright"),
     DARK("dark-matter");
 
     companion object {

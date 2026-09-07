@@ -216,9 +216,9 @@ class MapSnapshotProvider(private val context: Context) {
      */
     private fun buildSnapshotter(styleJson: String, width: Int, height: Int): MapSnapshotter {
         val options = MapSnapshotter.Options(width, height)
-            // The frame is 526×300 device pixels exactly — there is no screen
-            // density involved, the panel is on the other end of a video stream.
-            .withPixelRatio(1f)
+            // Renders the same ground into FEWER pixels, then the frame loop
+            // scales it back up — see [PIXEL_RATIO].
+            .withPixelRatio(PIXEL_RATIO)
             // Both default to ON, so both have to be turned off by name. Decided
             // 2026-09-04 (review-spec.md, C6) without waiting for the hardware:
             // on 526×300 under a round bezel they cost a visible share of the
@@ -473,6 +473,35 @@ class MapSnapshotProvider(private val context: Context) {
         private const val TAG = "MapSnapshotProvider"
 
         /**
+         * How many pixels MapLibre draws per frame pixel. Below 1 it draws the
+         * same ground into fewer of them and the frame loop scales the result up.
+         *
+         * **Back at 1.0 because 0.5 was tried and did not work.** The idea was to
+         * shrink the encoded frame — an IDR of 15-20 KB goes out as 11-15 FU-A
+         * fragments, all of which must arrive, on a link that keeps dropping — by
+         * feeding the encoder a softer picture. It does not work, and cannot:
+         * `KEY_BIT_RATE` is a target the encoder FILLS, not a ceiling derived from
+         * the content. Hand it an easier image and it lowers the quantiser and
+         * spends the same bits on a cleaner result.
+         *
+         * Measured 2026-09-07 at 0.5: first IDR 21.6 and 22.5 KB against 13.7-22.2
+         * KB at full resolution, and the stream went from 159 kbps to 204 and 243 —
+         * *above* the dash's own 204800 profile. Not smaller. Bigger.
+         *
+         * The lever for frame size is the bitrate target and a cap on what an
+         * I-frame may spend (`video-qp-i-min`), not the complexity of the picture.
+         * See «Битрейт: вектор кодируется дороже растра» in
+         * spec/drawing_from_local_tiles.md — its cost analysis holds, its
+         * conclusion did not.
+         *
+         * Kept as a constant rather than deleted: the plumbing around it (upscale
+         * with a bilinear filter, projection scaled by `1 / PIXEL_RATIO`) is
+         * correct and measured, so the knob costs nothing at 1.0 and is there if
+         * a reason to render smaller ever turns up that is not this one.
+         */
+        const val PIXEL_RATIO = 1.0f
+
+        /**
          * How long a snapshot may stay out past its deadline before it counts as
          * wedged rather than slow.
          *
@@ -538,9 +567,16 @@ class MapSnapshotProvider(private val context: Context) {
 
         /**
          * One abandoned snapshot's bitmap, for turning [abandoned] into the number
-         * that actually matters: 526×300 at ARGB_8888.
+         * that actually matters.
+         *
+         * Sized from what MapLibre actually renders, not from the frame: with
+         * [PIXEL_RATIO] below 1 the snapshot is smaller than 526×300, and quoting
+         * the frame's size would overstate a leak by `1/ratio²` — four times over
+         * at 0.5. A diagnostic that exaggerates is worse than none: it sends the
+         * next reader hunting a leak that is a quarter the size they were told.
          */
-        private const val BITMAP_KB = 526L * 300 * 4 / 1024
+        private const val BITMAP_KB =
+            (526L * PIXEL_RATIO).toLong() * (300L * PIXEL_RATIO).toLong() * 4 / 1024
 
         /**
          * Whether the snapshot came back with no map on it — every sampled pixel

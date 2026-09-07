@@ -29,6 +29,12 @@ env:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      # См. одноимённую переменную в nightly.yml: коммит вшивается в APK
+      # (GIT_SHA в packages/opendash_dash_engine/android/build.gradle.kts) и
+      # печатается в каждом логе поездки. Для релиза это тот коммит, на который
+      # указывает тег.
+      SNATCH_BUILD_SHA: ${{ github.sha }}
     steps:
       - uses: actions/checkout@v4
 

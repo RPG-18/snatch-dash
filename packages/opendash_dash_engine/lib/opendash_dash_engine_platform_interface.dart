@@ -33,6 +33,12 @@ abstract class OpendashDashEnginePlatform extends PlatformInterface {
     throw UnimplementedError('logStream has not been implemented.');
   }
 
+  /// Composed dash frames for the debug screen. Subscribing is what makes the
+  /// engine start producing them — nothing is produced while nobody listens.
+  Stream<Map<String, dynamic>> get frameStream {
+    throw UnimplementedError('frameStream has not been implemented.');
+  }
+
   Future<void> connect() => throw UnimplementedError();
   Future<void> disconnect() => throw UnimplementedError();
 

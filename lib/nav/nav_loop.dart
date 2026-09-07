@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:opendash_dash_engine/opendash_dash_engine.dart';
 
 import 'geo_point.dart';
+import 'mapkit_lifecycle.dart';
 import 'nav_engine.dart';
 import 'route.dart';
 import 'router.dart';
@@ -55,6 +56,10 @@ class NavLoop {
   int _consecutiveFailures = 0;
 
   void start() {
+    // Keeps MapKit running even with the screen off, which is where this loop
+    // does most of its work — see [MapkitLifecycle] for what a stopped MapKit
+    // does to [_reroute].
+    MapkitLifecycle.setNavigating(true);
     VoiceManager.instance.resetTrip();
     DashEngine.instance.setNavState(
       remainingMeters: _route.totalMeters,
@@ -69,6 +74,7 @@ class NavLoop {
 
   void stop() {
     _stopped = true;
+    MapkitLifecycle.setNavigating(false);
     _sub?.cancel();
     _sub = null;
     _timer?.cancel();
@@ -93,6 +99,15 @@ class NavLoop {
 
     final pos = GeoPoint(lat, lng);
     final progress = NavEngine.progress(_route, pos, _speedMps);
+    // Re-asserted every tick rather than only in [start]/[stop], because [stop] is
+    // reached from exactly one place a rider can tap (the Dash screen's "exit
+    // navigation") and arriving is not it: this loop keeps ticking after arrival,
+    // so a flag set once in [start] would hold MapKit open for the rest of the
+    // process — a battery cost paid with the screen off, which is the whole point
+    // of the app. Nothing left to reroute towards once we are there; and if the
+    // rider moves off again, `arrived` goes false and this puts MapKit back long
+    // before the off-route debounce could ask for a route.
+    MapkitLifecycle.setNavigating(!progress.arrived);
     final eta = DateTime.now().add(Duration(seconds: progress.etaSeconds.round()));
     final etaHHMM =
         '${eta.hour.toString().padLeft(2, '0')}${eta.minute.toString().padLeft(2, '0')}';

@@ -45,7 +45,13 @@ object RideDiagnostics {
             .onSuccess { dir = it }
             .onFailure { DebugLog.w(TAG) { "init failed: ${it.message}" } }
         deviceLabel = "${Build.MANUFACTURER} ${Build.MODEL}, Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})"
-        buildLabel = "build ${BuildId.sha12(context)}, app ${BuildId.versionLabel(context)}"
+        buildLabel = "build ${BuildId.sha12(context)} @${BuildId.gitSha}, app ${BuildId.versionLabel(context)}"
+        // Also into app_log.txt, which the session header never reaches: [start]
+        // writes that header with [raw], straight to the ride file. So a pulled
+        // app_log.txt carried no build identity at all — and it is the half of the
+        // pair that gets pulled alone, because it is where the native MapLibre and
+        // socket chatter lands. One line per process start.
+        DebugLog.i(TAG) { "$deviceLabel, $buildLabel" }
     }
 
     /** Open a fresh session file and rotate old ones. No-op if [init] was never called. */

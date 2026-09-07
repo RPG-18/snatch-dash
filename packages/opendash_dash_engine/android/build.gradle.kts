@@ -25,6 +25,57 @@ plugins {
     id("com.android.library")
 }
 
+// ── Build provenance ─────────────────────────────────────────────────────────
+//
+// The commit the APK was compiled from, stamped into every ride log next to
+// [BuildId.sha12]. The two answer different questions and neither replaces the
+// other: the APK's SHA says WHICH BINARY ran (so a log cannot be misattributed
+// to a build that was never installed), this says WHICH SOURCE it came from.
+//
+// Added 2026-09-06, when a field question — the map on the dash showing one
+// static frame — turned into "which build did that start on", and the only
+// identifiers in the logs were APK hashes with no way back to a commit. That is
+// a bisect that cannot be read.
+//
+// `--untracked-files=no` deliberately: a stray untracked file next to the repo
+// (a scratch note, an editor backup) is not a source change and must not mark an
+// otherwise-clean build dirty. A tracked edit does, and that is the case worth
+// shouting about — a "+dirty" build cannot be matched to anything.
+fun gitOrNull(vararg args: String): String? = runCatching {
+    val out = providers.exec {
+        commandLine("git", *args)
+        isIgnoreExitValue = true
+    }
+    if (out.result.get().exitValue == 0) {
+        out.standardOutput.asText.get().trim().ifEmpty { null }
+    } else {
+        null
+    }
+}.getOrNull()
+
+// CI passes the authoritative SHA instead of letting us ask git, because asking
+// git there answers the wrong question in two ways. On a `pull_request` checkout
+// `HEAD` is an ephemeral merge commit that exists in nobody's history, so the
+// stamp would point at a commit you cannot check out. And a container or shallow
+// checkout can leave git refusing to answer at all ("detected dubious
+// ownership"), which quietly degrades to "unknown" for exactly the builds that
+// get handed to someone else. The workflows set SNATCH_BUILD_SHA; GITHUB_SHA is
+// the fallback for a CI job that forgot to.
+//
+// Nothing here appends `+dirty`: a CI checkout is clean by construction, and a
+// dirty flag derived from a workspace we did not create would be noise.
+val ciSha: String? = sequenceOf("SNATCH_BUILD_SHA", "GITHUB_SHA")
+    .mapNotNull { System.getenv(it)?.trim() }
+    .firstOrNull { it.isNotEmpty() }
+    ?.take(9)
+
+// "unknown" rather than a failed build: this module is also consumable from a
+// pub cache checkout with no .git at all, and provenance is diagnostics, not a
+// build requirement.
+val gitLabel: String = ciSha ?: gitOrNull("rev-parse", "--short=9", "HEAD")?.let { sha ->
+    if (gitOrNull("status", "--porcelain", "--untracked-files=no").isNullOrEmpty()) sha else "$sha+dirty"
+} ?: "unknown"
+
 android {
     namespace = "com.opendash.opendash_dash_engine"
 
@@ -46,6 +97,7 @@ android {
 
     defaultConfig {
         minSdk = 24
+        buildConfigField("String", "GIT_SHA", "\"$gitLabel\"")
     }
 
     buildFeatures {

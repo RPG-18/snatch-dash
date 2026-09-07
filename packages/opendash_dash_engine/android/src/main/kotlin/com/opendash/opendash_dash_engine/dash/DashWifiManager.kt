@@ -125,6 +125,37 @@ class DashWifiManager(
      *   any rider's Tripper without hardcoding their SSID. When false, exact-match.
      */
     fun connect(ssid: String, password: String = "", prefixMatch: Boolean = false) {
+        // Already holding exactly this network: keep the request that holds it and return.
+        // [requestNetwork] starts with an unconditional [release], and for a link brought up by
+        // WifiNetworkSpecifier that release IS the disconnect — the platform tears the network
+        // down the moment the request holding it goes away (spec/wifi_retry_policy.md, scenario
+        // D). Worse than the drop itself: the teardown is asynchronous, so
+        // [findAlreadyConnectedDashNetwork] a few lines later still sees the SSID, returns
+        // early and calls [markConnected] with NO callback registered — a link that is already
+        // dying and can now never report onLost. Field log 2026-09-07 21:38:29: "Requesting
+        // WiFi" → "Using already-connected matching WiFi" → CONNECTED → ENETUNREACH on the very
+        // next TX. Reached whenever `connect()` runs on a live dash — "Send to Dash" mid-ride.
+        //
+        // Conditioned on [networkCallback], not on CONNECTED alone: that status can also mean
+        // "we found the dash already connected and took the shortcut in [requestNetwork]",
+        // which registers no callback and can therefore never learn that the link has died.
+        // Keeping the request in THAT case would invert this guard's intent — there is no
+        // request to keep, and a re-request is the one thing that can still recover the link.
+        val live = _state.value
+        if (live.status == WifiConnStatus.CONNECTED &&
+            networkCallback != null &&
+            network != null &&
+            (if (prefixMatch) live.ssid.startsWith(ssid) else live.ssid == ssid)
+        ) {
+            // The session counters (hasConnectedOnce, reconnectCount, downtime) deliberately
+            // keep running: this is the same connection, not a new one.
+            wantConnected   = true
+            pendingSsid     = ssid
+            pendingPassword = password
+            pendingPrefix   = prefixMatch
+            DebugLog.i(TAG) { "connect() — already on '${maskSsid(live.ssid)}', keeping the live request" }
+            return
+        }
         wantConnected    = true
         pendingSsid      = ssid
         pendingPassword  = password
@@ -240,6 +271,9 @@ class DashWifiManager(
         // second "Requesting WiFi", whose own 30s CONNECT_TIMEOUT is what actually decided
         // the outcome). Symmetric to the same cancel already done in onAvailable below.
         reconnectJob?.cancel()
+        // Whether the link we are about to drop was OURS decides whether the shortcut below is
+        // allowed to believe what it sees — read before [release] clears the field.
+        val hadOwnRequest = networkCallback != null
         release()
         DebugLog.i(TAG) {
             "Requesting WiFi: '${maskSsid(pendingSsid)}' " +
@@ -247,13 +281,27 @@ class DashWifiManager(
         }
         _state.value = WifiState(status = WifiConnStatus.REQUESTING, ssid = pendingSsid)
 
-        findAlreadyConnectedDashNetwork()?.let { (activeNetwork, activeSsid) ->
-            network = activeNetwork
-            resolvedSsid = activeSsid
-            DebugLog.i(TAG) { "Using already-connected matching WiFi '${maskSsid(activeSsid)}'" }
-            onSsidResolved?.invoke(activeSsid)
-            markConnected(activeSsid)
-            return
+        // Only when the dash network is held by something OTHER than a request we just
+        // dropped — a link left over from a previous process, or one the rider joined from
+        // system settings. That is the case this shortcut was written for, and there the
+        // missing NetworkCallback is a limitation we accept.
+        //
+        // Straight after our own [release] it is a trap instead: tearing down a
+        // WifiNetworkSpecifier request disconnects asynchronously (binder → ConnectivityService
+        // → WifiNetworkFactory), so WifiManager still reports the SSID for a moment. Believing
+        // it here published CONNECTED for a link already on its way out, with no callback to
+        // ever report onLost — the session then sat on dead sockets until the RX watchdog, and
+        // WifiManager itself never noticed anything. Reached from [scheduleReconnect] as much as
+        // from a manual reconnect, which is why this belongs here and not only in [connect].
+        if (!hadOwnRequest) {
+            findAlreadyConnectedDashNetwork()?.let { (activeNetwork, activeSsid) ->
+                network = activeNetwork
+                resolvedSsid = activeSsid
+                DebugLog.i(TAG) { "Using already-connected matching WiFi '${maskSsid(activeSsid)}'" }
+                onSsidResolved?.invoke(activeSsid)
+                markConnected(activeSsid)
+                return
+            }
         }
 
         val specBuilder = WifiNetworkSpecifier.Builder()

@@ -3,6 +3,9 @@ package com.opendash.opendash_dash_engine
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
+import android.graphics.Paint
+import android.graphics.PointF
+import android.graphics.Rect
 import android.media.AudioManager
 import android.media.ToneGenerator
 import android.os.Build
@@ -31,6 +34,7 @@ import com.opendash.opendash_dash_engine.media.CallInfoProvider
 import com.opendash.opendash_dash_engine.media.MediaInfoProvider
 import com.opendash.opendash_dash_engine.util.DebugLog
 import com.opendash.opendash_dash_engine.util.RideDiagnostics
+import java.util.Locale
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -210,6 +214,12 @@ class DashEngineController(
     // MAX_AUTH_RETRIES's doc. Reset on READY (auth actually succeeded) and on every fresh
     // top-level [connect] call.
     private var authRetries = 0
+    // True once the WiFi link came up and a session was started on it, cleared when the link
+    // goes away again (and on every fresh [connect]). Both watch jobs are main-confined, so no
+    // @Volatile: [wifiWatchJob] writes it, the session watcher reads it to tell "the link never
+    // came up" apart from "the link is up and the session on it died". It says nothing about
+    // *when* that session was started — see the re-check in the retry branch.
+    private var sessionStarted = false
     // Armed whenever session.state isn't STREAMING, cancelled once it is — see
     // RECONNECT_GIVEUP_MS's doc.
     private var giveupJob: Job? = null
@@ -264,6 +274,20 @@ class DashEngineController(
     @Volatile private var camHdg = 0f
     @Volatile private var camInit = false
     private var camMoving = false
+
+    /**
+     * Metres the camera centre has travelled since the last `[map]` line.
+     *
+     * The camera's own movement, not the raw fix: after smoothing, and after the
+     * `haveTarget` gate, this is what the snapshot was actually taken at. That is
+     * the question a frozen-map report asks — "did the view follow me" — and
+     * until 2026-09-06 nothing in a ride file could answer it. `redraws` could
+     * not: the redraw signature carries heading at 0.1°, which jitters on its own,
+     * so a full `redraws=120/120` window is consistent with a centre that never
+     * moved a metre.
+     */
+    private var windowMovedM = 0.0
+
     /**
      * The controllable part of the last camera [logCameraSend] reported, so it
      * only speaks when one of those parts actually changed.
@@ -273,6 +297,12 @@ class DashEngineController(
      * and by [startStream] before the loop launches, so it needs no @Volatile.
      */
     private var lastCameraLogKey: String? = null
+
+    /** Destination rect for the snapshot upscale; reused, this runs 4 times a second. */
+    private val frameRect = Rect(0, 0, DashEncoder.WIDTH, DashEncoder.HEIGHT)
+
+    /** See the note at its use — the bilinear filter is the whole reason it exists. */
+    private val upscalePaint = Paint(Paint.FILTER_BITMAP_FLAG)
     private var lastTickNs = 0L
     private var lastSignature = ""
     private var lastRedrawAt = 0L
@@ -286,9 +316,46 @@ class DashEngineController(
 
     var onButton: ((Int) -> Unit)? = null
 
+    /**
+     * Set while the debug screen is on screen; null the rest of the time.
+     *
+     * **The null check is the feature.** Handing the composed frame to Dart means
+     * compressing 526×300 to PNG on the frame thread, four times a second, and
+     * a ride pays nothing for a screen nobody is looking at — the whole premise
+     * of this app is that the phone rides with its display off. So the cost is
+     * bought only by an attached listener, and detaching stops it dead.
+     *
+     * PNG, not JPEG: the screen exists to look at frame sharpness (see
+     * spec/dash_screen_debug.md), and a lossy codec in the path would be
+     * answering the question with its own artefacts.
+     */
+    @Volatile var onFramePreview: ((Map<String, Any?>) -> Unit)? = null
+
+    /** Size the encoder produced for the most recent frame — one of the debug screen's numbers. */
+    @Volatile private var lastEncodedBytes = 0
+
+    /** Frames handed to the encoder since [startStream]; mirrors its local counter. */
+    @Volatile private var framesSentTotal = 0
+
     // ── Public API (invoked by the plugin's MethodChannel handler) ────────
 
     fun connect() {
+        // Idempotent on a live connection, which spec/fsm.md already promises for the
+        // `idleMap → navigating` transition ("connect() — no-op"): only DashSession.connect()
+        // had that guard, this method had none and ran the whole cycle again on a connected
+        // dash. That re-request tore down the WiFi link the running session's sockets are bound
+        // to (see DashWifiManager.connect's own guard), reset [hasConnectedOnce] and
+        // [authRetries], opened a second ride file mid-ride and restarted media forwarding —
+        // for a rider, "Send to Dash" killed the picture ~10s later. Nothing is lost by
+        // returning here: [setDestination] pushes the new destination to the session itself.
+        val sessionState = session.state.value
+        if (sessionState != DashState.IDLE && sessionState != DashState.ERROR &&
+            wifiManager.state.value.status == WifiConnStatus.CONNECTED
+        ) {
+            DebugLog.i(TAG) { "connect() ignored — session already $sessionState on a live WiFi link" }
+            RideDiagnostics.log("connect", "connect() ignored — already $sessionState, link up")
+            return
+        }
         RideDiagnostics.init(context)
         RideDiagnostics.start("connect")
         RideDiagnostics.log(
@@ -303,8 +370,8 @@ class DashEngineController(
 
         val ssid = dashConfig.ssid
         wifiWatchJob?.cancel()
+        sessionStarted = false
         wifiWatchJob = scope.launch {
-            var sessionStarted = false
             wifiManager.onSsidResolved = { resolved ->
                 if (dashConfig.needsDiscovery) dashConfig.ssid = resolved
             }
@@ -374,12 +441,36 @@ class DashEngineController(
                     // spec/wifi_retry_policy.md's "Из живого форка"). Just retry the handshake
                     // directly, same network, bounded so a genuinely dead dash still ends in
                     // ERROR rather than retrying forever.
-                    DashState.ERROR -> {
+                    //
+                    // IDLE alongside ERROR, and for the same reason: DashSession.endLink puts a
+                    // link that died under a live WiFi network into IDLE, not ERROR (its own doc
+                    // explains why — the state guard in DashSession.connect must let the retry
+                    // through). That is spec/wifi_retry_policy.md's scenario C, the RX watchdog
+                    // firing while WifiManager still reports CONNECTED, so [wifiWatchJob] never
+                    // sees a state change and nothing at all reconnected: the ride ended at the
+                    // 120-second give-up timer. A deliberate disconnect() never reaches here at
+                    // all — it cancels this job before it touches the session.
+                    //
+                    // Both checks are made AFTER the wait, and the counter is spent only if the
+                    // retry actually happens, because the value that opens this branch can be
+                    // stale before the delay even starts: StateFlow replays its current value to
+                    // a brand-new collector, and on a `connect()` over an already-live WiFi link
+                    // that value is the PREVIOUS attempt's ERROR. [wifiWatchJob] runs first and
+                    // has already called session.connect() by then — but that only launches
+                    // runSession on Dispatchers.IO, so CONNECTING is not published yet, and this
+                    // collector sees the corpse of the old session. Retrying on it cancels a
+                    // handshake that is 1.5 s into its own life, every single time. Re-reading
+                    // the state after the delay is what tells the two apart: a session that
+                    // really is dead is still IDLE/ERROR, a replayed one has moved on.
+                    DashState.ERROR, DashState.IDLE -> {
                         val wifi = wifiManager.state.value
-                        if (wifi.status == WifiConnStatus.CONNECTED && authRetries < MAX_AUTH_RETRIES) {
-                            authRetries++
+                        if (sessionStarted && wifi.status == WifiConnStatus.CONNECTED && authRetries < MAX_AUTH_RETRIES) {
                             delay(AUTH_RETRY_DELAY_MS)
-                            if (wifiManager.state.value.status == WifiConnStatus.CONNECTED) {
+                            val settled = session.state.value
+                            if (wifiManager.state.value.status == WifiConnStatus.CONNECTED &&
+                                (settled == DashState.IDLE || settled == DashState.ERROR)
+                            ) {
+                                authRetries++
                                 session.connect(wifi.ssid, wifiManager.network)
                             }
                         }
@@ -407,6 +498,7 @@ class DashEngineController(
         streamJob?.cancel()
         sessionWatchJob?.cancel(); sessionWatchJob = null
         wifiWatchJob?.cancel(); wifiWatchJob = null
+        sessionStarted = false
         stopMediaForwarding()
         session.disconnect()
         wifiManager.disconnect()
@@ -548,7 +640,10 @@ class DashEngineController(
 
     fun setFollowMode(enabled: Boolean) {
         followMode = enabled
-        if (enabled) { panX = 0f; panY = 0f }
+        // Cleared with the pan itself, here and in the other two places pan resets:
+        // a stale flag would swallow the log line for the next genuine bound-hit,
+        // which is the one thing this flag exists to report.
+        if (enabled) { panX = 0f; panY = 0f; panAtBound = false }
     }
 
     /**
@@ -597,6 +692,12 @@ class DashEngineController(
      * line per press at a rate a thumb sets.
      */
     private fun stepZoom(delta: Int, action: String) {
+        // Logged on the calling (Flutter platform) thread, unlike [panBy], and that
+        // is the deliberate half of the asymmetry: this arrives at thumb rate from a
+        // physical button — 110 presses across the whole 2026-09-05 ride — where
+        // panBy is exposed to a drag gesture that could call it at frame rate. One
+        // small append per press is worth the line that told us the ceiling was too
+        // low; a per-frame append would not be.
         val before = zoom
         zoom = (zoom + delta).coerceIn(ZOOM_MIN, ZOOM_MAX)
         RideDiagnostics.log(
@@ -616,6 +717,15 @@ class DashEngineController(
     private fun zoomText(hundredths: Int) =
         "${hundredths / 100}.${(hundredths % 100).toString().padStart(2, '0')}"
 
+    /**
+     * A coordinate for the log: five decimals, about a metre, and a decimal POINT.
+     *
+     * `Locale.ROOT` for the same reason [zoomText] avoids `format` entirely — the
+     * default locale on this device writes "60,24647", and a comma is what
+     * separates the pair.
+     */
+    private fun geoText(v: Double) = String.format(Locale.ROOT, "%.5f", v)
+
     fun toggleHeadingUp() {
         headingUp = !headingUp
         RideDiagnostics.log("camera", "headingUp=$headingUp")
@@ -625,6 +735,7 @@ class DashEngineController(
         followMode = true
         panX = 0f
         panY = 0f
+        panAtBound = false
         RideDiagnostics.log("camera", "recenter — follow on, pan cleared")
     }
 
@@ -694,6 +805,17 @@ class DashEngineController(
         var framesEncoded = 0
         var idrFramesEncoded = 0
         var rtpPacketsSent = 0
+        // Bytes, not just packets. The packet count alone cannot answer the only
+        // question that matters about this stream — are we inside the dash's own
+        // ~200 kbps profile (see DashEncoder.BITRATE) — because a packet is
+        // anywhere from a few bytes to 1392. On 2026-09-06 that left the measured
+        // rate somewhere between 168 and 470 kbps, which is the difference between
+        // "fine" and "twice the dash's profile", and nothing in the log could
+        // narrow it.
+        var rtpBytesSent = 0L
+        // Which profile the encoder is currently on, so it is poked only on a
+        // transition rather than every frame.
+        var idleBitrate = false
         // One-shot timing, paired with DashSession's own "dash DECODED first IDR" line — the
         // gap between the two is exactly the dash's own decode latency for this session. Ported
         // idea from OpenMotoDash/NorthStar's `loggedFirstFrame` (see
@@ -710,7 +832,11 @@ class DashEngineController(
         // more correct RTP practice regardless, just not proven to fix anything real here.
         var videoPtsMs = 0L
 
-        val packetizer = RtpPacketizer { rtpPkt -> session.sendRtp(rtpPkt); rtpPacketsSent++ }
+        val packetizer = RtpPacketizer { rtpPkt ->
+            session.sendRtp(rtpPkt)
+            rtpPacketsSent++
+            rtpBytesSent += rtpPkt.size
+        }
         // endOfAU comes from NalProcessor, which knows which NAL closes the access unit —
         // this used to be hardcoded `true`, marking every packet. Harmless while each AU
         // was exactly one NAL, but wrong the moment an IDR goes out as separate
@@ -718,10 +844,18 @@ class DashEngineController(
         val nalProc = NalProcessor { nal, endOfAU ->
             packetizer.packetize(nal, endOfAU = endOfAU, ptsMs = videoPtsMs)
         }
-        val onEncoded: (ByteArray, Boolean) -> Unit = { annexB, isKey ->
-            framesEncoded++
-            if (isKey) idrFramesEncoded++
-            if (!loggedFirstFrame) {
+        val onEncoded: (ByteArray, Boolean, Boolean) -> Unit = { annexB, isKey, isConfig ->
+            // The SPS/PPS buffer goes to the packetizer like any other but is not a
+            // frame: counting it would put 30 bytes of parameter sets in front of
+            // anyone reading "size of the last frame", once per session, at exactly
+            // the moment they start looking.
+            if (!isConfig) {
+                framesEncoded++
+                lastEncodedBytes = annexB.size
+                framesSentTotal = framesEncoded
+                if (isKey) idrFramesEncoded++
+            }
+            if (!loggedFirstFrame && !isConfig) {
                 loggedFirstFrame = true
                 RideDiagnostics.log("stream", "first video frame sent (key=$isKey, ${annexB.size}B)")
             }
@@ -753,6 +887,7 @@ class DashEngineController(
         lastSignature = ""
         camInit = false; lastTickNs = 0L
         haveFrame = false
+        windowMovedM = 0.0
         // Cleared so every session's file opens with the camera it started on.
         // The zoom a rider left behind survives the disconnect (the field does),
         // and without this the one line saying what it is would be in the PREVIOUS
@@ -777,7 +912,10 @@ class DashEngineController(
         snapshotGeneration = snapshots.currentGeneration()
         RideDiagnostics.log(
             "map",
-            "style ${style.theme} from ${style.packs} pack(s), ${style.json.length / 1024} KiB",
+            "style ${style.theme} from ${style.packs} pack(s), ${style.json.length / 1024} KiB, " +
+                "render ${(DashEncoder.WIDTH * MapSnapshotProvider.PIXEL_RATIO).toInt()}×" +
+                "${(DashEncoder.HEIGHT * MapSnapshotProvider.PIXEL_RATIO).toInt()}" +
+                "@${MapSnapshotProvider.PIXEL_RATIO}",
         )
 
         } catch (e: Throwable) {
@@ -802,7 +940,7 @@ class DashEngineController(
                 var lastEncoderLogAt = System.currentTimeMillis()
                 var lastRenderLogAt = lastEncoderLogAt
                 var lastFrameSentAt = 0L
-                var loggedFrames = 0; var loggedIdr = 0; var loggedRtp = 0
+                var loggedFrames = 0; var loggedIdr = 0; var loggedRtp = 0; var loggedBytes = 0L
                 // Declared outside the try/catch and assigned fresh once per iteration, so the
                 // trailing delay() below can reuse the SAME value the PTS advance used — both must
                 // agree on "how long is this frame", or the RTP timeline and the actual send
@@ -837,6 +975,18 @@ class DashEngineController(
                         // Sending it anyway put garbage on the dash for as long as the
                         // first, most expensive snapshot took.
                         if (bmp != null && enc != null && haveFrame) {
+                            // Match the encoder's target to the dash's own two profiles,
+                            // on the transition only. [camMoving] is already what picks
+                            // the frame rate, so reusing it keeps one notion of "the map
+                            // is going somewhere" instead of introducing a second that
+                            // could disagree with the first.
+                            if (camMoving && idleBitrate) {
+                                enc.requestBitrate(DashEncoder.BITRATE)
+                                idleBitrate = false
+                            } else if (!camMoving && !idleBitrate) {
+                                enc.requestBitrate(DashEncoder.BITRATE_IDLE)
+                                idleBitrate = true
+                            }
                             val encodeStart = System.currentTimeMillis()
                             enc.renderFrame { canvas -> canvas.drawBitmap(bmp, 0f, 0f, null) }
                             // Advance the presentation clock by THIS frame's interval BEFORE
@@ -851,6 +1001,7 @@ class DashEngineController(
                                 intendedIntervalMs = frameIntervalMs,
                             )
                             lastFrameSentAt = sentAt
+                            emitFramePreview(bmp, frameIntervalMs)
                         }
                         failures = 0
                         val now = System.currentTimeMillis()
@@ -873,26 +1024,51 @@ class DashEngineController(
                                     abandoned = snapshots.abandoned,
                                     errors = snapshots.errors,
                                     rebuilds = snapshots.rebuilds,
-                                ) + " zoom=${zoomText(zoom)}",
+                                ) + " zoom=${zoomText(zoom)}" +
+                                    " center=${geoText(camLat)},${geoText(camLng)}" +
+                                    " moved=${windowMovedM.toInt()}m",
                             )
+                            windowMovedM = 0.0
                         }
                         if (now - lastEncoderLogAt > ENCODER_LOG_INTERVAL_MS) {
                             val dFrames = framesEncoded - loggedFrames
                             val dIdr = idrFramesEncoded - loggedIdr
                             val dRtp = rtpPacketsSent - loggedRtp
+                            val dBytes = rtpBytesSent - loggedBytes
                             loggedFrames = framesEncoded; loggedIdr = idrFramesEncoded; loggedRtp = rtpPacketsSent
+                            loggedBytes = rtpBytesSent
                             lastEncoderLogAt = now
                             val intervalS = ENCODER_LOG_INTERVAL_MS / 1_000
                             val thermal = thermalLabel()
+                            // Into the ride file, not just app_log.txt. This is the
+                            // only number that says whether anything reached the
+                            // socket, and a frozen-map report is exactly when it is
+                            // wanted — but app_log.txt is a ring buffer that a long
+                            // ride overwrites, so on 2026-09-06 the question "did the
+                            // stream keep flowing" had no answer left by the time the
+                            // phone was back on the cable.
                             if (dFrames == 0) {
+                                // Both: the ride file needs it because that is where a
+                                // post-mortem starts, and app_log/`/more/logs` need it at
+                                // W or the level filters stop surfacing it. Duplicated
+                                // only on this branch, which by definition is rare.
                                 DebugLog.w(TAG) {
                                     "Encoder output: 0 frames in the last ${intervalS}s while STREAMING " +
                                         "— render/encode loop itself stalled (nothing to even send) — thermal=$thermal"
                                 }
+                                RideDiagnostics.log(
+                                    "stream",
+                                    "WARN encoder output: 0 frames in the last ${intervalS}s while STREAMING " +
+                                        "— render/encode loop itself stalled — thermal=$thermal",
+                                )
                             } else {
-                                DebugLog.i(TAG) {
-                                    "Encoder output: frames=$dFrames (idr=$dIdr) rtp=$dRtp thermal=$thermal in the last ${intervalS}s"
-                                }
+                                RideDiagnostics.log(
+                                    "stream",
+                                    "frames=$dFrames (idr=$dIdr) rtp=$dRtp ${dBytes / 1024}KiB " +
+                                        "${dBytes * 8 / 1000 / intervalS}kbps " +
+                                        "bitrate=${if (idleBitrate) "idle" else "moving"} " +
+                                        "thermal=$thermal in the last ${intervalS}s",
+                                )
                             }
                         }
                     } catch (e: CancellationException) {
@@ -937,7 +1113,7 @@ class DashEngineController(
      */
     private suspend fun tick(frameIntervalMs: Long) {
         if (!followMode && System.currentTimeMillis() - lastManualPanAt > MANUAL_IDLE_MS) {
-            panX = 0f; panY = 0f; followMode = true
+            panX = 0f; panY = 0f; followMode = true; panAtBound = false
         }
 
         val loc = locationTracker.location.value
@@ -966,6 +1142,15 @@ class DashEngineController(
         lastTickNs = nowNs
         val a = if (camInit) (1.0 - exp(-dt / SMOOTH_TAU)) else 1.0
 
+        // Read BEFORE the block below, which sets it. Afterwards it says "the
+        // camera has a position", not "it had one to move from" — and the first
+        // tick moves it from (0,0) to the rider, so a distance measured against
+        // the post-block flag is a 6700 km teleport across the Gulf of Guinea.
+        // That lands in `moved=` as the opening number of every fresh process,
+        // and in [camMoving] as a spurious "riding" verdict that puts the first
+        // frames at 4 fps. [startStream] clears camInit without clearing
+        // camLat/camLng, so a later stream jumps by less but jumps all the same.
+        val wasInit = camInit
         val prevLat = camLat; val prevLng = camLng
         if (haveTarget) {
             if (!camInit) { camLat = targetLat; camLng = targetLng; camHdg = heading; camInit = true }
@@ -976,7 +1161,8 @@ class DashEngineController(
                 camHdg += dh * a.toFloat()
             }
         }
-        val movedM = if (camInit) distMeters(prevLat, prevLng, camLat, camLng) else 0.0
+        val movedM = if (wasInit) distMeters(prevLat, prevLng, camLat, camLng) else 0.0
+        windowMovedM += movedM
         camMoving = movedM > 0.25 || (loc?.speed ?: 0f) > 0.8f
 
         val centerLat = if (haveTarget) camLat else 0.0
@@ -1076,9 +1262,12 @@ class DashEngineController(
     ): Boolean {
         val bmp = frameBitmap ?: return false
 
+        // One read of the volatile [headingUp] for both the padding and the log, so
+        // a toggle landing mid-frame cannot make them disagree about the mode.
+        val headingUpNow = headingUp
         val camera = cameraFor(centerLat, centerLng, heading)
-        val padding = DashCamera.padding(DashEncoder.WIDTH, DashEncoder.HEIGHT, headingUp, panX, panY)
-        logCameraSend(camera, padding)
+        val padding = DashCamera.padding(DashEncoder.WIDTH, DashEncoder.HEIGHT, headingUpNow, panX, panY)
+        logCameraSend(camera, padding, headingUpNow)
 
         val snapshotStart = System.currentTimeMillis()
         val snapshot = snapshots.capture(
@@ -1092,7 +1281,12 @@ class DashEngineController(
         val map = snapshot.bitmap
         val blank = MapSnapshotProvider.isBlank(map)
         val canvas = Canvas(bmp)
-        canvas.drawBitmap(map, 0f, 0f, null)
+        // Scaled up when MapLibre rendered smaller than the frame (see
+        // MapSnapshotProvider.PIXEL_RATIO). FILTER_BITMAP_FLAG is the point, not a
+        // detail: the bilinear smoothing is the low-pass that makes the frame
+        // cheap to encode, and a nearest-neighbour upscale would put the hard
+        // edges straight back while also looking worse.
+        canvas.drawBitmap(map, null, frameRect, upscalePaint)
         // Snapshot bitmaps are allocated natively and arrive one per redraw. Since
         // API 26 their pixels live outside the Java heap, so the GC feels no
         // pressure from them and would leave the free to a finalizer — at 631 KB a
@@ -1114,8 +1308,21 @@ class DashEngineController(
             gpsLost = gpsLost,
         )
         // The projection comes off the snapshot that was just drawn, so overlays
-        // and map can never disagree about where a coordinate is.
-        overlays.draw(canvas, frame, MapProjection { lat, lng -> snapshot.pixelForLatLng(LatLng(lat, lng)) })
+        // and map can never disagree about where a coordinate is — but it speaks
+        // in the SNAPSHOT's pixels, and the snapshot is smaller than the frame
+        // whenever PIXEL_RATIO is below 1. Scaling here keeps that guarantee: the
+        // same coordinate lands on the same road after the upscale above. Miss
+        // this and the route floats off the map by a factor of two, on a screen
+        // nobody is looking at while it happens.
+        val projScale = 1f / MapSnapshotProvider.PIXEL_RATIO
+        overlays.draw(
+            canvas,
+            frame,
+            MapProjection { lat, lng ->
+                val p = snapshot.pixelForLatLng(LatLng(lat, lng))
+                if (projScale == 1f) p else PointF(p.x * projScale, p.y * projScale)
+            },
+        )
 
         renderStats.mapDrawn(
             snapshotMs = snapshotMs,
@@ -1152,15 +1359,49 @@ class DashEngineController(
      * read, months later, as a map that stopped rotating. The mode is the part
      * that actually holds still, and it is the part a dead control would break.
      */
-    private fun logCameraSend(camera: CameraPosition, padding: IntArray) {
-        val key = "$zoom/${panX.toInt()}/${panY.toInt()}/$headingUp"
+    private fun logCameraSend(camera: CameraPosition, padding: IntArray, headingUp: Boolean) {
+        // Keyed and printed from the arguments, never from the live fields. A press
+        // landing between [cameraFor] and here would otherwise print a zoom MapLibre
+        // was never given — and commit that key, so the frame that does use it says
+        // nothing. The parameter deliberately shadows the field for the same reason.
+        val key = "${camera.zoom}/${camera.tilt}/$headingUp/${padding.joinToString(",")}"
         if (key == lastCameraLogKey) return
         lastCameraLogKey = key
         RideDiagnostics.log(
             "camera",
-            "→ MapLibre zoom=${zoomText(zoom)} ${if (headingUp) "heading-up" else "north-up"} " +
+            "→ MapLibre zoom=${String.format(Locale.ROOT, "%.2f", camera.zoom)} " +
+                "${if (headingUp) "heading-up" else "north-up"} " +
                 "tilt=${camera.tilt.toInt()} padding=[${padding.joinToString(" ")}]",
         )
+    }
+
+    /**
+     * One frame plus its numbers to the debug screen, or nothing at all.
+     *
+     * Compression happens here rather than in Dart because the bitmap never
+     * crosses the boundary otherwise — and it happens only when someone is
+     * listening, see [onFramePreview]. A failure is swallowed: a debug preview
+     * that cannot compress must not take the ride down with it.
+     */
+    private fun emitFramePreview(bmp: Bitmap, frameIntervalMs: Long) {
+        val sink = onFramePreview ?: return
+        runCatching {
+            val out = java.io.ByteArrayOutputStream(64 * 1024)
+            bmp.compress(Bitmap.CompressFormat.PNG, 100, out)
+            sink(
+                mapOf(
+                    "png" to out.toByteArray(),
+                    "zoom" to zoom / ZOOM_SCALE,
+                    "encodedBytes" to lastEncodedBytes,
+                    "framesSent" to framesSentTotal,
+                    // NOT "frames confirmed" — this is a one-shot "decoder opened"
+                    // signal, 1-3 per session. See spec/video.md.
+                    "decoderOpens" to session.decoderOpenCount,
+                    "fps" to (1000L / frameIntervalMs).toInt(),
+                    "renderScale" to MapSnapshotProvider.PIXEL_RATIO,
+                ),
+            )
+        }.onFailure { DebugLog.w(TAG) { "frame preview failed: ${it.message}" } }
     }
 
     private fun toDashDistance(meters: Double): Pair<Int, Int> =

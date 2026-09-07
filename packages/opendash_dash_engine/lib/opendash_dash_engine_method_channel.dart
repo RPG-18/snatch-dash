@@ -14,8 +14,12 @@ class MethodChannelOpendashDashEngine extends OpendashDashEnginePlatform {
   @visibleForTesting
   final logChannel = const EventChannel('opendash_dash_engine/log');
 
+  @visibleForTesting
+  final frameChannel = const EventChannel('opendash_dash_engine/frames');
+
   Stream<Map<String, dynamic>>? _stateStream;
   Stream<Map<String, dynamic>>? _logStream;
+  Stream<Map<String, dynamic>>? _frameStream;
 
   @override
   Future<String?> getPlatformVersion() async {
@@ -32,6 +36,16 @@ class MethodChannelOpendashDashEngine extends OpendashDashEnginePlatform {
   @override
   Stream<Map<String, dynamic>> get logStream {
     return _logStream ??= logChannel.receiveBroadcastStream().map(
+          (event) => Map<String, dynamic>.from(event as Map),
+        );
+  }
+
+  /// Not cached in a broadcast stream by accident: the native side keys frame
+  /// production off having a subscriber, so an always-live stream would make
+  /// every ride pay for a screen nobody opened.
+  @override
+  Stream<Map<String, dynamic>> get frameStream {
+    return _frameStream ??= frameChannel.receiveBroadcastStream().map(
           (event) => Map<String, dynamic>.from(event as Map),
         );
   }

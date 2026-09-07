@@ -14,6 +14,7 @@ import android.os.Handler
 import android.os.Looper
 import android.os.PatternMatcher
 import com.opendash.opendash_dash_engine.util.DebugLog
+import com.opendash.opendash_dash_engine.util.RideDiagnostics
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -61,6 +62,8 @@ class DashWifiManager(
         // Frequent enough to see a signal degrading before it actually drops, without
         // drowning the persisted app log — see [logSignalInfo].
         private const val RSSI_POLL_INTERVAL_MS = 5_000L
+        /** The one [logSignalInfo] context that stays out of the ride file. */
+        private const val POLL_CONTEXT = "poll"
     }
 
     private val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
@@ -183,7 +186,7 @@ class DashWifiManager(
             .firstOrNull { it.startsWith(prefix) }
             .also { DebugLog.i(TAG) { "Scan lookup for prefix '${maskSsid(prefix)}*' -> ${it?.let(::maskSsid) ?: "not found"}" } }
     } catch (e: Exception) {
-        DebugLog.w(TAG) { "Scan lookup failed: ${e.message}" }; null
+        RideDiagnostics.warn(TAG, "scan lookup failed: ${e.javaClass.simpleName}: ${e.message}"); null
     }
 
     fun disconnect() {
@@ -196,7 +199,7 @@ class DashWifiManager(
         // 2026-08-28 log analysis, where reconstructing these two numbers by hand from raw
         // timestamps was most of the work. Logged unconditionally (even reconnectCount=0 is
         // useful — it says the WiFi link never dropped once this whole time).
-        DebugLog.i(TAG) { "Session summary: reconnects=$reconnectCount downtime=${downtimeAccumMs}ms" }
+        RideDiagnostics.log(TAG, "session summary: reconnects=$reconnectCount downtime=${downtimeAccumMs}ms")
         wantConnected = false
         hasConnectedOnce = false
         reconnectJob?.cancel()
@@ -232,12 +235,15 @@ class DashWifiManager(
 
         val cb = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
-                DebugLog.i(TAG) { "Cellular available — binding process default to it (Yandex MapKit needs a real default network)" }
+                RideDiagnostics.log(TAG, "cellular available — binding the process default to it (Yandex MapKit needs a real default network)")
                 cm.bindProcessToNetwork(network)
             }
 
             override fun onLost(network: Network) {
-                DebugLog.w(TAG) { "Cellular lost — releasing process bind (falling back to OS default network)" }
+                // The line that explains a report of "search stopped working mid-ride":
+                // without the cellular bind the whole app is left on the dash's
+                // no-internet WiFi. One event per link, not per capability change.
+                RideDiagnostics.warn(TAG, "cellular lost — releasing the process bind (falling back to the OS default network)")
                 cm.bindProcessToNetwork(null)
             }
         }
@@ -252,7 +258,7 @@ class DashWifiManager(
             // request we have just given up — including after the plugin detaches.
             cm.requestNetwork(request, cb, Handler(Looper.getMainLooper()))
         } catch (e: Exception) {
-            DebugLog.w(TAG) { "Cellular requestNetwork threw: ${e.message}" }
+            RideDiagnostics.warn(TAG, "cellular requestNetwork threw: ${e.javaClass.simpleName}: ${e.message}")
         }
     }
 
@@ -332,7 +338,7 @@ class DashWifiManager(
                         markConnected(pendingSsid)
                     }
                     else -> {
-                        DebugLog.w(TAG) { "WiFi callback available but SSID is redacted; waiting for fallback resolution" }
+                        RideDiagnostics.warn(TAG, "callback available but the SSID is redacted; waiting for fallback resolution")
                         _state.value = WifiState(status = WifiConnStatus.REQUESTING, ssid = pendingSsid)
                     }
                 }
@@ -367,7 +373,7 @@ class DashWifiManager(
                     // out of range) — same as onLost below. Keep retrying instead of
                     // giving up, matching this class's own "auto-reconnects on link loss
                     // until disconnect()" contract.
-                    DebugLog.w(TAG) { "WiFi still unavailable — reconnecting in ${RECONNECT_DELAY}ms" }
+                    RideDiagnostics.warn(TAG, "still unavailable after ${CONNECT_TIMEOUT}ms — reconnect #${reconnectCount + 1} in ${RECONNECT_DELAY}ms")
                     reconnectCount++
                     if (downSinceMs == 0L) downSinceMs = System.currentTimeMillis()
                     _state.value = WifiState(
@@ -379,7 +385,7 @@ class DashWifiManager(
                 } else {
                     // Never connected this session — likely wrong SSID/password. Don't
                     // spin forever on that; user must try again.
-                    DebugLog.w(TAG) { "WiFi unavailable — SSID not found or user declined" }
+                    RideDiagnostics.warn(TAG, "unavailable and never connected this session — SSID not found or user declined; giving up")
                     _state.value = WifiState(
                         status = WifiConnStatus.ERROR,
                         ssid   = pendingSsid,
@@ -390,7 +396,7 @@ class DashWifiManager(
             }
 
             override fun onLost(network: Network) {
-                DebugLog.w(TAG) { "WiFi link lost — reconnecting in ${RECONNECT_DELAY}ms" }
+                RideDiagnostics.warn(TAG, "link lost — reconnect #${reconnectCount + 1} in ${RECONNECT_DELAY}ms")
                 reconnectCount++
                 if (downSinceMs == 0L) downSinceMs = System.currentTimeMillis()
                 // Last-known signal before the Network object goes stale — shows whether
@@ -413,7 +419,11 @@ class DashWifiManager(
             cm.requestNetwork(request, cb, Handler(Looper.getMainLooper()), CONNECT_TIMEOUT)
             startAndroid11SsidPolling()
         } catch (e: Exception) {
-            DebugLog.e(TAG, { "requestNetwork threw: ${e.message}" }, e)
+            // The exception type and message, not a stack trace: this throw comes from
+            // our own one-line call into ConnectivityManager, so the frames above it say
+            // nothing the message does not — and the ride file is the copy that survives
+            // a release build, where DebugLog.e writes nothing at all.
+            RideDiagnostics.warn(TAG, "requestNetwork threw: ${e.javaClass.simpleName}: ${e.message}")
             _state.value = WifiState(
                 status = WifiConnStatus.ERROR,
                 ssid   = pendingSsid,
@@ -438,6 +448,15 @@ class DashWifiManager(
             downSinceMs = 0L
         }
         _state.value = WifiState(status = WifiConnStatus.CONNECTED, ssid = ssid)
+        // Into the ride file, and from here rather than from each of the five call
+        // sites that reach CONNECTED (callback, exact SSID, capabilities, the
+        // Android 11 poller, the already-connected shortcut). Without a line for
+        // "the link came UP" the file holds only drops, and neither the downtime
+        // between them nor "did it ever recover" can be read off it.
+        RideDiagnostics.log(
+            TAG,
+            "link up on '${maskSsid(ssid)}' — reconnects=$reconnectCount downtime=${downtimeAccumMs}ms",
+        )
         // BSSID at the moment of connecting, not just from the first 5s-later poll tick —
         // see [logSignalInfo]'s doc for why this matters (BSSID-drift theory, spec/wifi_retry_policy.md).
         logSignalInfo("connected", network)
@@ -459,14 +478,20 @@ class DashWifiManager(
      */
     private fun logSignalInfo(context: String, net: Network?) {
         val info = net?.let { cm.getNetworkCapabilities(it)?.transportInfo as? WifiInfo }
-        if (info == null) {
-            DebugLog.i(TAG) { "Signal ($context): unavailable" }
-            return
-        }
-        DebugLog.i(TAG) {
-            "Signal ($context): bssid=${info.bssid} rssi=${info.rssi}dBm " +
+        val line = if (info == null) {
+            "signal ($context): unavailable"
+        } else {
+            "signal ($context): bssid=${info.bssid} rssi=${info.rssi}dBm " +
                 "linkSpeed=${info.linkSpeed}Mbps freq=${info.frequency}MHz"
         }
+        // The samples around a transition go into the ride file; the 5-second poll
+        // does not. That poll is 12 lines a minute — 700 an hour of a file whose
+        // point is that a `[map]`/`[stream]` line can be found in it — and the
+        // question it answers ("was the signal fading or did it stop dead") is
+        // answered by the pair this DOES keep: the last sample before the loss and
+        // the first one after the link comes back. The full curve stays in
+        // app_log.txt, which is a debug-build luxury either way.
+        if (context == POLL_CONTEXT) DebugLog.i(TAG) { line } else RideDiagnostics.log(TAG, line)
     }
 
     private fun startRssiPolling() {
@@ -474,7 +499,7 @@ class DashWifiManager(
         rssiPollJob = scope.launch {
             while (isActive) {
                 delay(RSSI_POLL_INTERVAL_MS)
-                logSignalInfo("poll", network)
+                logSignalInfo(POLL_CONTEXT, network)
             }
         }
     }

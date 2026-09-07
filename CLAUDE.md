@@ -94,16 +94,28 @@ flutter build apk --debug --dart-define-from-file=android/dart_defines.local.pro
 пост-мортем — файлы на устройстве. Ничего, кроме кабеля, не нужно:
 
 ```
-adb pull /sdcard/Android/data/ru.snatchdash.app/files/diag   # по файлу на сессию: [map], [session], [stream]
+adb pull /sdcard/Android/data/ru.snatchdash.app/files/diag   # по файлу на сессию: [map], [session], [stream], [DashWifiManager], [MapLibre]
 adb exec-out run-as ru.snatchdash.app cat files/app_log.txt > app_log.txt
 ```
 
 `diag/` лежит на внешнем хранилище и тянется без root; `app_log.txt` —
-внутренний, достаётся через `run-as` (работает на debug-сборке). Нативный лог
-MapLibre отдельно ловить не нужно: `MapLibreLogBridge` заворачивает его в тот же
-`DebugLog`, поэтому имя недостающего ассета попадёт в оба файла само. Кольцевой
+внутренний, достаётся через `run-as` (работает на debug-сборке). Кольцевой
 буфер `adb logcat` живёт минуты и к возвращению телефона на стол пуст — на него
 не рассчитывать.
+
+**В релизной сборке остаётся только `diag/`.** `DebugLog` целиком выключен
+(`if (!BuildConfig.DEBUG) return`), поэтому нативных строк в `app_log.txt` там
+нет вообще, а сам файл наполняют только Dart-строки Talker'а. Всё, что должно
+пережить релиз, идёт через `RideDiagnostics.log`/`.warn` — телеметрия рендера и
+потока, переходы WiFi-линка и нативный лог MapLibre (`MapLibreLogBridge`, W и
+выше, с ограничением: повторы одной строки схлопываются, и не больше шести
+разных строк за 10 с — остальные считаются и отчитываются одной строкой). Что осталось только в `DebugLog` и
+поэтому доступно лишь на debug: пакетные hex-дампы `DashSocket`, покадровые
+подробности снапшоттера и RSSI-опрос WiFi раз в 5 с.
+
+**На `--profile` логирование включено**: Flutter создаёт этот buildType как
+`initWith(debug)`, так что `BuildConfig.DEBUG` там `true` — замеры включают в
+себя стоимость логов, в том числе hex-дампа каждого пакета.
 
 **Мерить производительность на debug-сборке нельзя**: Flutter в JIT с asserts,
 `debuggable=true` гасит оптимизации ART и включает CheckJNI на JNI-плотном пути

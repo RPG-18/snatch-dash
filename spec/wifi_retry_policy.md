@@ -113,10 +113,15 @@
   типично для дешёвых embedded Wi-Fi модулей), диалог будет всплывать при
   каждом полном переподключении независимо от кода приложения.
   **Инструментировано** — `DashWifiManager.logSignalInfo` теперь пишет
-  `bssid=` в каждую строку `Signal (...)`, включая `Signal (connected)`
-  сразу при успешном коннекте и `Signal (last before loss)` перед
-  `onLost` — сравнить эти два значения в `app_log.txt` через цикл
-  disconnect→connect, без доп. adb/verbose logging.
+  `bssid=` в каждую строку `signal (...)`, включая `signal (connected)`
+  сразу при успешном коннекте и `signal (last before loss)` перед
+  `onLost` — сравнить эти два значения через цикл disconnect→connect,
+  без доп. adb/verbose logging. С 2026-09-08 обе эти строки, как и все
+  переходы линка (`link up`, `link lost`, `still unavailable`, итоговая
+  `session summary`), пишутся в файл поездки `diag/ride-*.log` — то есть
+  доступны и на релизной сборке, где `app_log.txt` нативных строк не
+  содержит. В `app_log.txt` (только debug) остаётся вдобавок полная кривая
+  сигнала: опрос RSSI раз в 5 с.
 - **EMUI отдельно (не связано с диалогом) агрессивно убивает фоновые
   процессы по wakelock/сетевой активности** — начиная с EMUI 9 в системе
   живёт `PowerGenie`/`HwPFWService`, убивающий всё не в белом списке

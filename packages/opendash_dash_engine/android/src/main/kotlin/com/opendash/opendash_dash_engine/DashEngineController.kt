@@ -1048,18 +1048,14 @@ class DashEngineController(
                             // stream keep flowing" had no answer left by the time the
                             // phone was back on the cable.
                             if (dFrames == 0) {
-                                // Both: the ride file needs it because that is where a
-                                // post-mortem starts, and app_log/`/more/logs` need it at
-                                // W or the level filters stop surfacing it. Duplicated
-                                // only on this branch, which by definition is rare.
-                                DebugLog.w(TAG) {
-                                    "Encoder output: 0 frames in the last ${intervalS}s while STREAMING " +
-                                        "— render/encode loop itself stalled (nothing to even send) — thermal=$thermal"
-                                }
-                                RideDiagnostics.log(
+                                // Both files, one call: the ride file is where a post-mortem
+                                // starts, and app_log/`/more/logs` need this at W or their
+                                // level filters stop surfacing it. That pair used to be
+                                // written by hand here — see RideDiagnostics.warn.
+                                RideDiagnostics.warn(
                                     "stream",
-                                    "WARN encoder output: 0 frames in the last ${intervalS}s while STREAMING " +
-                                        "— render/encode loop itself stalled — thermal=$thermal",
+                                    "encoder output: 0 frames in the last ${intervalS}s while STREAMING " +
+                                        "— render/encode loop itself stalled (nothing to even send) — thermal=$thermal",
                                 )
                             } else {
                                 RideDiagnostics.log(

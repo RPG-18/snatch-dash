@@ -35,6 +35,20 @@ object RideDiagnostics {
     @Volatile private var dir: File? = null
     @Volatile private var file: File? = null
     @Volatile private var sessionStartMs = 0L
+
+    /**
+     * Bumped by every [start], so a writer that batches or collapses its lines can
+     * notice that the file underneath it has been replaced.
+     *
+     * A count of swallowed repeats belongs to the file the swallowed lines were
+     * headed for. Carried across a [start] it would be written into the NEXT ride's
+     * file, describing a line that file never contained — which is what
+     * [com.opendash.opendash_dash_engine.dash.map.MapLibreLogBridge] did until it
+     * started reading this. Reconnects make that the normal case, not a corner one:
+     * the WiFi retry delay is shorter than that bridge's collapse window.
+     */
+    @Volatile var session = 0L
+        private set
     @Volatile private var deviceLabel = "unknown device"
     @Volatile private var buildLabel = "unknown build"
 
@@ -56,6 +70,9 @@ object RideDiagnostics {
 
     /** Open a fresh session file and rotate old ones. No-op if [init] was never called. */
     fun start(reason: String) {
+        // Bumped before the early return: a ride began either way, and a collapsing
+        // writer has to notice that even when no file could be opened for it.
+        synchronized(lock) { session++ }
         val d = dir ?: return
         synchronized(lock) {
             sessionStartMs = System.currentTimeMillis()
@@ -70,6 +87,26 @@ object RideDiagnostics {
      *  DebugLog/app_log.txt regardless of whether a session file is currently open. */
     fun log(tag: String, msg: String) {
         DebugLog.i(tag) { msg }
+        write(tag, msg)
+    }
+
+    /**
+     * [log] at warning level: the same ride-file line, prefixed `WARN` so a
+     * post-mortem can grep for trouble, mirrored into [DebugLog] at `W`.
+     *
+     * The level is why this exists rather than being one more [log] call. The
+     * ride file is the only copy that survives a release build, but app_log.txt
+     * and `/more/logs` are read through a level filter — a failure logged at `I`
+     * is a failure nobody sees there. Call sites used to write both by hand (a
+     * [DebugLog.w] next to a [log] whose text started with "WARN"); this is that
+     * pair, once.
+     */
+    fun warn(tag: String, msg: String) {
+        DebugLog.w(tag) { msg }
+        write(tag, "WARN $msg")
+    }
+
+    private fun write(tag: String, msg: String) {
         if (file == null) return
         synchronized(lock) {
             val rel = if (sessionStartMs > 0) "+%6dms".format(System.currentTimeMillis() - sessionStartMs) else "         "

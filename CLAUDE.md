@@ -78,10 +78,58 @@ Riverpod-провайдеры, которые экран читает/пишет
 
 ```
 flutter analyze
-flutter test                                              # плюс 3 теста в packages/opendash_dash_engine
+flutter test                                              # плюс тесты в packages/opendash_dash_engine
 cd android && ./gradlew :opendash_dash_engine:testDebugUnitTest
+cd android && ./gradlew :opendash_dash_engine:lintDebug    # трогали нативный код/манифест/gradle
 flutter build apk --debug --dart-define-from-file=android/dart_defines.local.properties
 ```
+
+### Dart: что включено в анализаторе и почему
+
+`analysis_options.yaml` — не шаблонный: поверх `flutter_lints` включены строгий
+режим (`strict-casts`, `strict-inference`, `strict-raw-types`) и десяток правил.
+Всё это ставилось по замеру 09.09.2026, а не «на всякий случай»:
+
+- строгий режим и восемь правил (`cancel_subscriptions`, `close_sinks`,
+  `avoid_dynamic_calls`, `prefer_final_locals`, `always_declare_return_types`,
+  `require_trailing_commas`, `throw_in_finally`,
+  `literal_only_boolean_expressions`) дали **ноль находок** — это храповик, а не
+  уборка: планка уже взята, теперь её не опустят молча;
+- `unawaited_futures` (4 находки), `avoid_slow_async_io` (1) и
+  `directives_ordering` (6) включены вместе с починкой найденного. Четыре
+  fire-and-forget вызова в движок теперь помечены `unawaited()` — намерение
+  видно, а забытый `await` заметен;
+- `discarded_futures` **намеренно не включён**: 51 находка, почти все — обычный
+  async-вызов из обработчика события. Правило, тонущее в шуме, перестают читать
+  вместе со всеми остальными.
+
+**Форматтер как гейт не заводить.** `dart format` переформатировал бы 68 файлов
+из 87 — это не грязь, а смена стиля форматтера в Dart 3.7. Хотите единый стиль —
+это отдельная разовая работа с фиксацией `page_width`, а не побочный эффект.
+
+**riverpod_lint пробовали — не работает из командной строки.** Проверено
+09.09.2026 на Dart 3.12.2 с riverpod_lint 3.1.4: пакет ставится, `plugins:` в
+`analysis_options.yaml` парсится, но правила не срабатывают ни в `flutter
+analyze`, ни в `dart analyze` — проверено файлом с заведомым нарушением
+(`Notifier` с публичным полем, `avoid_public_notifier_properties`). Новый
+механизм `analysis_server_plugin`, похоже, живёт только внутри analysis server,
+то есть в IDE. CI-шаг с ним был бы имитацией проверки, поэтому его нет.
+Возвращаться, когда появится поддержка в CLI.
+
+**Про Android Lint.** `flutter analyze` смотрит только Dart, компилятор Kotlin —
+только типы; **API-уровни не проверяет никто, кроме Android Lint**. Ровно поэтому
+`WifiNetworkSpecifier` и четыре `NetworkCapabilities.transportInfo` (все API 29)
+прожили в коде при `minSdk = 26` до ручного аудита 09.09.2026: подключение к
+дэшу на Android 8-9 падало молча. Проверка `NewApi` находит это механически, а
+`ObsoleteSdkInt` — обратную сторону, гейты, ставшие мёртвыми после подъёма пола.
+
+Гонять при правках нативного Kotlin, манифеста или gradle — 13 секунд на модуль
+движка. Конфиг в `packages/opendash_dash_engine/android/build.gradle.kts`:
+ошибки валят сборку, предупреждения нет, четыре категории отключены осознанно
+(там же написано, почему). Baseline намеренно НЕ заведён — отчёт достаточно
+мал, чтобы держать его на нуле, а baseline такой мусор консервирует.
+`:app:lint` тянет за собой плагины Flutter и MapKit, он дольше и шумнее — в CI
+и в этом списке стоит модуль движка.
 
 **Ключ Яндекса идёт только флагом `--dart-define-from-file`** (шаблон —
 `android/dart_defines.defaults.properties`, реальный ключ в gitignore'нутом

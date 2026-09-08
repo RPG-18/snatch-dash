@@ -17,13 +17,12 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-
 import 'package:snatch_dash/data/garage_repository.dart';
 import 'package:snatch_dash/data/installed_packs_repository.dart';
 import 'package:snatch_dash/data/saved_location_repository.dart';
 import 'package:snatch_dash/main.dart';
-import 'package:snatch_dash/state/offline_maps_controller.dart';
 import 'package:snatch_dash/state/garage_controller.dart';
+import 'package:snatch_dash/state/offline_maps_controller.dart';
 import 'package:snatch_dash/state/saved_destinations_controller.dart';
 
 const mapsChannel = MethodChannel('ru.snatchdash.app/maps');

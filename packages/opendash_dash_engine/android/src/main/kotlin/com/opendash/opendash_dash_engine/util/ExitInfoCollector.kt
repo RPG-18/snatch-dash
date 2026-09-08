@@ -5,6 +5,7 @@ import android.app.ApplicationExitInfo
 import android.content.Context
 import android.os.Build
 import android.util.Log
+import androidx.annotation.RequiresApi
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -92,6 +93,11 @@ object ExitInfoCollector {
         }.onFailure { Log.w(TAG, "collect failed: ${it.message}") }
     }
 
+    // Every read of [info] below is API 30, and the only caller — [collect] — returns above
+    // its own `SDK_INT < R` guard. Lint does not follow that across functions and reported
+    // eight NewApi errors here; the annotation states the contract instead of suppressing it,
+    // so a future second caller is checked rather than trusted.
+    @RequiresApi(Build.VERSION_CODES.R)
     private fun writeExit(context: Context, dir: File, info: ApplicationExitInfo) {
         val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date(info.timestamp))
         // ANR + native crashes expose a trace/tombstone; other reasons don't.

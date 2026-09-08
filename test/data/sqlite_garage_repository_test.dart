@@ -2,11 +2,10 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
-import 'package:sqflite_common_ffi/sqflite_ffi.dart';
-
 import 'package:snatch_dash/data/app_database.dart';
 import 'package:snatch_dash/data/saved_location_repository.dart';
 import 'package:snatch_dash/data/sqlite_garage_repository.dart';
+import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 void main() {
   setUpAll(() {

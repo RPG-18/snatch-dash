@@ -95,6 +95,11 @@ class DashKeepAliveService : Service() {
         val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
         wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "opendash:dash").apply {
             setReferenceCounted(false)
+            // No timeout, and Lint's WakelockTimeout is wrong about this one: a ride has no
+            // known length, and a lock that expires mid-ride is the failure this service
+            // exists to prevent. Its lifetime is bounded by the service instead — released
+            // in onDestroy, and the service is stopped by disconnect().
+            @Suppress("WakelockTimeout")
             acquire()
         }
 

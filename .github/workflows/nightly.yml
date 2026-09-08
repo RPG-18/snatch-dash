@@ -135,6 +135,17 @@ jobs:
       - name: Test
         run: flutter test
 
+      - name: Test and lint the native engine
+        # Neither is covered by `flutter test`/`flutter analyze`, which see only Dart. Lint
+        # is here for NewApi above all: the 2026-09-09 audit found WifiNetworkSpecifier and
+        # four NetworkCapabilities.transportInfo calls (all API 29) sitting under a minSdk of
+        # 26, by hand — this check finds that class of bug mechanically. Runs in seconds on
+        # this module; the Gradle setup below is shared with the APK build that follows.
+        working-directory: android
+        run: |
+          ./gradlew :opendash_dash_engine:testDebugUnitTest
+          ./gradlew :opendash_dash_engine:lintDebug
+
       - name: Build release APKs
         run: |
           # --split-per-abi: one APK per ABI instead of a single ~160MB fat

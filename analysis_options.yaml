@@ -1,28 +1,37 @@
-# This file configures the analyzer, which statically analyzes Dart code to
-# check for errors, warnings, and lints.
-#
-# The issues identified by the analyzer are surfaced in the UI of Dart-enabled
-# IDEs (https://dart.dev/tools#ides-and-editors). The analyzer can also be
-# invoked from the command line by running `flutter analyze`.
-
-# The following line activates a set of recommended lints for Flutter apps,
-# packages, and plugins designed to encourage good coding practices.
+# Статический анализ Dart-половины проекта. Нативную половину проверяет Android
+# Lint — см. CLAUDE.md, «Сборка и тесты»: эти два инструмента не пересекаются.
 include: package:flutter_lints/flutter.yaml
 
-linter:
-  # The lint rules applied to this project can be customized in the
-  # section below to disable rules from the `package:flutter_lints/flutter.yaml`
-  # included above or to enable additional rules. A list of all available lints
-  # and their documentation is published at https://dart.dev/lints.
-  #
-  # Instead of disabling a lint rule for the entire project in the
-  # section below, it can also be suppressed for a single line of code
-  # or a specific dart file by using the `// ignore: name_of_lint` and
-  # `// ignore_for_file: name_of_lint` syntax on the line or in the file
-  # producing the lint.
-  rules:
-    # avoid_print: false  # Uncomment to disable the `avoid_print` rule
-    # prefer_single_quotes: true  # Uncomment to enable the `prefer_single_quotes` rule
+analyzer:
+  language:
+    # Все три включены при НУЛЕ находок на существующем коде (замер 09.09.2026),
+    # то есть это не уборка, а храповик: неявный dynamic и сырые типы не заедут
+    # молча при следующей правке.
+    strict-casts: true
+    strict-inference: true
+    strict-raw-types: true
 
-# Additional information about this file can be found at
-# https://dart.dev/guides/language/analysis-options
+linter:
+  rules:
+    # ── Тоже с нулём находок на 09.09.2026: держим планку там, где она уже есть ──
+    - cancel_subscriptions        # незакрытая подписка живёт столько же, сколько процесс
+    - close_sinks
+    - avoid_dynamic_calls
+    - prefer_final_locals
+    - always_declare_return_types
+    - require_trailing_commas
+    - throw_in_finally
+    - literal_only_boolean_expressions
+
+    # ── Включены вместе с починкой того, что нашли ──
+    # 4 места: fire-and-forget вызовы в движок из обработчиков и петли навигации.
+    # Теперь они помечены unawaited() — намерение видно, а забытый await заметен.
+    - unawaited_futures
+    # 1 место: пара File.exists() через Future.wait в app_logger.
+    - avoid_slow_async_io
+    - directives_ordering
+
+    # ── Намеренно НЕ включено ──
+    # discarded_futures: 51 находка, и почти все — обычный Flutter, async-вызов из
+    #   обработчика события. Правило, тонущее в шуме, перестают читать целиком.
+    # avoid_positional_boolean_parameters: 3 находки, вопрос вкуса, не корректности.

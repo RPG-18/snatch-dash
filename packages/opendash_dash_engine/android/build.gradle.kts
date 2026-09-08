@@ -96,7 +96,10 @@ android {
     }
 
     defaultConfig {
-        minSdk = 24
+        // Matches the app module. This module IS the dash engine, so the API 29
+        // floor its code carries (WifiNetworkSpecifier, NetworkCapabilities
+        // .transportInfo) belongs here first — see android/app/build.gradle.kts.
+        minSdk = 29
         buildConfigField("String", "GIT_SHA", "\"$gitLabel\"")
     }
 

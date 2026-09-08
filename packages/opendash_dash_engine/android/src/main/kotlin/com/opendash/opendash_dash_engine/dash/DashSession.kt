@@ -58,6 +58,21 @@ class DashSession(private val scope: CoroutineScope) {
     // Touched from Main (disconnect), IO (runSession/rxJob) and Default (sendRtp off the
     // stream loop), so the write that clears it on teardown has to be visible to the others.
     @Volatile private var socket: DashSocket? = null
+
+    /**
+     * The socket [disconnect] has taken over in order to send its farewell packets on it.
+     *
+     * A session cancelled before READY still owns its socket and closes it in [runSession]'s
+     * finally — which, for a disconnect landing mid-handshake, is a close racing the
+     * `projectionStop`/`projectionOff` below. The close usually wins (cancellation resumes on
+     * an IO thread while [disconnect] is still on Main), both sends then die inside
+     * `DashSocket.send`'s catch-all, and the dash stays frozen on the last frame until its own
+     * timeout — precisely the failure those two packets exist to prevent.
+     *
+     * Claimed BEFORE the job is cancelled, so the claim is visible to the finally by the time
+     * it can possibly run; `@Volatile` because that finally runs on another thread.
+     */
+    @Volatile private var farewellSocket: DashSocket? = null
     private var auth: DashAuth? = null
     @Volatile private var authConfirmed = false
 
@@ -204,6 +219,13 @@ class DashSession(private val scope: CoroutineScope) {
     fun connect(ssid: String, network: android.net.Network? = null) {
         if (_state.value != DashState.IDLE && _state.value != DashState.ERROR) return
         DebugLog.i(TAG) { "connect() — ssid='$ssid' network=$network" }
+        // Here, not in [runSession]: the guard above reads a state that used to be
+        // published from inside the coroutine, on Dispatchers.IO. Two connect() calls
+        // landing before that hop both passed the guard, and the first one then built a
+        // DashSocket and an RX loop under a token its own caller had already retired —
+        // a session nobody owns, whose socket leaks on the [fail] path below. Setting it
+        // on the caller's thread closes that window: the second call sees CONNECTING.
+        setState(DashState.CONNECTING)
         // ERROR is a legal state to reconnect from, and `fail()` can reach it from the RX
         // coroutine while `runSession` is still sitting in its auth wait — so the previous
         // session is not necessarily finished just because the state says we may start a new
@@ -258,6 +280,10 @@ class DashSession(private val scope: CoroutineScope) {
         // cooperative, so that coroutine still runs up to its next suspension point, and a
         // [fail] from there would put the session back into ERROR after this method has
         // deliberately left it IDLE.
+        // Taken over before anything is cancelled — see [farewellSocket].
+        val farewell = socket
+        socket = null
+        farewellSocket = farewell
         sessionSeq.incrementAndGet()
         sessionJob?.cancel(); sessionJob = null
         rxJob?.cancel(); projHbJob?.cancel(); routeCardJob?.cancel(); heartbeatJob?.cancel()
@@ -281,8 +307,7 @@ class DashSession(private val scope: CoroutineScope) {
         // advertising STREAMING over a socket that is already gone — and that is exactly the
         // state [connect]'s guard refuses to reconnect from, so the rider would be stuck until
         // the process restarted.
-        socket?.let { sock ->
-            socket = null
+        farewell?.let { sock ->
             runCatching {
                 runBlocking(Dispatchers.IO) {
                     runCatching { sock.send(DashCommands.projectionStop()) }
@@ -291,6 +316,9 @@ class DashSession(private val scope: CoroutineScope) {
                 }
             }
         }
+        // Released only once the socket is closed: until then the claim is what keeps
+        // [runSession]'s finally off it.
+        farewellSocket = null
         setState(DashState.IDLE)
         DebugLog.i(TAG) { "Disconnected" }
     }
@@ -298,14 +326,41 @@ class DashSession(private val scope: CoroutineScope) {
     // ── Internal ──────────────────────────────────────────────────────────
 
     private suspend fun runSession(seq: Int, ssid: String, network: android.net.Network? = null) {
+        // CONNECTING is published by [connect] on the caller's thread — see the note there.
+        //
+        // The socket is CREATED inside the try below, and only referenced out here so the
+        // finally can reach it. Constructing it above the try instead costs the catch-all:
+        // only BindException is handled by name, while `Network.bindSocket` throws a plain
+        // IOException once the WiFi network is gone — routine on the 1.5s auth retry. That
+        // exception would leave runSession entirely, into the plugin's exception handler,
+        // which only logs (and logs nothing at all in a release build); with CONNECTING now
+        // published synchronously the session would sit wedged in CONNECTING, with no
+        // fail(), no onError, and no state that either connect() guard lets a retry past.
+        var owned: DashSocket? = null
+        // Whether the socket has become the running session's. Until READY this
+        // function owns it, and every other way out of here has to close it — which is
+        // not something those exits do on their own:
+        //   - fail() with a superseded token returns before closing anything, and even
+        //     on the live path it closes the `socket` FIELD, which a newer session may
+        //     already have replaced;
+        //   - the cancellation catch below rethrows, and a cancelled session is the
+        //     normal case — every connect() cancels the previous job;
+        //   - the "torn down during nav-mode entry" return leaves behind precisely a
+        //     socket that is no longer the field's.
+        // A finally states that invariant once instead of repeating it at three exits.
+        // What leaks otherwise is not just an fd: nothing reads that socket any more, but
+        // it stays bound to :2002 (SO_REUSEADDR lets the next session bind anyway), and on
+        // unicast the platform may hand part of the dash's traffic to the dead one — which
+        // shows up as "the dash went quiet" until the RX watchdog, not as an error.
+        var handedOff = false
         try {
-            setState(DashState.CONNECTING)
             val sock = try {
                 DashSocket(network).also { socket = it }
             } catch (e: java.net.BindException) {
                 fail(seq, "Port ${DashSocket.RX_PORT}/${DashSocket.CTRL_PORT} in use (${e.message})")
                 return
             }
+            owned = sock
 
             auth = DashAuth(ssid)
             authConfirmed = false
@@ -357,6 +412,9 @@ class DashSession(private val scope: CoroutineScope) {
                 DebugLog.w(TAG) { "Session torn down during nav-mode entry — not signalling READY" }
                 return
             }
+            // Set before the state change, not after: from the moment anything can observe
+            // READY the socket belongs to the session, and the finally must keep its hands off.
+            handedOff = true
             setState(DashState.READY)
 
         } catch (e: CancellationException) {
@@ -369,6 +427,12 @@ class DashSession(private val scope: CoroutineScope) {
         } catch (e: Exception) {
             DebugLog.e(TAG, { "Session error" }, e)
             fail(seq, "${e.javaClass.simpleName}: ${e.message}")
+        } finally {
+            val sock = owned
+            // Idempotent by design: on the paths where [fail] already closed this same
+            // socket, DatagramSocket.close() is a no-op. [farewellSocket] is the one case
+            // that is NOT idempotent — see its doc.
+            if (sock != null && !handedOff && sock !== farewellSocket) runCatching { sock.close() }
         }
     }
 

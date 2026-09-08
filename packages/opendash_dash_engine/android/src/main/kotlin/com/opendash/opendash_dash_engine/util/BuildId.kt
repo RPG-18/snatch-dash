@@ -1,7 +1,6 @@
 package com.opendash.opendash_dash_engine.util
 
 import android.content.Context
-import android.os.Build
 import com.opendash.opendash_dash_engine.BuildConfig
 import java.io.File
 import java.security.MessageDigest
@@ -68,11 +67,6 @@ object BuildId {
      */
     fun versionLabel(context: Context): String = runCatching {
         val pkg = context.packageManager.getPackageInfo(context.packageName, 0)
-        val code = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-            pkg.longVersionCode
-        } else {
-            @Suppress("DEPRECATION") pkg.versionCode.toLong()
-        }
-        "${pkg.versionName} ($code)"
+        "${pkg.versionName} (${pkg.longVersionCode})"
     }.getOrDefault("unknown")
 }

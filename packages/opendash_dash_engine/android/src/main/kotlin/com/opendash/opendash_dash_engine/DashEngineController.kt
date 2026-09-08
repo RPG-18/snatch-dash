@@ -8,7 +8,6 @@ import android.graphics.PointF
 import android.graphics.Rect
 import android.media.AudioManager
 import android.media.ToneGenerator
-import android.os.Build
 import android.os.PowerManager
 import com.opendash.opendash_dash_engine.dash.DashConfig
 import com.opendash.opendash_dash_engine.dash.DashKeepAliveService
@@ -180,14 +179,13 @@ class DashEngineController(
     private val powerManager = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
 
     /**
-     * OK/Warm/Hot from [PowerManager.currentThermalStatus] (API 29+; "n/a" below that). Folded
+     * OK/Warm/Hot from [PowerManager.currentThermalStatus] (API 29, i.e. the project floor). Folded
      * into the encoder health log below — a hardware encoder throttling under heat is a
      * plausible, previously-uninstrumented explanation for the exact silent stall (0 frames,
      * no exception) the 2026-08-28 field session found. Ported from OpenMotoDash/NorthStar's
      * `updateThermal()` (see spec/wifi_retry_policy.md's "Из живого форка").
      */
     private fun thermalLabel(): String {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return "n/a"
         val status = runCatching { powerManager?.currentThermalStatus }.getOrNull() ?: return "?"
         return when (status) {
             PowerManager.THERMAL_STATUS_NONE, PowerManager.THERMAL_STATUS_LIGHT -> "OK"
@@ -349,12 +347,37 @@ class DashEngineController(
         // for a rider, "Send to Dash" killed the picture ~10s later. Nothing is lost by
         // returning here: [setDestination] pushes the new destination to the session itself.
         val sessionState = session.state.value
-        if (sessionState != DashState.IDLE && sessionState != DashState.ERROR &&
-            wifiManager.state.value.status == WifiConnStatus.CONNECTED
-        ) {
+        val sessionLive = sessionState != DashState.IDLE && sessionState != DashState.ERROR
+        val linkStatus = wifiManager.state.value.status
+        if (sessionLive && linkStatus == WifiConnStatus.CONNECTED) {
             DebugLog.i(TAG) { "connect() ignored — session already $sessionState on a live WiFi link" }
             RideDiagnostics.log("connect", "connect() ignored — already $sessionState, link up")
             return
+        }
+        // A live session whose link is NOT up is the other half of the guard above, and it
+        // needs the opposite treatment: not "we are already connected", but the wreck of the
+        // previous session, still holding sockets bound to a network that is gone.
+        //
+        // Nothing below would clean it up. This method resets [sessionStarted] to false and
+        // starts a fresh wifi collector, which StateFlow immediately hands its current value —
+        // REQUESTING, not CONNECTED. The "link came up" branch needs CONNECTED; the teardown
+        // branch needs sessionStarted; neither fires, so `session.disconnect()` is never
+        // called and `session.connect()` later bounces off its own IDLE/ERROR guard. The old
+        // session then pushes RTP into a dead socket until the RX watchdog notices
+        // (RX_IDLE_TIMEOUT_MS = 10s) and the retry after it adds AUTH_RETRY_DELAY_MS: about
+        // 11.5 seconds of frozen picture on the dash after a "Send to Dash".
+        //
+        // Reachable because both ends land on Main: DashWifiManager's onLost/onUnavailable
+        // (requestNetwork is given a main-looper Handler) flip WifiState and return, while the
+        // collector that would tear the session down is a separate coroutine resumed on the
+        // next dispatch — and a method-channel call from Dart gets in between. Same treatment
+        // the collector's own else-branch gives, just from the path that overtook it.
+        if (sessionLive) {
+            RideDiagnostics.warn(
+                "connect",
+                "connect() over a $sessionState session whose link is $linkStatus — tearing it down first",
+            )
+            session.disconnect()
         }
         RideDiagnostics.init(context)
         RideDiagnostics.start("connect")
@@ -369,6 +392,13 @@ class DashEngineController(
         authRetries = 0
 
         val ssid = dashConfig.ssid
+        // A fresh attempt gets a fresh window. [armGiveupTimer] no-ops while a timer is
+        // already running, and nothing between here and there cancels one — so without
+        // this line a reconnect inherits whatever is left of the previous attempt's
+        // countdown, and a tap at t=115s of a 120s window is killed five seconds in,
+        // reported as "gave up — 120000ms without reaching STREAMING". The timer is
+        // re-armed by the session collector below on the first non-STREAMING state.
+        cancelGiveupTimer()
         wifiWatchJob?.cancel()
         sessionStarted = false
         wifiWatchJob = scope.launch {
@@ -455,13 +485,15 @@ class DashEngineController(
                     // retry actually happens, because the value that opens this branch can be
                     // stale before the delay even starts: StateFlow replays its current value to
                     // a brand-new collector, and on a `connect()` over an already-live WiFi link
-                    // that value is the PREVIOUS attempt's ERROR. [wifiWatchJob] runs first and
-                    // has already called session.connect() by then — but that only launches
-                    // runSession on Dispatchers.IO, so CONNECTING is not published yet, and this
-                    // collector sees the corpse of the old session. Retrying on it cancels a
-                    // handshake that is 1.5 s into its own life, every single time. Re-reading
-                    // the state after the delay is what tells the two apart: a session that
-                    // really is dead is still IDLE/ERROR, a replayed one has moved on.
+                    // that value is the PREVIOUS attempt's ERROR. Re-reading the state after the
+                    // delay is what tells the two apart: a session that really is dead is still
+                    // IDLE/ERROR, a replayed one has moved on.
+                    //
+                    // The window used to be wider: DashSession.connect() published CONNECTING
+                    // from inside its coroutine on Dispatchers.IO, so this collector could see
+                    // the corpse of a session [wifiWatchJob] had already restarted, and cancel a
+                    // handshake 1.5 s into its life every single time. CONNECTING is published
+                    // synchronously now, which closes that half of it.
                     DashState.ERROR, DashState.IDLE -> {
                         val wifi = wifiManager.state.value
                         if (sessionStarted && wifi.status == WifiConnStatus.CONNECTED && authRetries < MAX_AUTH_RETRIES) {

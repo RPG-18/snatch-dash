@@ -159,15 +159,32 @@ class DashWifiManager(
             DebugLog.i(TAG) { "connect() — already on '${maskSsid(live.ssid)}', keeping the live request" }
             return
         }
+        // Whether this is a new target or the same one we are already chasing. The
+        // second case is the rider tapping "Send to Dash" while the link is down: the
+        // callbacks are live, [scheduleReconnect] is already retrying every
+        // RECONNECT_DELAY, and [hasConnectedOnce] is the flag that keeps those retries
+        // endless instead of one 30s attempt ending in ERROR with wantConnected=false
+        // (see onUnavailable). Clearing the session counters there turns a tap meant to
+        // help into "stop trying" — and the rider gets a worse outcome than by waiting.
+        // A genuinely different SSID/prefix is a different dash, and starts clean.
+        val sameTarget = wantConnected && ssid == pendingSsid && prefixMatch == pendingPrefix
         wantConnected    = true
         pendingSsid      = ssid
         pendingPassword  = password
         pendingPrefix    = prefixMatch
         resolvedSsid     = null
-        hasConnectedOnce = false
-        reconnectCount   = 0
-        downtimeAccumMs  = 0L
-        downSinceMs      = System.currentTimeMillis() // "down" until the first markConnected
+        if (!sameTarget) {
+            hasConnectedOnce = false
+            reconnectCount   = 0
+            downtimeAccumMs  = 0L
+            downSinceMs      = System.currentTimeMillis() // "down" until the first markConnected
+        } else if (downSinceMs == 0L) {
+            // Same target, and the counters stand — but a re-request means the link is
+            // down from here until [markConnected], and nobody else opened this window:
+            // reaching this line with downSinceMs still zero is the shortcut-CONNECTED
+            // case, where the last markConnected closed it.
+            downSinceMs = System.currentTimeMillis()
+        }
         requestNetwork()
         requestCellularDefault()
     }

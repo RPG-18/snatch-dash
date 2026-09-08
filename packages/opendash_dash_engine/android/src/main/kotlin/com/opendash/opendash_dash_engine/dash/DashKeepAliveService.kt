@@ -9,7 +9,6 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.net.wifi.WifiManager
-import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
 import com.opendash.opendash_dash_engine.util.DebugLog
@@ -43,8 +42,7 @@ class DashKeepAliveService : Service() {
 
         fun start(context: Context) {
             val i = Intent(context, DashKeepAliveService::class.java).setAction(ACTION_START)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(i)
-            else context.startService(i)
+            context.startForegroundService(i)
         }
 
         fun stop(context: Context) {
@@ -84,15 +82,11 @@ class DashKeepAliveService : Service() {
         // The LOCATION type is what lets GPS keep updating with the screen off —
         // without it Android 14+ freezes location for backgrounded apps and the
         // rider marker sticks at its first fix.
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(
-                NOTIF_ID, buildNotification(),
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE or
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION,
-            )
-        } else {
-            startForeground(NOTIF_ID, buildNotification())
-        }
+        startForeground(
+            NOTIF_ID, buildNotification(),
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE or
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION,
+        )
         acquireLocks()
         DebugLog.i(TAG) { "Foreground service up — wake+wifi locks held" }
     }
@@ -130,7 +124,6 @@ class DashKeepAliveService : Service() {
     }
 
     private fun createChannel() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
         val nm = getSystemService(NotificationManager::class.java)
         if (nm.getNotificationChannel(CHANNEL_ID) == null) {
             nm.createNotificationChannel(
@@ -147,10 +140,7 @@ class DashKeepAliveService : Service() {
         val open = launchIntent?.let {
             PendingIntent.getActivity(this, 0, it, PendingIntent.FLAG_IMMUTABLE)
         }
-        val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
-            Notification.Builder(this, CHANNEL_ID)
-        else
-            @Suppress("DEPRECATION") Notification.Builder(this)
+        val builder = Notification.Builder(this, CHANNEL_ID)
 
         val appIcon = applicationInfo.icon.takeIf { it != 0 }
             ?: android.R.drawable.ic_menu_compass

@@ -19,9 +19,10 @@ import com.opendash.opendash_dash_engine.util.DebugLog
  * handed and would fragment the whole bundle as if it were one giant SPS
  * (type 7), so the dash would reassemble a single bogus SPS carrying the real
  * PPS and IDR as trailing garbage and never see them as NALs at all. At this
- * project's encoder settings (526×300, 200 kbps, `KEY_I_FRAME_INTERVAL = 1`,
- * see [DashEncoder]) a keyframe is several KB against a 1380-byte payload
- * budget, so that path is the norm for map frames, not an edge case.
+ * project's encoder settings (526×300, 200 kbps, a key frame every 2 s, see
+ * [DashEncoder]) a keyframe is several KB against a 1380-byte payload budget,
+ * so that path is the norm for map frames, not an edge case — the 2026-09-09
+ * ride measured 39.7 KB for one.
  */
 class NalProcessor(private val onNal: (ByteArray, Boolean) -> Unit) {
     private val START_CODE_4 = byteArrayOf(0, 0, 0, 1)

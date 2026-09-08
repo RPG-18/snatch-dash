@@ -167,7 +167,18 @@ class DashWifiManager(
         // (see onUnavailable). Clearing the session counters there turns a tap meant to
         // help into "stop trying" — and the rider gets a worse outcome than by waiting.
         // A genuinely different SSID/prefix is a different dash, and starts clean.
-        val sameTarget = wantConnected && ssid == pendingSsid && prefixMatch == pendingPrefix
+        //
+        // The second arm is prefix discovery, and without it this guard misses precisely the
+        // flow it was written for. We connect by prefix ('RE_'), resolve the exact SSID,
+        // [onSsidResolved] stores it in the config — and the NEXT connect() therefore arrives
+        // with the exact name and prefixMatch=false, while [pendingSsid] still holds the
+        // prefix. Comparing only the arguments calls that a different dash and clears the
+        // counters, which is the mid-ride "Send to Dash" this branch exists to protect.
+        val sameTarget = wantConnected && when {
+            ssid == pendingSsid && prefixMatch == pendingPrefix -> true
+            !prefixMatch && ssid == resolvedSsid -> true
+            else -> false
+        }
         wantConnected    = true
         pendingSsid      = ssid
         pendingPassword  = password

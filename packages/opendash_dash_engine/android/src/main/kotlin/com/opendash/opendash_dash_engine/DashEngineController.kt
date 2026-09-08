@@ -1109,6 +1109,14 @@ class DashEngineController(
                             encoder = runCatching { DashEncoder(onEncoded).also { it.prepare() } }
                                 .onFailure { DebugLog.e(TAG, { "Encoder rebuild failed" }, it) }
                                 .getOrNull()
+                            // A fresh encoder is configured at DashEncoder.BITRATE, i.e. the
+                            // moving profile, whatever the old one was last told. Without
+                            // this the flag can claim "idle" over a codec running at the
+                            // moving target, and since requestBitrate only fires on a
+                            // TRANSITION, nothing corrects it until the rider stops and
+                            // starts again — a rebuild while parked would stream at the
+                            // moving rate for as long as the bike stands still.
+                            idleBitrate = false
                             lastSignature = ""
                             failures = 0
                         }

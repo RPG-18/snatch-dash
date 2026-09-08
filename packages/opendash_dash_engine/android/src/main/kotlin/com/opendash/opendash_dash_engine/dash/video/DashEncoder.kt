@@ -8,10 +8,11 @@ import android.media.MediaFormat
 import android.os.Bundle
 import android.view.Surface
 import com.opendash.opendash_dash_engine.util.DebugLog
+import com.opendash.opendash_dash_engine.util.RideDiagnostics
 
 /**
  * MediaCodec H.264 encoder for the Tripper Dash stream:
- *   526 x 300, 2-4 fps, ~200 kbps, Baseline L4.1, 1-second IDR interval.
+ *   526 x 300, 2-4 fps, ~200 kbps, Baseline L4.1, key frame every 8 frames.
  *
  * [FPS] is the maximum encoder hint. The frame loop feeds 4 fps while moving and
  * throttles to 2 fps when stopped, matching the stable RE projection envelope.
@@ -50,6 +51,29 @@ class DashEncoder(private val onEncodedData: (ByteArray, Boolean, Boolean) -> Un
          * encoders differs.
          */
         const val BITRATE_IDLE = 100_000
+
+        /**
+         * `KEY_I_FRAME_INTERVAL`, in seconds. Raised from 1 to 2 on 2026-09-09.
+         *
+         * **It is not really seconds.** MediaFormat's own javadoc: "Most video encoders will
+         * convert this value to the number of non-key-frames between key-frames, using the
+         * frame rate information; therefore, if the actual frame rate differs, the time
+         * interval between key frames will not be the configured value." With [FPS] = 4
+         * declared, this is a GOP of **8 frames** — and the frame loop feeds 4 fps moving but
+         * 2 fps when the map is idle, so the wall-clock interval is 2 s in motion and 4 s at
+         * rest. The 2026-09-09 logs show exactly that arithmetic at the old value of 1:
+         * `frames=239 (idr=60)` moving (a GOP of 4 frames = 1 s) and `frames=122 (idr=31)`
+         * idle (the same 4 frames = 2 s).
+         *
+         * Why raise it: at 4 fps an interval of 1 s made every fourth frame an IDR, and one
+         * of them measured 39.7 KB — some 2.4 MB of a 4.2 MB minute, more than half the
+         * stream, spent on key frames.
+         *
+         * The cost is recovery time. RTP goes out over UDP with no retransmission, so a lost
+         * key-frame packet leaves the dash showing garbage until the next one. For contrast,
+         * scrcpy — which streams over TCP, where nothing is lost — uses 10 s.
+         */
+        private const val IDR_INTERVAL_S = 2
         private const val MIME = MediaFormat.MIMETYPE_VIDEO_AVC
         private const val DRAIN_TIMEOUT_US = 10_000L
         private const val TAG = "DashEncoder"
@@ -58,24 +82,50 @@ class DashEncoder(private val onEncodedData: (ByteArray, Boolean, Boolean) -> Un
     private var codec: MediaCodec? = null
     private var inputSurface: Surface? = null
 
+    /** One line per stream is the point; the format can change more than once. */
+    private var loggedNegotiatedFormat = false
+
     fun prepare() {
-        val format = MediaFormat.createVideoFormat(MIME, WIDTH, HEIGHT).apply {
-            setInteger(MediaFormat.KEY_COLOR_FORMAT,
-                MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
-            setInteger(MediaFormat.KEY_BIT_RATE, BITRATE)
-            setInteger(MediaFormat.KEY_FRAME_RATE, FPS)
-            setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
-            setInteger(MediaFormat.KEY_PROFILE,
-                MediaCodecInfo.CodecProfileLevel.AVCProfileBaseline)
-            setInteger(MediaFormat.KEY_LEVEL,
-                MediaCodecInfo.CodecProfileLevel.AVCLevel41)
-        }
         // Hardware if the device has one that takes these frames, otherwise whatever does
         // — see [selectEncoder]. Null only if nothing in the list qualifies, and then the
         // OS default is the last thing left to try.
         val name = selectEncoder()
         val c = if (name != null) MediaCodec.createByCodecName(name)
                 else MediaCodec.createEncoderByType(MIME)
+        // Asked of THIS codec, after it exists: an encoder that does not support CBR is
+        // entitled to refuse the key in configure(), and the fallback path may well have
+        // handed us one — so the question goes to the instance we are about to configure.
+        //
+        // A `false` here does not mean the hardware cannot do CBR. `EncoderCapabilities`
+        // starts at `mBitControl = 1 << BITRATE_MODE_VBR` and only widens if the device's
+        // `media_codecs.xml` declares `<Feature name="bitrate-modes" …>` — many OEM files
+        // simply do not, for encoders that handle CBR perfectly well. Leaving the key unset
+        // in that case is the conservative half of the trade: we lose the cap rather than
+        // risk configure() throwing on a phone nobody can test.
+        val caps = runCatching { c.codecInfo.getCapabilitiesForType(MIME) }.getOrNull()
+        val range = caps?.videoCapabilities?.bitrateRange
+        val declaresCbr = caps?.encoderCapabilities
+            ?.isBitrateModeSupported(MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR) == true
+        // Asked for whenever the device declares it — including when [BITRATE] sits under the
+        // encoder's declared floor, which is the case on the phone this was developed against
+        // (`OMX.hisi.video.encoder.avc`, declared `280000-100000000`).
+        //
+        // **That is a deliberate experiment, opened 2026-09-09.** CBR means "hold this
+        // number", so a target below the floor asks the encoder to hold something it says it
+        // cannot, and the way that can go wrong is specific: the parked stream — measured at
+        // 52-58 kbps — gets pinned up at the floor instead, permanently above the dash's own
+        // profile (q2g = 204800), with [BITRATE_IDLE] no longer able to bring it down. The
+        // reason for trying anyway is that the same rides measured 164-205 kbps on a plain
+        // map, i.e. this encoder already runs well under the floor it advertises, so the
+        // declaration looks conservative rather than binding.
+        //
+        // What ends the experiment, either way, is the `[stream]` line: idle back near
+        // 50-60 kbps and moving near 200 means CBR aimed; idle stuck at ~280 means the floor
+        // is real, and then the choice is to restore the `range.lower <= BITRATE_IDLE` guard
+        // or to raise [BITRATE] to the floor and accept 1.37x over the dash's profile.
+        val belowFloor = range != null && range.lower > BITRATE
+        val cbr = declaresCbr
+        val format = videoFormat(cbr)
         // Assigned only once the codec is running. Everything from configure() on can
         // throw, and until this line the instance has no other owner: `codec` would stay
         // null, the caller's `encoder?.release()` would find nothing, and a component
@@ -83,11 +133,14 @@ class DashEncoder(private val onEncodedData: (ByteArray, Boolean, Boolean) -> Un
         // runs, which MediaCodec.release()'s own javadoc asks callers not to wait for.
         // One per failed connection attempt, and a rider retries "Send to Dash".
         try {
-            DebugLog.i(TAG) { "Encoder: ${c.name}" }
             c.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
             inputSurface = c.createInputSurface()
             c.start()
         } catch (e: Throwable) {
+            // Read BEFORE the release below: MediaCodec.getName() throws IllegalStateException
+            // on a released codec, and that throw would replace the configure() failure we are
+            // trying to report — losing the real cause to a diagnostic line about it.
+            val name = runCatching { c.name }.getOrDefault("<unnamed>")
             // Both documented failures of configure() — IllegalArgumentException for an
             // unacceptable format, CodecException for a codec error — plus whatever
             // createInputSurface/start add, are the same situation here: this codec never
@@ -95,10 +148,80 @@ class DashEncoder(private val onEncodedData: (ByteArray, Boolean, Boolean) -> Un
             runCatching { inputSurface?.release() }
             inputSurface = null
             runCatching { c.release() }
+            // prepare() throws from here into startStream, which reports only the message.
+            // "startStream failed: IllegalArgumentException" with no codec name is a report
+            // nobody can act on.
+            RideDiagnostics.warn("stream", "encoder $name failed to configure: ${e.javaClass.simpleName}: ${e.message}")
             throw e
         }
         codec = c
+        // Into the ride file, not just DebugLog: these three facts are what the `[stream]`
+        // kbps line has to be read against, and on a release build DebugLog writes nothing.
+        // Without them, "575 kbps against a 200 kbps target" is a mystery rather than a
+        // measurement of a codec that ignored the target.
+        // The declared bitrate range comes along because it is the number that decides
+        // whether the target is even askable: this phone's OMX.hisi.video.encoder.avc
+        // declares `280000-100000000`, i.e. its own floor sits 40% ABOVE [BITRATE] — which
+        // is not a number we are free to raise, being the dash's own profile. A stream that
+        // settles near 280 rather than 200 is that floor, not a bug in the request.
+        RideDiagnostics.log(
+            "stream",
+            "encoder ${c.name} — target ${BITRATE / 1000}kbps " +
+                (when {
+                    cbr && belowFloor -> "CBR below the encoder's declared floor (experiment)"
+                    cbr -> "CBR"
+                    else -> "in the encoder's own mode (CBR not declared)"
+                }) +
+                (range?.let { ", encoder declares ${it.lower / 1000}-${it.upper / 1000}kbps" } ?: "") +
+                ", IDR every ${IDR_INTERVAL_S * FPS} frames (${IDR_INTERVAL_S}s at ${FPS}fps)",
+        )
     }
+
+    /**
+     * The stream as the dash's decoder expects it, plus how strictly we intend to hold the
+     * bitrate.
+     *
+     * **[MediaFormat.KEY_BITRATE_MODE] is the point of the [cbr] parameter.** Without that
+     * key the encoder picks its own default, and on this hardware that default tracked scene
+     * complexity rather than the target: the 2026-09-09 ride logged 52-58 kbps standing
+     * still, 164-205 on a plain map and **568-575 on a dense one** — 2.8x over [BITRATE],
+     * which is not a number we chose but the dash's own high profile (`q2g = 204800`). The
+     * comment on [BITRATE] records what overrunning the dash decoder looks like from here:
+     * a frozen picture on a dash that still answers telemetry.
+     *
+     * CBR trades the other way — on a dense map it spends the same bits and lets detail
+     * soften. That is the intended trade for a 526x300 panel read at a glance, but it is a
+     * judgement about legibility, so the mode is recorded in the ride file next to the kbps
+     * it produces.
+     */
+    private fun videoFormat(cbr: Boolean): MediaFormat =
+        MediaFormat.createVideoFormat(MIME, WIDTH, HEIGHT).apply {
+            setInteger(MediaFormat.KEY_COLOR_FORMAT,
+                MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
+            setInteger(MediaFormat.KEY_BIT_RATE, BITRATE)
+            if (cbr) {
+                setInteger(MediaFormat.KEY_BITRATE_MODE,
+                    MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR)
+            }
+            setInteger(MediaFormat.KEY_FRAME_RATE, FPS)
+            setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, IDR_INTERVAL_S)
+            // "0: realtime priority — meaning that the codec shall support the given
+            // performance configuration at realtime" (MediaFormat javadoc). A hint used for
+            // resource planning, not a guarantee — but this stream IS realtime: a frame that
+            // misses its slot is not late, it is a dash showing the previous one. The default
+            // is best-effort, which is the wrong thing to tell the codec about a ride.
+            setInteger(MediaFormat.KEY_PRIORITY, 0)
+            // Encoder latency in FRAMES: "if encoder supports it, it should output at least
+            // one output frame after being queued the specified number of frames". At 4 fps a
+            // codec that buffers even two frames adds half a second between the map the
+            // overlays were drawn against and the picture on the dash. Ignored where the
+            // encoder has no such feature, which is why nothing checks it.
+            setInteger(MediaFormat.KEY_LATENCY, 1)
+            setInteger(MediaFormat.KEY_PROFILE,
+                MediaCodecInfo.CodecProfileLevel.AVCProfileBaseline)
+            setInteger(MediaFormat.KEY_LEVEL,
+                MediaCodecInfo.CodecProfileLevel.AVCLevel41)
+        }
 
     /**
      * Pick an AVC encoder that can actually take our frames: hardware if one qualifies,
@@ -131,29 +254,78 @@ class DashEncoder(private val onEncodedData: (ByteArray, Boolean, Boolean) -> Un
      * draws a map, and that beats a dash showing nothing.
      */
     private fun selectEncoder(): String? {
+        // Why a hardware candidate was turned down, for the line below. Software ones are
+        // not collected: nobody is going to investigate those.
+        val hardwareRejected = mutableListOf<String>()
         val usable = MediaCodecList(MediaCodecList.REGULAR_CODECS).codecInfos.filter { info ->
             if (!info.isEncoder) return@filter false
             if (!info.supportedTypes.any { it.equals(MIME, true) }) return@filter false
+            // Both flags are API 29, which is the project floor — before it was raised this
+            // preference was dead code on 26-28, and every one of those devices silently took
+            // whatever the OS handed it.
+            val hardware = info.isHardwareAccelerated && !info.isSoftwareOnly
+            fun reject(why: String): Boolean {
+                DebugLog.i(TAG) { "${info.name}: $why — skipping" }
+                if (hardware) hardwareRejected += "${info.name} ($why)"
+                return false
+            }
             val caps = runCatching { info.getCapabilitiesForType(MIME) }.getOrNull()
-                ?: return@filter false
-            val video = caps.videoCapabilities ?: return@filter false
+                ?: return@filter reject("capabilities unreadable")
+            val video = caps.videoCapabilities ?: return@filter reject("no video capabilities")
             when {
-                !video.supportedWidths.contains(WIDTH) || !video.supportedHeights.contains(HEIGHT) -> {
-                    DebugLog.i(TAG) { "${info.name}: ${WIDTH}x$HEIGHT out of its range — skipping" }
-                    false
-                }
-                !caps.colorFormats.contains(MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface) -> {
-                    DebugLog.i(TAG) { "${info.name}: no COLOR_FormatSurface — skipping" }
-                    false
-                }
+                !video.supportedWidths.contains(WIDTH) || !video.supportedHeights.contains(HEIGHT) ->
+                    reject("${WIDTH}x$HEIGHT out of its range")
+                !caps.colorFormats.contains(MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface) ->
+                    reject("no COLOR_FormatSurface")
                 else -> true
             }
         }
-        // Both flags are API 29, which is the project floor — before it was raised this
-        // preference was dead code on 26-28, and every one of those devices silently took
-        // whatever the OS handed it.
-        return usable.firstOrNull { it.isHardwareAccelerated && !it.isSoftwareOnly }?.name
-            ?: usable.firstOrNull()?.name
+        val hardware = usable.firstOrNull { it.isHardwareAccelerated && !it.isSoftwareOnly }
+        // A ride encoded on the CPU is the outcome this selection exists to avoid, and it is
+        // otherwise indistinguishable from a normal one — the name in the line below is the
+        // only trace, and the REASON lives in DebugLog, which a release build drops. Said
+        // once here, where a post-mortem will find it, and only when it actually happened.
+        if (hardware == null && hardwareRejected.isNotEmpty()) {
+            RideDiagnostics.warn(
+                "stream",
+                "no hardware encoder qualified, falling back to software — ${hardwareRejected.joinToString("; ")}",
+            )
+        }
+        return hardware?.name ?: usable.firstOrNull()?.name
+    }
+
+    /**
+     * What the encoder actually accepted, once per stream.
+     *
+     * `KEY_PRIORITY`, `KEY_LATENCY` and `KEY_BITRATE_MODE` are hints: nothing in
+     * `CodecCapabilities` says whether a given encoder honours them, and the device's
+     * `media_codecs.xml` declares only `bitrate-modes` — not latency, not priority. The
+     * documented way to find out is this one: `MediaFormat.KEY_LATENCY`'s javadoc says
+     * "use the output format to verify that this feature was enabled and the actual value
+     * used by the encoder". So we ask after the fact, on whatever phone the rider owns,
+     * and put the answer where a release build can still be read.
+     *
+     * A key missing from the echo means the encoder did not adopt it — which is legal and
+     * silent, and exactly the thing that would otherwise be argued about from the couch.
+     */
+    private fun logNegotiatedFormat() {
+        if (loggedNegotiatedFormat) return
+        // After the read, not before: a first call that finds no output format yet would
+        // otherwise silence the echo for the rest of the stream.
+        val out = runCatching { codec?.outputFormat }.getOrNull() ?: return
+        loggedNegotiatedFormat = true
+        fun echo(key: String): String =
+            runCatching { if (out.containsKey(key)) out.getNumber(key).toString() else "—" }
+                .getOrDefault("?")
+        RideDiagnostics.log(
+            "stream",
+            "encoder echoed: bitrate=${echo(MediaFormat.KEY_BIT_RATE)} " +
+                "bitrate-mode=${echo(MediaFormat.KEY_BITRATE_MODE)} " +
+                "i-frame-interval=${echo(MediaFormat.KEY_I_FRAME_INTERVAL)} " +
+                "latency=${echo(MediaFormat.KEY_LATENCY)} " +
+                "priority=${echo(MediaFormat.KEY_PRIORITY)} " +
+                "(— = not adopted)",
+        )
     }
 
     /** Draw one frame into the encoder via hardware canvas. */
@@ -179,7 +351,9 @@ class DashEncoder(private val onEncodedData: (ByteArray, Boolean, Boolean) -> Un
             val idx = codec.dequeueOutputBuffer(info, DRAIN_TIMEOUT_US)
             when {
                 idx == MediaCodec.INFO_TRY_AGAIN_LATER -> break
-                idx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> Unit // SPS/PPS come as CODEC_CONFIG buffer
+                // SPS/PPS still come as a CODEC_CONFIG buffer, not from here — this is only
+                // where the encoder finally says what it made of the format we asked for.
+                idx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> logNegotiatedFormat()
                 idx >= 0 -> {
                     val buf = codec.getOutputBuffer(idx) ?: run {
                         codec.releaseOutputBuffer(idx, false); continue

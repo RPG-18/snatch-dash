@@ -81,8 +81,20 @@ Original mapping, confirmed on fw 11.63 — re-confirm it still round-trips
 through the plugin's `onButton` → `DashEngine.stateStream` (`{'button':
 code}`) → whatever Dart-side listener is wired to it:
 
-- [ ] `RIGHT` (`0x09`) zooms in, `LEFT` (`0x0A`) zooms out
-      (`DashEngineController.zoomIn`/`zoomOut` via the method channel).
+- [ ] **`0x13` zooms in, `0x14` zooms out** — these are the primary codes and
+      the ones that actually arrive in the field (ride logs 2026-09-09,
+      `[joystick] code=0x13`). An earlier version of this item named
+      `0x09`/`0x0A`, which is incomplete: see `_btnMapZoomIn`/`_btnMapZoomOut`
+      in `lib/state/dash_button_controller.dart`.
+- [ ] `0x09`/`0x0A` (RIGHT/LEFT) are media next/previous, and they fall through
+      to zoom **only while nothing is playing** (`_isLooseNextButton` /
+      `_isLoosePreviousButton`). Test both ways — with media active and without —
+      or a swapped branch stays invisible.
+- [ ] `0x15` and `0x0B` hit **no branch at all**. The 2026-09-05 ride sent them
+      nine and six times; `0x15` shows up in the 2026-09-09 logs too. From the
+      saddle that is indistinguishable from a broken control. Find out on the
+      hardware which physical controls these are and whether they should do
+      anything — Dart logs `dash button 0x… has no action` for them.
 - [ ] Manual pan (if wired) reverts to follow mode after ~8 s idle
       (`MANUAL_IDLE_MS`).
 - [ ] No joystick codes are silently swallowed — full hex dump still logs

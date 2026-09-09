@@ -285,8 +285,25 @@ class DashSession(private val scope: CoroutineScope) {
      * the socket, and holds a different object once a new session starts.
      */
     private fun sendIfCurrent(sock: DashSocket, packet: ByteArray) {
-        if (socket === sock) sock.send(packet)
+        if (socket === sock) sock.send(packet) else staleSends.incrementAndGet()
     }
+
+    /**
+     * How often a race we designed against actually fired.
+     *
+     * Every guard in this class turns a race into silence — the packet is not sent, the
+     * teardown is not run — and silence is indistinguishable from "the race never happens".
+     * That leaves the question the guards were built to answer permanently open: was the
+     * window real on this hardware, or were we defending against arithmetic? Counting costs
+     * an atomic increment on a path that runs a few times a second, and turns it into a
+     * number in the ride file (see [launchAckCounterLog]) — from a release build, on a real
+     * bike, which is the only place the answer lives.
+     *
+     * Zero over a long ride is a result too: it says these paths are colder than the code
+     * around them implies, and the next reader can weigh that against the machinery.
+     */
+    private val staleSends = AtomicInteger(0)
+    private val supersededTeardowns = AtomicInteger(0)
 
     /**
      * Chrome (the route-card) always stays on, matching [enterNavMode] being the entry
@@ -565,13 +582,21 @@ class DashSession(private val scope: CoroutineScope) {
      * and they break out of their own loop on return.
      */
     private fun endLink(seq: Int, sock: DashSocket) {
-        // Unconditional, and first: [sock] belongs to this RX loop whether or not the session
-        // it served is still the current one, and nothing else will close it.
-        runCatching { sock.close() }
+        // First, and for the same reason as ever: [sock] belongs to this RX loop whether or
+        // not the session it served is still the current one, and nothing else will close it.
+        //
+        // The one exception is [farewellSocket]. A disconnect on a link that is already dead
+        // races this path — the RX loop hits its socket error at the same moment disconnect
+        // claims the socket — and closing here would pull it out from under the
+        // `projectionStop`/`projectionOff` pair, leaving the dash in projection on its last
+        // frame. That is the failure the claim was introduced to prevent, and it arrives
+        // through the one teardown path that had no claim check.
+        if (sock !== farewellSocket) runCatching { sock.close() }
         // Everything past this point is state the LIVE session owns — the periodic senders, the
         // socket field, the state flow, the error callback — so it needs the same token guard as
         // [fail]. Socket identity alone (the check further down) covers only one of the four.
         if (seq != sessionSeq.get()) {
+            supersededTeardowns.incrementAndGet()
             DebugLog.w(TAG) { "RX loop of superseded session #$seq ended (now #${sessionSeq.get()}) — not reporting" }
             return
         }
@@ -750,6 +775,19 @@ class DashSession(private val scope: CoroutineScope) {
                 lastLoggedPFrameAcks = p
                 val intervalS = ACK_LOG_INTERVAL_MS / 1_000
                 DebugLog.i(TAG) { "Frame decode acks: IDR=$idrDelta P=$pDelta in the last ${intervalS}s" }
+                // Into the ride file, and only when nonzero: a guard that never fires should
+                // not cost a line a minute, but one that does is the first evidence any of
+                // these races exist outside the reasoning that predicted them.
+                val stale = staleSends.getAndSet(0)
+                val superseded = supersededTeardowns.getAndSet(0)
+                if (stale > 0 || superseded > 0) {
+                    RideDiagnostics.warn(
+                        TAG,
+                        "races fired in the last ${intervalS}s: $stale packet(s) held back from a " +
+                            "socket that is no longer current, $superseded teardown(s) from a " +
+                            "superseded session ignored",
+                    )
+                }
             }
         }
     }
@@ -828,6 +866,7 @@ class DashSession(private val scope: CoroutineScope) {
      */
     private fun fail(seq: Int, msg: String) {
         if (seq != sessionSeq.get()) {
+            supersededTeardowns.incrementAndGet()
             DebugLog.w(TAG) { "ignoring fail from superseded session #$seq (now #${sessionSeq.get()}): $msg" }
             return
         }

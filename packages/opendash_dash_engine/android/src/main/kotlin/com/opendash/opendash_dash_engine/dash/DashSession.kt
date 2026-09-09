@@ -247,14 +247,46 @@ class DashSession(private val scope: CoroutineScope) {
             DebugLog.w(TAG) { "startStreaming() with no socket — session was torn down" }
             return
         }
+        // Captured once and handed to every periodic sender below, which then send through
+        // [sendIfCurrent] — see there for why neither the capture nor the field alone is
+        // enough.
+        val sock = socket ?: return
         setState(DashState.STREAMING)
-        launchProjectionHeartbeat()
-        launchRouteCardKeepAlive()
-        launchNavInfo()
-        launchMediaInfo()
+        launchProjectionHeartbeat(sock)
+        launchRouteCardKeepAlive(sock)
+        launchNavInfo(sock)
+        launchMediaInfo(sock)
     }
 
     fun sendRtp(packet: ByteArray) { socket?.sendRtp(packet) }
+
+    /**
+     * A periodic sender's way onto the wire: this packet, on this session's socket, and only
+     * while that socket is still the live one.
+     *
+     * Both halves are load-bearing, and each covers what the other misses.
+     *
+     * Reading the `socket` FIELD alone (what these loops used to do) sends whatever socket is
+     * current at the tick — not necessarily this session's. Cancellation is cooperative and
+     * the loops sleep 250-1000 ms, so a tick belonging to a session that has already ended can
+     * wake after a NEW session installed its socket and push the old session's packet — a
+     * route card carrying the previous destination, say — into the live link. `_state ==
+     * STREAMING` does not catch that: the new session is streaming too.
+     *
+     * The captured socket alone is no better, and the failure is worse. [disconnect] takes the
+     * socket for its farewell, sends `projectionStop`/`projectionOff` on it, and only then
+     * settles the state at IDLE — so a tick already past its loop condition would send on the
+     * very socket the farewell is using. `projectionFrame` and `liveRouteCard(projectionOn =
+     * true)` are the exact inverse of that pair: the dash would be re-armed into projection
+     * right after being told to leave it, and would sit on the last frame until its own
+     * timeout. That is the failure the farewell exists to prevent, reintroduced from behind.
+     *
+     * The identity check is what closes both: the field is nulled the moment teardown claims
+     * the socket, and holds a different object once a new session starts.
+     */
+    private fun sendIfCurrent(sock: DashSocket, packet: ByteArray) {
+        if (socket === sock) sock.send(packet)
+    }
 
     /**
      * Chrome (the route-card) always stays on, matching [enterNavMode] being the entry
@@ -722,39 +754,40 @@ class DashSession(private val scope: CoroutineScope) {
         }
     }
 
-    private fun launchProjectionHeartbeat() {
+    private fun launchProjectionHeartbeat(sock: DashSocket) {
         projHbJob?.cancel()
         projHbJob = scope.launch(Dispatchers.IO) {
             while (isActive && _state.value == DashState.STREAMING) {
-                socket?.send(DashCommands.projectionFrame())
+                sendIfCurrent(sock, DashCommands.projectionFrame())
                 delay(PROJ_HB_MS)
             }
         }
     }
 
-    private fun launchRouteCardKeepAlive() {
+    private fun launchRouteCardKeepAlive(sock: DashSocket) {
         routeCardJob?.cancel()
         routeCardJob = scope.launch(Dispatchers.IO) {
             while (isActive && _state.value == DashState.STREAMING) {
-                socket?.send(liveRouteCard(projectionOn = true))
+                sendIfCurrent(sock, liveRouteCard(projectionOn = true))
                 delay(ROUTE_CARD_MS)
             }
         }
     }
 
-    private fun launchNavInfo() {
+    private fun launchNavInfo(sock: DashSocket) {
         navInfoJob?.cancel()
         navInfoJob = scope.launch(Dispatchers.IO) {
             while (isActive && _state.value == DashState.STREAMING) {
                 if (navActive) {
-                    socket?.send(
+                    sendIfCurrent(
+                        sock,
                         DashCommands.activeNavPacket(
                             maneuver = navManeuver,
                             primaryDist = navPrimaryDist,
                             primaryUnit = navPrimaryUnit,
                             totalDist = navTotalDist,
                             totalUnit = navTotalUnit,
-                        )
+                        ),
                     )
                 }
                 delay(ROUTE_CARD_MS)
@@ -762,20 +795,20 @@ class DashSession(private val scope: CoroutineScope) {
         }
     }
 
-    private fun launchMediaInfo() {
+    private fun launchMediaInfo(sock: DashSocket) {
         mediaInfoJob?.cancel()
         mediaInfoJob = scope.launch(Dispatchers.IO) {
             var previousCaller: String? = null
             while (isActive && _state.value == DashState.STREAMING) {
                 val caller = callerName
                 when {
-                    caller != null -> runCatching { socket?.send(DashCommands.callNotify(caller)) }
-                    previousCaller != null -> runCatching { socket?.send(DashCommands.callClear()) }
+                    caller != null -> runCatching { sendIfCurrent(sock, DashCommands.callNotify(caller)) }
+                    previousCaller != null -> runCatching { sendIfCurrent(sock, DashCommands.callClear()) }
                 }
                 previousCaller = caller
                 mediaTitle?.let { title ->
                     runCatching {
-                        socket?.send(DashCommands.nowPlaying(title, mediaAlbum, mediaArtist))
+                        sendIfCurrent(sock, DashCommands.nowPlaying(title, mediaAlbum, mediaArtist))
                     }
                 }
                 delay(ROUTE_CARD_MS)

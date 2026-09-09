@@ -42,6 +42,26 @@ class DashSocket(private val network: android.net.Network? = null) : AutoCloseab
 
     private val seq = AtomicInteger(0)
 
+    /**
+     * Serialises [send] so the wire order matches the seq order.
+     *
+     * The counter being atomic was never the question: it hands out 5 and 6 exactly once
+     * each. What it does not do is keep the two steps together — a coroutine can take 5, be
+     * descheduled, and send after the one that took 6, putting `…5, 7, 6, 8…` on the wire.
+     * The platform does not save us either: `DatagramSocket.send` synchronises on the packet
+     * and the channel adaptor on the channel, which stops the bytes interleaving but leaves
+     * the ORDER to whoever wins the lock.
+     *
+     * Reachable rather than theoretical: during a stream six independent coroutines write
+     * here from `Dispatchers.IO` — a 4 Hz projection heartbeat, three 1 Hz keep-alives, the
+     * RX loop's acks and joystick echoes — roughly eight packets a second, some five thousand
+     * over a ten-minute ride. Whether the dash validates the rolling byte we do not know; the
+     * reference implementation maintains it carefully, which is reason enough not to hand it
+     * a sequence with holes in the middle. The cost is a microsecond-scale critical section
+     * around a syscall, at eight calls a second.
+     */
+    private val txLock = Any()
+
     init {
         var tx:  DatagramSocket? = null
         var rx:  DatagramSocket? = null
@@ -72,14 +92,23 @@ class DashSocket(private val network: android.net.Network? = null) : AutoCloseab
 
     /** Send a K1G control packet (seq patched here, like K1GTx in the reference). */
     fun send(data: ByteArray) {
-        val pkt = K1GPacket.patchSeq(data, seq.getAndIncrement())
-        DebugLog.d(TAG) { "TX →$BROADCAST:$CTRL_PORT  ${pkt.size}B  ${pkt.hexFull()}" }
-        // UDP fire-and-forget: a dropped/unreachable link (ENETUNREACH, EBADF) must never
-        // crash the app — the session will fail and reconnect.
-        try {
-            txSocket.send(DatagramPacket(pkt, pkt.size, broadcastAddr, CTRL_PORT))
-        } catch (e: Exception) {
-            DebugLog.w(TAG) { "TX send failed (link down?): ${e.message}" }
+        // Numbering, logging and transmission inside one lock — see [txLock] for why
+        // splitting the first two reorders the sequence on the wire. The log line is in here
+        // for the same reason: this file's contract is that a TX line can be diffed against a
+        // capture byte for byte, and lines written outside the lock arrive in whatever order
+        // the threads take it, describing packets that went out in another. In a release
+        // build DebugLog compiles the whole thing away; in a debug one it is a hex dump of at
+        // most a few dozen bytes, eight times a second.
+        synchronized(txLock) {
+            val pkt = K1GPacket.patchSeq(data, seq.getAndIncrement())
+            DebugLog.d(TAG) { "TX →$BROADCAST:$CTRL_PORT  ${pkt.size}B  ${pkt.hexFull()}" }
+            // UDP fire-and-forget: a dropped/unreachable link (ENETUNREACH, EBADF) must never
+            // crash the app — the session will fail and reconnect.
+            try {
+                txSocket.send(DatagramPacket(pkt, pkt.size, broadcastAddr, CTRL_PORT))
+            } catch (e: Exception) {
+                DebugLog.w(TAG) { "TX send failed (link down?): ${e.message}" }
+            }
         }
     }
 

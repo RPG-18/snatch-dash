@@ -9,6 +9,7 @@ import android.graphics.Rect
 import android.media.AudioManager
 import android.media.ToneGenerator
 import android.os.PowerManager
+import android.os.SystemClock
 import com.opendash.opendash_dash_engine.dash.DashConfig
 import com.opendash.opendash_dash_engine.dash.DashKeepAliveService
 import com.opendash.opendash_dash_engine.dash.DashSession
@@ -16,6 +17,7 @@ import com.opendash.opendash_dash_engine.dash.DashState
 import com.opendash.opendash_dash_engine.dash.DashWifiManager
 import com.opendash.opendash_dash_engine.dash.WifiConnStatus
 import com.opendash.opendash_dash_engine.dash.map.DashCamera
+import com.opendash.opendash_dash_engine.dash.map.FrameRatePolicy
 import com.opendash.opendash_dash_engine.dash.map.GeoPoint
 import com.opendash.opendash_dash_engine.dash.map.LocationTracker
 import com.opendash.opendash_dash_engine.dash.map.MapProjection
@@ -35,11 +37,14 @@ import com.opendash.opendash_dash_engine.media.MediaInfoProvider
 import com.opendash.opendash_dash_engine.util.DebugLog
 import com.opendash.opendash_dash_engine.util.RideDiagnostics
 import java.util.Locale
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -75,6 +80,29 @@ class DashEngineController(
         private const val FPS_IDLE = 2
         private const val FORCE_REDRAW_MS = 2_000L
         private const val SMOOTH_TAU = 0.35
+
+        /**
+         * Frame-rate hysteresis in m/s of ground speed, and the shortest time a verdict
+         * may stand — one GOP at [FPS_MOVING], so a bitrate retarget can never land more
+         * often than the key frames it lands between. Why these are two numbers and not
+         * one threshold: [FrameRatePolicy].
+         */
+        private const val CAM_MOVING_ENTER_MPS = 0.9   // 3.2 km/h
+        private const val CAM_MOVING_EXIT_MPS = 0.5    // 1.8 km/h
+        private const val CAM_MOVING_DWELL_MS = 2_000L
+
+        /**
+         * How long one access unit's datagrams are spread over, in ms.
+         *
+         * A key frame measured 17-18 datagrams on the 2026-09-09 ride (`idrPkts=17/18/18`)
+         * and used to go out back to back: `sendRtp` was called synchronously from the
+         * packetizer callback, so the whole burst hit the Wi-Fi driver in one go. Any ONE
+         * of those eighteen going missing makes the key frame undecodable and leaves the
+         * dash showing garbage until the next one — 2 s moving, 4 s parked. That ride saw
+         * exactly one such artifact against 583 key frames, which is the loss rate this
+         * spreading is for. 30 ms out of a 250 ms frame budget costs nothing.
+         */
+        private const val RTP_AU_SPREAD_MS = 30L
         private const val MANUAL_IDLE_MS = 8_000L
         /** A fix older than this counts as "GPS lost" for the Dash screen's chip. */
         private const val GPS_FIX_STALE_MS = 4_000L
@@ -273,6 +301,9 @@ class DashEngineController(
     @Volatile private var camHdg = 0f
     @Volatile private var camInit = false
     private var camMoving = false
+    /** Owns the hysteresis and the flip counter; touched from the frame loop only. */
+    private val frameRate =
+        FrameRatePolicy(CAM_MOVING_ENTER_MPS, CAM_MOVING_EXIT_MPS, CAM_MOVING_DWELL_MS)
 
     /**
      * Metres the camera centre has travelled since the last `[map]` line.
@@ -837,7 +868,7 @@ class DashEngineController(
         // startStream() call, same lifetime as everything else here (streamJob/encoder).
         var framesEncoded = 0
         var idrFramesEncoded = 0
-        var rtpPacketsSent = 0
+        val rtpPacketsSent = AtomicLong(0)
         // Bytes, not just packets. The packet count alone cannot answer the only
         // question that matters about this stream — are we inside the dash's own
         // ~200 kbps profile (see DashEncoder.BITRATE) — because a packet is
@@ -845,7 +876,7 @@ class DashEngineController(
         // rate somewhere between 168 and 470 kbps, which is the difference between
         // "fine" and "twice the dash's profile", and nothing in the log could
         // narrow it.
-        var rtpBytesSent = 0L
+        val rtpBytesSent = AtomicLong(0)
         // Frame size and the datagram cost of a key frame — the two numbers the audit
         // (§4.6) asks for and the ride file has never carried: the only frame size
         // anywhere in it is "first video frame sent", once per session. They decide what
@@ -854,6 +885,24 @@ class DashEngineController(
         // stats, drained into the same minute.
         val frameBytes = Percentiles()
         val idrDatagrams = Percentiles()
+        // One access unit per element, so the sender knows the size of the burst it is
+        // pacing before it sends the first packet of it.
+        //
+        // FOUR, not the 64 this was first written with. A deep queue does not protect a
+        // realtime stream, it hides the stall and converts it into latency: 64 AUs is
+        // ~16 s of video at 4 fps, so a blocked socket would have kept `drop=0` in the
+        // ride file while the dash showed a map from a quarter-minute ago — worse than a
+        // gap, and invisible in exactly the file that exists to make it visible. One AU
+        // needs at most RTP_AU_SPREAD_MS of a 250 ms budget, so four is already a second
+        // of slack for a GC pause; past that, dropping and SAYING so is the honest
+        // failure. The render loop still never waits on the network — trySend, never send.
+        val rtpOutbox = Channel<List<ByteArray>>(capacity = 4)
+        val rtpDropped = AtomicInteger(0)
+        // Read by the RTP sender to size the spread against the frame it belongs to.
+        val currentIntervalMs = AtomicLong(1000L / FPS_IDLE)
+        // Filled by the packetizer callback during one nalProc.process() call, then handed
+        // to the outbox as a unit. Only ever touched from the frame-loop coroutine.
+        val auPackets = ArrayList<ByteArray>(32)
         // Which profile the encoder is currently on, so it is poked only on a
         // transition rather than every frame.
         var idleBitrate = false
@@ -873,11 +922,11 @@ class DashEngineController(
         // more correct RTP practice regardless, just not proven to fix anything real here.
         var videoPtsMs = 0L
 
-        val packetizer = RtpPacketizer { rtpPkt ->
-            session.sendRtp(rtpPkt)
-            rtpPacketsSent++
-            rtpBytesSent += rtpPkt.size
-        }
+        // Collects rather than sends. The frame loop runs on Dispatchers.Default, and
+        // DatagramSocket.send is a syscall that blocks when the Wi-Fi driver's queue is
+        // full — so the old shape put the render loop's deadline at the mercy of the
+        // radio, and gave the burst nowhere to be paced from (audit §4.1).
+        val packetizer = RtpPacketizer { rtpPkt -> auPackets += rtpPkt }
         // endOfAU comes from NalProcessor, which knows which NAL closes the access unit —
         // this used to be hardcoded `true`, marking every packet. Harmless while each AU
         // was exactly one NAL, but wrong the moment an IDR goes out as separate
@@ -901,13 +950,18 @@ class DashEngineController(
                 loggedFirstFrame = true
                 RideDiagnostics.log("stream", "first video frame sent (key=$isKey, ${annexB.size}B)")
             }
-            // Counted around process(), which is where the packets for this access unit
-            // are actually emitted: the packetizer callback above runs synchronously on
-            // this same coroutine, so the delta is exactly this AU's datagrams and needs
-            // no atomics.
-            val packetsBefore = rtpPacketsSent
+            // process() runs the packetizer synchronously on this coroutine, so when it
+            // returns [auPackets] holds exactly this access unit — which is both the
+            // number the ride file wants and the group the sender has to pace as one.
+            auPackets.clear()
             nalProc.process(annexB)
-            if (isKey && !isConfig) idrDatagrams.add((rtpPacketsSent - packetsBefore).toLong())
+            if (auPackets.isNotEmpty()) {
+                if (isKey && !isConfig) idrDatagrams.add(auPackets.size.toLong())
+                // Never `send`: this runs inside the render loop, and a full outbox must
+                // cost a dropped frame, not a late one. A codec-config buffer emits no
+                // packets at all (SPS/PPS are cached, not sent), hence the guard.
+                if (rtpOutbox.trySend(auPackets.toList()).isFailure) rtpDropped.incrementAndGet()
+            }
         }
 
         streamJob?.cancelAndJoin()
@@ -983,12 +1037,30 @@ class DashEngineController(
         renderStats.reset()
 
         streamJob = scope.launch(Dispatchers.Default) {
+            // A child of this launch, so cancelling the stream cancels it — no separate
+            // teardown path, which is the property the rest of this file keeps paying for.
+            launch(Dispatchers.IO) {
+                for (au in rtpOutbox) {
+                    // Spread across a slice of the frame's own budget, never more than
+                    // RTP_AU_SPREAD_MS. n-1 gaps for n packets, so the whole burst lands
+                    // inside the spread rather than one gap past it. A single-packet AU —
+                    // most P-frames — waits for nothing.
+                    val spread = minOf(RTP_AU_SPREAD_MS, currentIntervalMs.get() / 4)
+                    val gap = if (au.size > 1) spread / (au.size - 1) else 0L
+                    for ((i, pkt) in au.withIndex()) {
+                        session.sendRtp(pkt)
+                        rtpPacketsSent.incrementAndGet()
+                        rtpBytesSent.addAndGet(pkt.size.toLong())
+                        if (gap > 0 && i < au.size - 1) delay(gap)
+                    }
+                }
+            }
             try {
                 var failures = 0
                 var lastEncoderLogAt = System.currentTimeMillis()
                 var lastRenderLogAt = lastEncoderLogAt
                 var lastFrameSentAt = 0L
-                var loggedFrames = 0; var loggedIdr = 0; var loggedRtp = 0; var loggedBytes = 0L
+                var loggedFrames = 0; var loggedIdr = 0; var loggedRtp = 0L; var loggedBytes = 0L
                 // Declared outside the try/catch and assigned fresh once per iteration, so the
                 // trailing delay() below can reuse the SAME value the PTS advance used — both must
                 // agree on "how long is this frame", or the RTP timeline and the actual send
@@ -1012,6 +1084,7 @@ class DashEngineController(
                         // stopped/started transition uses the previous iteration's [camMoving] for
                         // one frame — invisible next to the camera's own 350 ms smoothing.
                         frameIntervalMs = 1000L / (if (camMoving) FPS_MOVING else FPS_IDLE)
+                        currentIntervalMs.set(frameIntervalMs)
                         tick(frameIntervalMs)
                         val bmp = frameBitmap
                         val enc = encoder
@@ -1079,12 +1152,15 @@ class DashEngineController(
                             windowMovedM = 0.0
                         }
                         if (now - lastEncoderLogAt > ENCODER_LOG_INTERVAL_MS) {
+                            val nowRtp = rtpPacketsSent.get()
+                            val nowBytes = rtpBytesSent.get()
                             val dFrames = framesEncoded - loggedFrames
                             val dIdr = idrFramesEncoded - loggedIdr
-                            val dRtp = rtpPacketsSent - loggedRtp
-                            val dBytes = rtpBytesSent - loggedBytes
-                            loggedFrames = framesEncoded; loggedIdr = idrFramesEncoded; loggedRtp = rtpPacketsSent
-                            loggedBytes = rtpBytesSent
+                            val dRtp = nowRtp - loggedRtp
+                            val dBytes = nowBytes - loggedBytes
+                            val dFlips = frameRate.drainFlips()
+                            loggedFrames = framesEncoded; loggedIdr = idrFramesEncoded; loggedRtp = nowRtp
+                            loggedBytes = nowBytes
                             lastEncoderLogAt = now
                             val intervalS = ENCODER_LOG_INTERVAL_MS / 1_000
                             val thermal = thermalLabel()
@@ -1113,6 +1189,7 @@ class DashEngineController(
                                         "frame=${frameBytes.drain()}B " +
                                         "idrPkts=${idrDatagrams.drain()} " +
                                         "idrShape=${nalProc.drainIdrShapes()} " +
+                                        "drop=${rtpDropped.getAndSet(0)} fpsFlips=$dFlips " +
                                         "bitrate=${if (idleBitrate) "idle" else "moving"} " +
                                         "thermal=$thermal in the last ${intervalS}s",
                                 )
@@ -1154,6 +1231,15 @@ class DashEngineController(
                 // what makes "cancel the loop" a complete teardown on its own.
                 runCatching { encoder?.release() }
                 encoder = null
+                // cancel(), NOT close(). close() lets the sender drain what is queued, and
+                // DashSession.sendRtp writes to whatever `socket` is live at that moment —
+                // it has none of the identity guard that sendIfCurrent gives every control
+                // sender. On the Wi-Fi-loss path this loop exits on its own rather than
+                // being cancelled, so a drained queue could put the dead stream's packets,
+                // carrying the old packetizer's SSRC and sequence numbers, onto the NEXT
+                // session's freshly bound socket. Frames from a stream that has ended are
+                // stale by definition; there is nothing here worth delivering.
+                rtpOutbox.cancel()
             }
         }
     }
@@ -1193,7 +1279,13 @@ class DashEngineController(
         val targetLng = riderLng ?: destLng ?: camLng
 
         val nowNs = System.nanoTime()
-        val dt = if (lastTickNs == 0L) 0.042 else ((nowNs - lastTickNs) / 1e9).coerceIn(0.0, 0.5)
+        // Two readings of the same gap, deliberately. [dt] stays clamped because it drives
+        // the camera smoothing, where a long stall must not produce one giant jump. The
+        // speed below needs the UNclamped value: dividing a real 0.8 s of travel by a
+        // clamped 0.5 s would report 1.6x the rider's speed and bias every late frame
+        // towards "moving".
+        val dtRaw = if (lastTickNs == 0L) 0.042 else (nowNs - lastTickNs) / 1e9
+        val dt = dtRaw.coerceIn(0.0, 0.5)
         lastTickNs = nowNs
         val a = if (camInit) (1.0 - exp(-dt / SMOOTH_TAU)) else 1.0
 
@@ -1218,7 +1310,18 @@ class DashEngineController(
         }
         val movedM = if (wasInit) distMeters(prevLat, prevLng, camLat, camLng) else 0.0
         windowMovedM += movedM
-        camMoving = movedM > 0.25 || (loc?.speed ?: 0f) > 0.8f
+        // Ground speed, not distance-per-tick — see [CAM_MOVING_ENTER_MPS] for why the
+        // difference is the whole point. The camera's own speed and the fix's agree while
+        // riding steadily; the max of the two is what keeps a lagging camera from reading
+        // as a stopped bike right after pulling away.
+        val camSpeedMps = if (dtRaw > 0.0) movedM / dtRaw else 0.0
+        val speedMps = maxOf(camSpeedMps, (loc?.speed ?: 0f).toDouble())
+        // elapsedRealtime, not currentTimeMillis: this is a duration, and wall clock
+        // moves. An NTP correction backwards — routine the moment data comes back after a
+        // dead zone — makes the dwell's `now - last` negative and freezes the frame rate
+        // for the length of the jump; a forward one cancels the dwell entirely. The
+        // smoothing above already takes its elapsed time from nanoTime for the same reason.
+        camMoving = frameRate.update(speedMps, SystemClock.elapsedRealtime())
 
         val centerLat = if (haveTarget) camLat else 0.0
         val centerLng = if (haveTarget) camLng else 0.0

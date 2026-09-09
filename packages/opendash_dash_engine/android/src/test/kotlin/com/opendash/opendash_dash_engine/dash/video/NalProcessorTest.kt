@@ -9,14 +9,14 @@ import kotlin.test.assertTrue
  * Pins what leaves [NalProcessor] byte for byte, because the dash is the only
  * specification there is and it is not available from a JVM test.
  *
- * The case this file exists for is [spsIsNormalisedOnlyForTheWhitelistedShape]: the
- * firmware refuses to leave its loading state unless the SPS looks like
- * `67 42 00 29…`, and the rewrite that gets it there is guarded on byte[1] and
- * byte[3] ALREADY matching. An encoder that re-emits its parameter sets with a
- * different profile or level therefore slips through unrewritten — and unlike a
- * lost packet, which the next key frame repairs, a rejected SPS never heals. The
- * guard is deliberate (rewriting an arbitrary SPS would be worse), so what this
- * test pins is its exact reach, and NalProcessor now says so in the ride file.
+ * The case this file exists for is [spsIsRewrittenOnlyForTheLegacyShape]. It was
+ * written to catch a suspected failure — the dash refusing an un-rewritten SPS — and
+ * the ride of 2026-09-09 22:01-22:32 falsified that: twelve sessions sent
+ * `67 42 C0 15…` and all twelve got the dash's own "key frame decoded" back. What the
+ * test pins is therefore not a hazard but a fact worth not drifting: the rewrite
+ * reaches only `42 xx 29`, so on this encoder (which emits level 0x15) it does
+ * nothing at all. If someone later widens the guard, or an encoder appears that lands
+ * on it, this test is where that shows up.
  */
 class NalProcessorTest {
 
@@ -71,16 +71,17 @@ class NalProcessorTest {
     }
 
     @Test
-    fun spsIsNormalisedOnlyForTheWhitelistedShape() {
+    fun spsIsRewrittenOnlyForTheLegacyShape() {
         // Baseline profile (0x42) at level 4.1 (0x29): the constraint byte is rewritten.
         assertEquals(0x00, firstNalOf(bytes(0x67, 0x42, 0xC0, 0x29, 0x11))[2].toInt() and 0xFF)
 
-        // Another profile — left exactly as the encoder produced it, so what reaches the
-        // dash is NOT 67 42 00 29 and the dash is entitled to reject every IDR carrying it.
+        // Another profile — left exactly as the encoder produced it.
         assertEquals(0xC0, firstNalOf(bytes(0x67, 0x4D, 0xC0, 0x29, 0x11))[2].toInt() and 0xFF)
 
-        // Another level — same story.
-        assertEquals(0xC0, firstNalOf(bytes(0x67, 0x42, 0xC0, 0x1F, 0x11))[2].toInt() and 0xFF)
+        // Another level — same. This is the real device's case: OMX.hisi emits level
+        // 0x15 (2.1) however loudly DashEncoder asks for AVCLevel41, so the rewrite is
+        // skipped on every frame of every ride, and the dash decodes anyway.
+        assertEquals(0xC0, firstNalOf(bytes(0x67, 0x42, 0xC0, 0x15, 0x11))[2].toInt() and 0xFF)
     }
 
     /** Runs one SPS through a split IDR, where the SPS is emitted as its own NAL. */

@@ -143,28 +143,51 @@ class DashEngineController(
         // between is that tile scaled, with the style's `interpolate` expressions
         // following along — so the ladder need not land on integers, and it should
         // not: an integer step is ×2 apiece, which on 526×300 means a press either
-        // barely helps or overshoots. [ZOOM_STEP] of 25 is ×1.19. Hundredths
+        // barely helps or overshoots. [ZOOM_STEP] of 50 is ×1.41 — half a zoom
+        // level, so two presses cover one. It was 25 (×1.19) until 2026-09-09;
+        // that made the ladder 21 steps deep and a press too small to feel, which
+        // reads on the joystick as a button that did nothing. Hundredths
         // rather than a Float because repeated stepping cannot drift, the bounds
         // stay exact, and the redraw signature keeps appending an Int.
         //
-        // The floor is the pack corpus's `minzoom` and is not a preference:
-        // MapLibre asks for tile `floor(camera zoom)`, below 11 that tile does not
-        // exist, and rendering does not build downwards — a lower step is a blank
-        // screen, not a coarse map.
+        // Both ends are the pack corpus's own `minzoom`/`maxzoom`, not preferences.
         //
-        // The ceiling is one level past the corpus, which stops at z14. Everything
-        // above 14.00 is z14 scaled up, so 15.00 buys magnification and nothing
-        // else; the old ladder ran to 19.00, five steps of it, and the default sat
-        // two steps in.
-        private const val ZOOM_MIN = 1100
+        // The floor: MapLibre asks for tile `floor(camera zoom)`, and rendering does
+        // not build downwards — a step below the corpus is a blank screen, not a
+        // coarse map. It was 1100 while the corpus was z11-14; the corpus was rebuilt
+        // to z10-15 on 2026-09-09, which is what buys this step. The reason it was
+        // worth buying is in spec/drawing_from_local_tiles.md, «Лестница зумов»: the
+        // move to MapLibre halved the widest view, because the same tile number
+        // renders at 512 px instead of the 256 px `minzoom: 11` was calibrated for.
+        // 10.00 gives that width back — roughly 20 km across the 526 px frame at
+        // latitude 60, against 10.1 km at 11.00.
+        //
+        // The ceiling is unchanged at 15.00, but it is no longer overzoom: while the
+        // corpus stopped at z14, everything above 14.00 was z14 scaled up, magnified
+        // and no more detailed. z15 is now real data. (The old ladder ran to 19.00 —
+        // five overzoomed steps — with the default sitting two steps into them.)
+        private const val ZOOM_MIN = 1000
         private const val ZOOM_MAX = 1500
-        private const val ZOOM_STEP = 25
+        private const val ZOOM_STEP = 50
 
-        // The one parameter the bounds do not settle. 14.00 is the corpus's own
-        // detail ceiling, so a ride opens on the closest view that is still real
-        // data. The old default was 16.00, and the 2026-09-05 log argues it was
-        // too close: 110 zoom-out presses against 63 zoom-in.
-        private const val ZOOM_DEFAULT = 1400
+        // The one parameter the bounds do not settle. Set to the corpus's detail
+        // ceiling on 2026-09-09, so a ride opens on the closest view that is real
+        // data — which is what z15 became in the same rebuild. It was 14.00 while
+        // the ceiling was z14.
+        //
+        // **This equals [ZOOM_MAX], so `zoomIn` is inert until the rider zooms out.**
+        // The first press of that direction logs "zoomIn ignored — already at
+        // ZOOM_MAX" and does nothing, by construction rather than by fault.
+        //
+        // Counter-evidence on the record, because it argues the other way and the
+        // next ride is what settles it: on a default of 16.00 the 2026-09-05 log
+        // counted 110 zoom-out presses against 63 zoom-in — a ride opening too
+        // close. That was measured two corpora and one zoom unit ago (slippy zooms,
+        // 256 px tiles, [ZOOM_STEP] 25), so it does not transfer directly; what it
+        // does say is which direction to look. Read `[joystick] code=0x13` against
+        // `0x14` in the next ride file: if zoom-out still leads by that much, the
+        // number to move is this one.
+        private const val ZOOM_DEFAULT = 1500
 
         /** Hundredths → the units MapLibre's camera actually takes. */
         private const val ZOOM_SCALE = 100.0
@@ -199,6 +222,18 @@ class DashEngineController(
     private val session = DashSession(scope)
     private val locationTracker = LocationTracker(context, scope)
     private val styleAssembler = MapStyleAssembler(context)
+
+    /**
+     * The floor `zoomOut` may actually reach, in hundredths.
+     *
+     * [ZOOM_MIN] is what the CURRENT corpus supports; this is what the packs on
+     * THIS phone support, and they are versioned separately — a rider who has not
+     * re-downloaded since the 2026-09-09 rebuild still holds z11-14 packs, on
+     * which the bottom steps of the 10.00 ladder render nothing at all. Raised to
+     * whatever the installed packs actually carry, and reset from the style on
+     * every stream so a fresh download takes effect on the next connection.
+     */
+    private var zoomFloor = ZOOM_MIN
     private val snapshots = MapSnapshotProvider(context)
     private val overlays = OverlayRenderer()
     private val renderStats = RenderStats()
@@ -763,7 +798,7 @@ class DashEngineController(
         // small append per press is worth the line that told us the ceiling was too
         // low; a per-frame append would not be.
         val before = zoom
-        zoom = (zoom + delta).coerceIn(ZOOM_MIN, ZOOM_MAX)
+        zoom = (zoom + delta).coerceIn(zoomFloor, ZOOM_MAX)
         RideDiagnostics.log(
             "camera",
             if (zoom != before) "$action ${zoomText(before)}→${zoomText(zoom)}"
@@ -1008,6 +1043,10 @@ class DashEngineController(
         // collector on the main thread.
         val style = withContext(Dispatchers.IO) { styleAssembler.assembleCurrent() }
         overlays.darkMap = style.theme == MapTheme.DARK
+        // The packs decide how far out the camera may go, not the constant — see
+        // [zoomFloor]. Null means nothing readable said otherwise, so ZOOM_MIN stands.
+        zoomFloor = style.minZoom?.let { maxOf(ZOOM_MIN, it * ZOOM_SCALE.toInt()) } ?: ZOOM_MIN
+        if (zoom < zoomFloor) zoom = zoomFloor
         snapshots.prepare(style.json, DashEncoder.WIDTH, DashEncoder.HEIGHT)
         // Captured so [disconnect]'s release can only ever free THIS snapshotter,
         // never one a later connection has since prepared.
@@ -1015,7 +1054,9 @@ class DashEngineController(
         RideDiagnostics.log(
             "map",
             "style ${style.theme} from ${style.packs} pack(s), ${style.json.length / 1024} KiB, " +
-                "render ${(DashEncoder.WIDTH * MapSnapshotProvider.PIXEL_RATIO).toInt()}×" +
+                "zoom ${zoomText(zoomFloor)}-${zoomText(ZOOM_MAX)}" +
+                (if (zoomFloor > ZOOM_MIN) " (packs stop at z${style.minZoom}, floor raised)" else "") +
+                ", render ${(DashEncoder.WIDTH * MapSnapshotProvider.PIXEL_RATIO).toInt()}×" +
                 "${(DashEncoder.HEIGHT * MapSnapshotProvider.PIXEL_RATIO).toInt()}" +
                 "@${MapSnapshotProvider.PIXEL_RATIO}",
         )
@@ -1042,16 +1083,33 @@ class DashEngineController(
             launch(Dispatchers.IO) {
                 for (au in rtpOutbox) {
                     // Spread across a slice of the frame's own budget, never more than
-                    // RTP_AU_SPREAD_MS. n-1 gaps for n packets, so the whole burst lands
-                    // inside the spread rather than one gap past it. A single-packet AU —
-                    // most P-frames — waits for nothing.
+                    // RTP_AU_SPREAD_MS. A single-packet AU — most P-frames — waits for
+                    // nothing.
+                    //
+                    // Each packet is delayed to a CUMULATIVE target offset rather than by
+                    // a per-gap constant, and that is not style. The constant was
+                    // `spread / (n - 1)` in milliseconds, integer division: at 30 ms it
+                    // yields 1 ms up to 31 packets and then **0 for 32 and more**, so the
+                    // pacing switched itself off for precisely the largest bursts it
+                    // exists for — a 39.7 KB key frame was already 30 packets, one dense
+                    // frame from the cliff, and the z10-15 corpus makes key frames denser
+                    // still. Accumulating targets cannot collapse: with more packets than
+                    // milliseconds the wait is simply 0 for some of them and 1 ms whenever
+                    // the target advances, and the burst still lands inside `spread`.
                     val spread = minOf(RTP_AU_SPREAD_MS, currentIntervalMs.get() / 4)
-                    val gap = if (au.size > 1) spread / (au.size - 1) else 0L
+                    val gaps = au.size - 1
+                    var atMs = 0L
                     for ((i, pkt) in au.withIndex()) {
                         session.sendRtp(pkt)
                         rtpPacketsSent.incrementAndGet()
                         rtpBytesSent.addAndGet(pkt.size.toLong())
-                        if (gap > 0 && i < au.size - 1) delay(gap)
+                        if (gaps > 0 && i < gaps) {
+                            val targetMs = spread * (i + 1) / gaps
+                            if (targetMs > atMs) {
+                                delay(targetMs - atMs)
+                                atMs = targetMs
+                            }
+                        }
                     }
                 }
             }

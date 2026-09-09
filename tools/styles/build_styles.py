@@ -129,9 +129,15 @@ MIN_LINE_WIDTH_PX = 2.0
 ROAD_WIDTH_SCALE = 1.5
 
 
-# The zoom the widths are judged at. z14 is the corpus's own detail ceiling and the middle
-# of the dash's ladder (ZOOM_MIN..ZOOM_MAX = 11..15 in DashEngineController), so it is the
-# one place where "how thick is this line" has a single answer worth using.
+# The zoom the widths are judged at.
+#
+# Left at 14 through the 2026-09-09 rebuild of the corpus to z10-15, but the two reasons
+# that picked it have come apart and it should be re-decided on the panel, not here. It
+# used to be both the corpus's own detail ceiling AND the middle of the dash's ladder;
+# the ceiling is now 15 and the ladder is ZOOM_MIN..ZOOM_MAX = 10..15, whose middle is
+# 12.5. Moving this number silently restyles every road in the corpus, so it is not a
+# side effect anyone should take from a zoom-range change — measure a frame at 10, 12 and
+# 15 first.
 JUDGED_AT_ZOOM = 14
 
 

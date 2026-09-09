@@ -23,6 +23,7 @@ import com.opendash.opendash_dash_engine.dash.map.MapSnapshotProvider
 import com.opendash.opendash_dash_engine.dash.map.MapStyleAssembler
 import com.opendash.opendash_dash_engine.dash.map.MapTheme
 import com.opendash.opendash_dash_engine.dash.map.OverlayRenderer
+import com.opendash.opendash_dash_engine.dash.map.Percentiles
 import com.opendash.opendash_dash_engine.dash.map.RenderStats
 import com.opendash.opendash_dash_engine.dash.protocol.DashCommands
 import com.opendash.opendash_dash_engine.dash.video.DashEncoder
@@ -845,6 +846,14 @@ class DashEngineController(
         // "fine" and "twice the dash's profile", and nothing in the log could
         // narrow it.
         var rtpBytesSent = 0L
+        // Frame size and the datagram cost of a key frame — the two numbers the audit
+        // (§4.6) asks for and the ride file has never carried: the only frame size
+        // anywhere in it is "first video frame sent", once per session. They decide what
+        // a rider sees after ONE lost datagram, because a key frame is undecodable
+        // unless every one of its fragments arrives. Same [Percentiles] as the render
+        // stats, drained into the same minute.
+        val frameBytes = Percentiles()
+        val idrDatagrams = Percentiles()
         // Which profile the encoder is currently on, so it is poked only on a
         // transition rather than every frame.
         var idleBitrate = false
@@ -885,13 +894,20 @@ class DashEngineController(
                 framesEncoded++
                 lastEncodedBytes = annexB.size
                 framesSentTotal = framesEncoded
+                frameBytes.add(annexB.size.toLong())
                 if (isKey) idrFramesEncoded++
             }
             if (!loggedFirstFrame && !isConfig) {
                 loggedFirstFrame = true
                 RideDiagnostics.log("stream", "first video frame sent (key=$isKey, ${annexB.size}B)")
             }
+            // Counted around process(), which is where the packets for this access unit
+            // are actually emitted: the packetizer callback above runs synchronously on
+            // this same coroutine, so the delta is exactly this AU's datagrams and needs
+            // no atomics.
+            val packetsBefore = rtpPacketsSent
             nalProc.process(annexB)
+            if (isKey && !isConfig) idrDatagrams.add((rtpPacketsSent - packetsBefore).toLong())
         }
 
         streamJob?.cancelAndJoin()
@@ -1094,6 +1110,9 @@ class DashEngineController(
                                     "stream",
                                     "frames=$dFrames (idr=$dIdr) rtp=$dRtp ${dBytes / 1024}KiB " +
                                         "${dBytes * 8 / 1000 / intervalS}kbps " +
+                                        "frame=${frameBytes.drain()}B " +
+                                        "idrPkts=${idrDatagrams.drain()} " +
+                                        "idrShape=${nalProc.drainIdrShapes()} " +
                                         "bitrate=${if (idleBitrate) "idle" else "moving"} " +
                                         "thermal=$thermal in the last ${intervalS}s",
                                 )

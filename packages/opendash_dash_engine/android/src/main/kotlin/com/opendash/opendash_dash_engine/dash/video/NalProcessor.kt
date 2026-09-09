@@ -1,6 +1,7 @@
 package com.opendash.opendash_dash_engine.dash.video
 
 import com.opendash.opendash_dash_engine.util.DebugLog
+import com.opendash.opendash_dash_engine.util.RideDiagnostics
 
 /**
  * Splits Annex-B H.264 output from MediaCodec into individual NAL units,
@@ -30,8 +31,11 @@ class NalProcessor(private val onNal: (ByteArray, Boolean) -> Unit) {
 
     private var sps: ByteArray? = null
     private var pps: ByteArray? = null
-    private var loggedParams = false
+    private var loggedSps: ByteArray? = null
+    private var loggedPps: ByteArray? = null
     private var idrCount = 0
+    private var bundledIdrs = 0
+    private var splitIdrs = 0
 
     /**
      * One call = one access unit (MediaCodec hands out one AU per output
@@ -87,10 +91,7 @@ class NalProcessor(private val onNal: (ByteArray, Boolean) -> Unit) {
      */
     private fun collectIdr(idr: ByteArray, out: MutableList<ByteArray>) {
         val s = sps; val p = pps
-        if (!loggedParams && s != null && p != null) {
-            loggedParams = true
-            DebugLog.i(TAG) { "SPS=${s.hex()} PPS=${p.hex()}" }
-        }
+        if (s != null && p != null) logParameterSetsIfChanged(s, p)
         if (s == null || p == null) {
             DebugLog.w(TAG) { "IDR with no SPS/PPS cached — dash will not decode" }
             out += idr
@@ -103,13 +104,77 @@ class NalProcessor(private val onNal: (ByteArray, Boolean) -> Unit) {
                 if (bundled) "bundled ${bundledSize}B)" else "split — bundle ${bundledSize}B > MTU)"
         }
         if (bundled) {
+            bundledIdrs++
             out += s + START_CODE_4 + p + START_CODE_4 + idr
         } else {
+            splitIdrs++
             out += s
             out += p
             out += idr
         }
     }
+
+    /**
+     * How this window's key frames went out, `bundled/split`, then reset.
+     *
+     * The two shapes are structurally different on the wire — one RTP packet whose
+     * payload is `SPS ‖ start code ‖ PPS ‖ start code ‖ IDR`, versus three NALs of
+     * which the last is fragmented — and which one is used is decided per key frame
+     * by [collectIdr], from its size alone. A parked rider crosses that threshold in
+     * both directions as the picture's complexity drifts, so a session can switch
+     * shape repeatedly without anything in the ride file saying so. Counted here
+     * because the field report this answers ("garbage blocks, parked, never
+     * recovered") needs to know whether the shape moved at all before that is
+     * either suspected or ruled out.
+     */
+    fun drainIdrShapes(): String {
+        val line = "$bundledIdrs/$splitIdrs"
+        bundledIdrs = 0
+        splitIdrs = 0
+        return line
+    }
+
+    /**
+     * The parameter sets, into the ride file, on every change — not once per session.
+     *
+     * The firmware whitelists the stock phone's SPS shape before it will leave the
+     * loading state (see [normalizeSpsForDash]), and [normalizeSpsForDash] only
+     * reaches that shape when byte[1] and byte[3] ALREADY match: an encoder that
+     * re-emits its parameter sets mid-stream with a different profile or level slips
+     * through unrewritten, and the dash then refuses every key frame that carries it.
+     * That failure does not heal — a lost packet is repaired by the next IDR, a
+     * rejected SPS is not — so it is the one shape of "the picture broke and stayed
+     * broken" that the rest of this file's telemetry cannot distinguish from packet
+     * loss. `MediaCodec.setParameters` on a live encoder (the idle/moving bitrate
+     * switch in DashEncoder.requestBitrate) is a documented occasion for an encoder
+     * to do exactly that, and the switch fires when the rider stops.
+     *
+     * Logged once per distinct pair, so a stream that never changes them costs one
+     * line, and at WARN when the outgoing SPS does not match what the dash accepts.
+     */
+    private fun logParameterSetsIfChanged(s: ByteArray, p: ByteArray) {
+        val first = loggedSps == null
+        if (!first && s.contentEquals(loggedSps) && p.contentEquals(loggedPps)) return
+        loggedSps = s
+        loggedPps = p
+        val ok = matchesDashWhitelist(s)
+        val line = (if (first) "parameter sets" else "parameter sets CHANGED mid-stream") +
+            " SPS=${s.hex()} PPS=${p.hex()} dashShape=${if (ok) "ok" else "MISMATCH"}"
+        if (ok) RideDiagnostics.log("stream", line) else RideDiagnostics.warn("stream", line)
+    }
+
+    /**
+     * Does the SPS about to go out have the shape the dash accepts, `67 42 00 29…`?
+     *
+     * Asked of the value AFTER [normalizeSpsForDash], because what matters is what
+     * lands on the wire, not whether the rewrite ran.
+     */
+    private fun matchesDashWhitelist(sps: ByteArray): Boolean =
+        sps.size >= 4 &&
+            (sps[0].toInt() and 0x1F) == 7 &&
+            sps[1] == 0x42.toByte() &&
+            sps[2] == 0x00.toByte() &&
+            sps[3] == 0x29.toByte()
 
     private fun ByteArray.hex() = joinToString(" ") { "%02X".format(it) }
 

@@ -107,7 +107,8 @@ level 2.1, гард ждёт 4.1). Гипотеза «отвергнутый SPS
   зависимость от частоты, которой нет. Оставлено, отмечено в 2.6.
 
 Остаётся по плану: задачи 1–4 и 6 этапа 1, задача 8 этапа 2 (заезд). **Ни
-один этап не закрыт целиком.** Этап 2 ждёт задачи 1–4 и заезда, причём заезд
+один этап не закрыт целиком.** (Устарело в ту же ночь: этап 1 закрыт, см. запись
+ниже.) Этап 2 ждёт задачи 1–4 и заезда, причём заезд
 09.09 22:01–22:32 к задаче 8 НЕ относится: он прошёл на сборке с телеметрией, но
 БЕЗ очереди и пейсинга. Сборка с ними собрана и установлена 10.09, но ещё не
 каталась.
@@ -141,6 +142,42 @@ socket` умолчание берётся из `/proc/sys/net/core/wmem_default`
 структурно всегда нули (нет `onEncoded` → нет `trySend`), а комментарий
 утверждал обратное; `getOrDefault(-1)` с `%02X` печатал `0xFFFFFFFF` вместо
 «не поддерживается». Всё исправлено в том же коммите.
+
+**2026-09-10, ночь.** Сделан **этап 1 целиком** — задачи 1–4 и 6 (задача 5 была
+закрыта 09.09). 83 новых теста в четырёх файлах, `src/main` не тронут ни одной
+правкой, даже модификатора видимости не понадобилось. Итого в модуле 135 тестов.
+
+Две вещи, найденные при написании, а не при чтении:
+
+- **В плане была опечатка в ожидании задачи 1.** Заголовок в `NAV_TEMPLATE` —
+  `Taille de Mas du Gr` (19 символов), а не `Tailles…` (20). С «Tailles» пакет
+  вышел бы на байт длиннее, и golden-тест ловил бы не то. Исправлено выше по
+  тексту.
+- **Golden-тест, который зелёный с первого запуска, ничего не доказывает.**
+  Поэтому по готовым тестам прогнан 21 мутант production-кода (байт значения в
+  `projectionFrame`, пределы усечения 60/200/20/85, направление поиска в
+  `patch2`, три патча полей `routeCard`, смещение seq, смещение TLV входящего
+  пакета, обрезка `coerceAtMost`, ширина FU-A, условие marker'а, разрядность
+  seq, частота RTP-часов, ширина поля timestamp, старший байт timestamp,
+  `keySent`, разбор `07 01`). Каждый обязан валить хотя бы один тест; итог —
+  **21 из 21**, но только после трёх заходов, и промахи оказались полезнее
+  попаданий:
+  - `re.S` в правке control-символов литерала съела два теста целиком, оставив
+   третьему чужое тело. Дыру нашла мутация «предел заголовка 60 → 64», которая
+   прошла зелёной. Тесты восстановлены.
+  - «Условие SSID ослаблено» прошло, потому что мутация двигала только `if`,
+   а `copyOf(MAX_SSID_BYTES)` оставался на месте: слабый мутант, не дыра.
+   Всё равно добавлен граничный тест на 86 байт, который его убивает.
+  - Ревью (см. ниже) нашло два теста, которые **не могли упасть в принципе**:
+   `every live field` передавал единицы измерения, СОВПАДАЮЩИЕ с шаблоном
+   (0x30 и 0x10), так что оба `patch1` можно было удалить целиком; а проверка
+   переноса timestamp брала шаг в `2^32 - 76` тиков, для которого 31-битный
+   счётчик даёт ту же разность, что и 32-битный. Первое чинится
+   противоположными константами, второе — шагом в полцикла (1.8e9 тиков).
+
+Этап 1 закрыт целиком — первый закрытый этап плана. Разблокированы этапы 3
+(golden-тесты — его единственный судья) и 4 (`kotlinx-coroutines-test`).
+Остаётся из этапа 2 только задача 8 — заезд.
 
 ## 1. Контекст за пять минут
 
@@ -179,17 +216,19 @@ flutter build apk --debug --dart-define-from-file=android/dart_defines.local.pro
 
 Тесты — `kotlin.test` на JUnit Platform, каталог
 `packages/opendash_dash_engine/android/src/test/kotlin/...`. Образец стиля —
-`dash/DashSocketOrderingTest.kt`. На 10.09.2026 (вечер) в модуле девять
-тестовых файлов. **Из этого плана — три**: `dash/DashSocketOrderingTest.kt`
-(seq-байт, инвариант 2), `dash/video/NalProcessorTest.kt` (задача 1.5) и
-`dash/map/FrameRatePolicyTest.kt` (задача 2.7b; лежит в `map/`, потому что
-класс про камеру, но родился здесь). Остальные шесть — `dash/map/*` про рендер
-и камеру плюс `util/DebugLogTest.kt` — к плану отношения не имеют. То есть
-`K1GPacket`, `DashCommands`, `DashAuth` и `RtpPacketizer` по-прежнему без единого
-теста, ровно как говорит аудит.
+`dash/DashSocketOrderingTest.kt`. На 10.09.2026 (ночь) в модуле тринадцать
+тестовых файлов, 135 тестов. **Из этого плана — семь**:
+`dash/DashSocketOrderingTest.kt` (seq-байт, инвариант 2),
+`dash/video/NalProcessorTest.kt` (задача 1.5),
+`dash/protocol/DashCommandsGoldenTest.kt` (1.1),
+`dash/protocol/K1GPacketTest.kt` (1.2), `dash/DashAuthTest.kt` (1.3),
+`dash/video/RtpPacketizerTest.kt` (1.4) и `dash/map/FrameRatePolicyTest.kt`
+(задача 2.7b; лежит в `map/`, потому что класс про камеру, но родился здесь).
+Остальные шесть — `dash/map/*` про рендер и камеру плюс `util/DebugLogTest.kt` —
+к плану отношения не имеют. Общий хелпер `dash/protocol/TestHex.kt`.
 
-`kotlinx-coroutines-test` (задача 1.6) в `build.gradle.kts` **не добавлен** —
-проверено 10.09.2026.
+`kotlinx-coroutines-test:1.8.1` (задача 1.6) добавлен в `build.gradle.kts`
+10.09.2026 — версия та же, что у `kotlinx-coroutines-android`.
 
 **Полевые логи**: `adb pull /sdcard/Android/data/ru.snatchdash.app/files/diag`.
 Формат строк `[tag] …` менять нельзя: по ним читают заезды.
@@ -248,7 +287,7 @@ flutter build apk --debug --dart-define-from-file=android/dart_defines.local.pro
 
 Задачи:
 
-1. `dash/protocol/DashCommandsGoldenTest.kt`. Для каждой функции
+1. ✅ (2026-09-10) `dash/protocol/DashCommandsGoldenTest.kt`. Для каждой функции
    `DashCommands` — тест «аргументы → ожидаемый hex». Ожидания брать из
    самих шаблонов и захватов в комментариях, а не из вызова функции
    (иначе тест ничего не проверяет). Обязательные случаи:
@@ -257,7 +296,7 @@ flutter build apk --debug --dart-define-from-file=android/dart_defines.local.pro
      побайтно с литералами.
    - `heartbeat(25)` → HB_0049 с `06 10 00 01 41`; `heartbeat(-40)` → `00`;
      `heartbeat(215)` → `FF`.
-   - `routeCard("Tailles de Mas du Gr", projectionOn = false)` →
+   - `routeCard("Taille de Mas du Gr", projectionOn = false)` →
      ровно `NAV_TEMPLATE` с обнулёнными `05 09` и `05 05` (это дефолт
      функции, зафиксировать как есть). Плюс `routeCard` со всеми live-полями
      (maneuver/units/totalDist/eta) — проверить каждое поле по смещению,
@@ -270,18 +309,18 @@ flutter build apk --debug --dart-define-from-file=android/dart_defines.local.pro
    - `authSendKey` — `require` на 128 байт.
    - `initialBurst("OpenDash")` — 9 элементов, порядок, `timeSync` на
      позиции 2 (сравнивать без байтов времени).
-2. `dash/protocol/K1GPacketTest.kt`: `build` → `parseIncoming`-подобный
+2. ✅ (2026-09-10) `dash/protocol/K1GPacketTest.kt`: `build` → `parseIncoming`-подобный
    разбор с учётом разных смещений (исходящий 17, входящий 8); `patchSeq`
    ставит байт на смещение 16 и не трогает остальное; `parseIncoming` на
    обрезанном пакете, на `seg_count` больше реального, на пустом массиве.
    Round-trip на случайных TLV (`kotlin.random.Random(seed)`, 1000
    итераций).
-3. `dash/DashAuthTest.kt`: сгенерировать RSA-1024 через `KeyPairGenerator`
+3. ✅ (2026-09-10) `dash/DashAuthTest.kt`: сгенерировать RSA-1024 через `KeyPairGenerator`
    в тесте; `ingest` modulus и exponent в разных пакетах и в одном; после
    `SendKey` расшифровать приватным ключом и проверить `ssid ‖ 32 байта`;
    `Rejected` → `reset` → повторный `SendKey`; SSID > 85 байт усечён.
    `SecureRandom` не инжектируется — проверять длину и уникальность ключа.
-4. `dash/video/RtpPacketizerTest.kt`: NAL ≤ 1380 — один пакет, marker по
+4. ✅ (2026-09-10) `dash/video/RtpPacketizerTest.kt`: NAL ≤ 1380 — один пакет, marker по
    `endOfAU`; NAL 5000 байт — FU-A, реассемблировать обратно в исходный,
    S/E-биты, marker только на последнем и только при `endOfAU`; seq
    монотонный с переносом через 0xFFFF; `ts = base + pts×90` mod 2³².
@@ -291,7 +330,7 @@ flutter build apk --debug --dart-define-from-file=android/dart_defines.local.pro
    только на последнем; `normalizeSpsForDash` меняет byte[2] только при
    `42 xx 29`. Плюс сверх плана: счётчики формы IDR из задачи 7 сбрасываются
    на `drainIdrShapes()` и считают bundled и split раздельно.
-6. Добавить `testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.8.1")`
+6. ✅ (2026-09-10) Добавить `testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.8.1")`
    в `packages/opendash_dash_engine/android/build.gradle.kts` (версия та же,
    что у `kotlinx-coroutines-android`). Понадобится с этапа 4.
 

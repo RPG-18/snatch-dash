@@ -173,4 +173,10 @@ dependencies {
     // `org.json` ships with Android but is stubbed in JVM unit tests; the real
     // implementation lets the style assembler be tested without a device.
     testImplementation("org.json:json:20240303")
+    // Virtual time for the session tests: the handshake scripts are defined by their
+    // pauses (see network-refactoring.md, инвариант 5), so `runTest` has to be able to
+    // skip 15 s of auth timeout without the suite taking 15 s. Same version as
+    // kotlinx-coroutines-android above — mixing versions of these two is a known
+    // source of "Module with the Main dispatcher had failed to initialize".
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.8.1")
 }

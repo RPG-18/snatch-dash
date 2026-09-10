@@ -37,8 +37,10 @@ ASSETS = ROOT / "packages/opendash_dash_engine/android/src/main/assets"
 # osm-bright вместо positron с 2026-09-07: Positron задуман бледной подложкой
 # под данные, а на панели 526×300 при солнце его контраста не хватает. У
 # osm-bright цветные дороги и нормальная читаемость, та же схема OpenMapTiles и
-# та же открытая лицензия, а фонтстеки у него уже одиночные — правок transform()
-# не потребовалось. Цена: 121 слой против 46, стиль тяжелее и снапшот дороже.
+# та же открытая лицензия, а фонтстеки у него уже одиночные — новых правок
+# transform() при переходе не потребовалось (правила по темам появились позже,
+# см. ROAD_NAME_LAYERS). Цена: 87 слоёв против 38 после всех правок, стиль
+# тяжелее и снапшот дороже.
 STYLES = {
     "osm-bright": "https://raw.githubusercontent.com/openmaptiles/osm-bright-gl-style/master/style.json",
     "dark-matter": "https://raw.githubusercontent.com/openmaptiles/dark-matter-gl-style/master/style.json",
@@ -166,6 +168,42 @@ POI_ICON_SUBSTITUTES = {"doctors": "doctor_11"}
 POI_LAYER = "poi-level-1"
 POI_MIN_ZOOM = 13
 
+# Layers that draw a road's NAME along the line. Dropped 2026-09-11 at the rider's request:
+# the reference app this one replaces (Google Maps based) puts no labels on the dash at all,
+# and on a 526x300 panel glanced at from a moving bike a street name is text nobody finishes
+# reading. It also costs bitrate on every frame it moves through — text is high-contrast
+# detail that shifts a few pixels per frame, which is the shape an inter-frame codec predicts
+# worst.
+#
+# `{ref}` is deliberately NOT here. A route number ("M11") is what a rider actually navigates
+# by, it is two or three glyphs, and it is what the shield layers draw — so
+# `highway-shield*` in osm-bright and `highway_name_motorway` in dark-matter both survive.
+# Same call local_name_only() already makes when it strips the transliterated half of a label
+# and leaves shields alone.
+#
+# Spelled out per style and per id rather than matched as a substring like DROPPED_LAYERS,
+# because a miss here is silent: the layer would simply keep drawing. transform() checks the
+# set against what it actually saw and raises, so an upstream rename is a build failure.
+ROAD_NAME_LAYERS = {
+    "osm-bright": ("highway-name-minor", "highway-name-major"),
+    "dark-matter": ("highway_name_other",),
+}
+
+
+def drop_text(layer: dict) -> None:
+    """
+    Strip every text property, leaving the icon. In place.
+
+    Applied to [POI_LAYER] only. `poi-railway`, `waterway-name` and `airport-label-major`
+    still carry names in osm-bright — they were not part of the 2026-09-11 request, and
+    removing them is a separate call, not a consequence of this one.
+    """
+    for section in ("layout", "paint"):
+        block = layer.get(section)
+        if block:
+            for key in [k for k in block if k.startswith("text-")]:
+                del block[key]
+
 
 def restrict_poi(layer: dict) -> None:
     """
@@ -183,6 +221,11 @@ def restrict_poi(layer: dict) -> None:
     `has name` is deliberately NOT carried over. It exists upstream to keep unlabelled clutter
     off the map, but at this narrowness a nameless petrol station is still a petrol station,
     and the icon is the half that matters.
+
+    Since 2026-09-11 the icon is the ONLY half: the name is stripped (see [ROAD_NAME_LAYERS]
+    for the reasoning, which is the same). That makes the sentence above literal rather than
+    figurative — a POI now renders as a pictogram and nothing else, so a nameless one and a
+    named one are the same object on the panel.
     """
     layer["filter"] = [
         "all",
@@ -201,6 +244,7 @@ def restrict_poi(layer: dict) -> None:
         for cls, sprite in POI_ICON_SUBSTITUTES.items():
             icon = ["match", ["get", "class"], cls, sprite, icon]
         layout["icon-image"] = icon
+    drop_text(layer)
 
 
 # What survives is drawn at least this wide. The railway family sits at 0.40 px at z14 —
@@ -396,6 +440,9 @@ def transform(style: dict, name: str) -> tuple[dict, list[str]]:
     kept, dropped = [], []
     # Reported by main(): a width form this script cannot read is a line it cannot judge.
     unreadable, widened = [], []
+    # Every id in ROAD_NAME_LAYERS must actually turn up — see that constant on why a silent
+    # miss is the failure mode worth guarding against.
+    road_names_seen: list[str] = []
     for layer in style["layers"]:
         source_layer = layer.get("source-layer")
         # Background has no source at all and must survive: it is the only layer
@@ -408,6 +455,10 @@ def transform(style: dict, name: str) -> tuple[dict, list[str]]:
         # longer there, and `road_area_pier` is the fill under a pier whose line is gone.
         if any(d in layer["id"] for d in DROPPED_LAYERS):
             dropped.append(f"{layer['id']} (dash simplification)")
+            continue
+        if layer["id"] in ROAD_NAME_LAYERS.get(name, ()):
+            dropped.append(f"{layer['id']} (road name label)")
+            road_names_seen.append(layer["id"])
             continue
         layout = layer.get("layout")
         if layout:
@@ -432,6 +483,15 @@ def transform(style: dict, name: str) -> tuple[dict, list[str]]:
                 elif width_at(paint["line-width"], JUDGED_AT_ZOOM) is None:
                     unreadable.append(layer["id"])
         kept.append(layer)
+
+    expected = set(ROAD_NAME_LAYERS.get(name, ()))
+    if set(road_names_seen) != expected:
+        missing = ", ".join(sorted(expected - set(road_names_seen)))
+        raise SystemExit(
+            f"{name}: ROAD_NAME_LAYERS names a layer upstream no longer has: {missing}. "
+            f"Road names would ship unlabelled-by-accident — check the style and update "
+            f"the constant."
+        )
 
     style["layers"] = kept
     # Keep exactly one source under the placeholder id; the assembler fans it out.

@@ -37,11 +37,12 @@ class DashSocket(private val network: android.net.Network? = null) : AutoCloseab
          * a kilobyte. The buffer used to be 65535 and freshly allocated **per receive** —
          * twice a second on timeouts alone, plus one per packet, all of it garbage.
          *
-         * The `+ 1` is not decoration. UDP truncates silently at the buffer length, so with
-         * a buffer of exactly [MAX_DATAGRAM] a full-size read is indistinguishable from one
-         * that was cut — and a truncated K1G packet parses into nonsense rather than being
-         * refused. One spare byte turns "length > MAX_DATAGRAM" into the anomaly signal,
-         * which [receive] logs and drops instead of passing on half a packet.
+         * The `+ 1` is not decoration. `DatagramSocket.receive`'s own contract is "if the
+         * message is longer than the packet's length, the message is truncated" — silently,
+         * with `length` capped at the buffer — so with a buffer of exactly [MAX_DATAGRAM] a
+         * full-size read is indistinguishable from one that was cut, and a truncated K1G
+         * packet parses into nonsense rather than being refused. One spare byte turns
+         * "length > MAX_DATAGRAM" into the anomaly signal, which [receive] logs and skips.
          */
         private const val MAX_DATAGRAM    = 2048
         private const val RECV_BUF        = MAX_DATAGRAM + 1
@@ -51,10 +52,17 @@ class DashSocket(private val network: android.net.Network? = null) : AutoCloseab
          * loss-sensitive, non-bursty traffic. A dropped heartbeat is a session the dash
          * gives up on.
          *
-         * Whether anything honours it is another matter — on a two-node link the only
-         * queue that can act on it is the phone's own Wi-Fi driver. Set because it costs
-         * nothing and read back below, because on some firmwares `IP_TOS` is refused
-         * silently and the ride file should say so rather than imply a guarantee.
+         * Whether anything honours it is another matter, and the platform says so out loud:
+         * `setTrafficClass` is documented as a value the network implementation "may ignore"
+         * and "applications should consider a hint", `getTrafficClass` "may return a
+         * different value than was previously set", and — relevant to EF specifically —
+         * "setting bits in the precedence field may result in a SocketException indicating
+         * that the operation is not permitted". EF is `101110xx`: it sets precedence. Hence
+         * `runCatching` on the setter, and the read-back in the ride file rather than a
+         * claim. On the air there is a second remapping to worry about: Wi-Fi carries four
+         * WMM access categories, not 64 DSCP values, and an AP may rewrite the field on
+         * upstream traffic anyway. Set because it costs nothing when it works and one
+         * caught exception when it does not.
          */
         private const val TOS_CONTROL     = 0xB8
 
@@ -63,8 +71,12 @@ class DashSocket(private val network: android.net.Network? = null) : AutoCloseab
 
         // NOT set, deliberately — the plan's task 2.2 asked for a 256 KiB SO_SNDBUF on the
         // RTP socket and that is the wrong direction here. Its premise was that the default
-        // is "a few tens of KB"; on Linux `wmem_default` is 212992 B, and the kernel doubles
-        // whatever is requested, so the socket already holds seconds of a 200 kbps stream.
+        // is "a few tens of KB". Per `man 7 socket` the default comes from
+        // `/proc/sys/net/core/wmem_default` — 212992 B on a stock Linux, and Android does
+        // not lower it — and "the kernel doubles this value ... when it is set", so both the
+        // default and anything asked for are larger than they read. Either way the socket
+        // already holds seconds of a 200 kbps stream; the line below prints what THIS device
+        // actually gives, which is the number to argue from.
         // More buffer does not protect a realtime stream, it hides a stalled radio: `sendto`
         // stops blocking, `rtpOutbox` never overflows, `drop=` stays zero, and the dash shows
         // a map from ten seconds ago — the exact failure the capacity-4 outbox (task 2.5) was

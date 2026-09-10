@@ -1045,7 +1045,14 @@ class DashEngineController(
         overlays.darkMap = style.theme == MapTheme.DARK
         // The packs decide how far out the camera may go, not the constant — see
         // [zoomFloor]. Null means nothing readable said otherwise, so ZOOM_MIN stands.
-        zoomFloor = style.minZoom?.let { maxOf(ZOOM_MIN, it * ZOOM_SCALE.toInt()) } ?: ZOOM_MIN
+        // Clamped to the ceiling as well as the floor: [MapStyleAssembler.packMinZoom] reads
+        // a byte out of a PMTiles header, so its range is 0..255, not "something sensible".
+        // A pack claiming minzoom 20 would make the floor exceed ZOOM_MAX, and the next
+        // `coerceIn(zoomFloor, ZOOM_MAX)` in [stepZoom] throws IllegalArgumentException —
+        // a corrupt header taking out the zoom buttons for the whole ride.
+        zoomFloor = style.minZoom
+            ?.let { (it * ZOOM_SCALE.toInt()).coerceIn(ZOOM_MIN, ZOOM_MAX) }
+            ?: ZOOM_MIN
         if (zoom < zoomFloor) zoom = zoomFloor
         snapshots.prepare(style.json, DashEncoder.WIDTH, DashEncoder.HEIGHT)
         // Captured so [disconnect]'s release can only ever free THIS snapshotter,
@@ -1373,7 +1380,14 @@ class DashEngineController(
         // riding steadily; the max of the two is what keeps a lagging camera from reading
         // as a stopped bike right after pulling away.
         val camSpeedMps = if (dtRaw > 0.0) movedM / dtRaw else 0.0
-        val speedMps = maxOf(camSpeedMps, (loc?.speed ?: 0f).toDouble())
+        // A lost fix contributes nothing. `loc` survives its own staleness — it is the last
+        // fix, not a live one — so a bike that loses GPS at speed (tunnel, garage, underpass)
+        // would otherwise keep feeding its final speed into the policy forever, and the dash
+        // would sit at 4 fps and the moving bitrate for the whole stop. [gpsLost] is the same
+        // staleness test the overlays use; below it the camera's own movement still speaks,
+        // and a parked bike moves the camera not at all.
+        val fixSpeedMps = if (gpsLost) 0.0 else (loc?.speed ?: 0f).toDouble()
+        val speedMps = maxOf(camSpeedMps, fixSpeedMps)
         // elapsedRealtime, not currentTimeMillis: this is a duration, and wall clock
         // moves. An NTP correction backwards — routine the moment data comes back after a
         // dead zone — makes the dwell's `now - last` negative and freezes the frame rate

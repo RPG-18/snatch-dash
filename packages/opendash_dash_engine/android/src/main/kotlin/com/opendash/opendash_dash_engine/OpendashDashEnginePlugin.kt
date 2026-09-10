@@ -79,8 +79,23 @@ class OpendashDashEnginePlugin : FlutterPlugin, MethodCallHandler, EventChannel.
      */
     private var debugLogSink: ((String, String, String) -> Unit)? = null
     private val logStreamHandler = object : EventChannel.StreamHandler {
-        override fun onListen(arguments: Any?, events: EventChannel.EventSink?) { logSink = events }
-        override fun onCancel(arguments: Any?) { logSink = null }
+        override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
+            logSink = events
+            // DebugLog is wired HERE, not at attach, and that is the whole point of the
+            // buffer on the other side: DebugLog flushes its pre-attach lines the moment a
+            // sink appears, and a sink installed at attach forwards into a [logSink] that is
+            // still null — Dart subscribes later, from attachNativeLogBridge() once the
+            // entrypoint runs. Flushing into that would drop precisely the cold-start lines
+            // the buffer exists for: ExitInfoCollector's "last exit was an ANR", the
+            // StrictMode install, CrashGuard's confirmation.
+            debugLogSink?.let { DebugLog.sink = it }
+        }
+
+        override fun onCancel(arguments: Any?) {
+            logSink = null
+            // Back to buffering rather than to a sink that drops: Dart can resubscribe.
+            if (DebugLog.sink === debugLogSink) DebugLog.sink = null
+        }
     }
 
     // SupervisorJob + a handler, deliberately: with a plain Job a single uncaught throw in any
@@ -111,8 +126,8 @@ class OpendashDashEnginePlugin : FlutterPlugin, MethodCallHandler, EventChannel.
                 logSink?.success(mapOf("tag" to tag, "level" to level, "message" to message))
             }
         }
+        // Kept, not installed: [logStreamHandler] installs it when Dart subscribes.
         debugLogSink = sink
-        DebugLog.sink = sink
 
         // Process-lifecycle marker: the only direct signal for "was this a genuinely fresh
         // process, or just the plugin/engine reattaching within one that's been alive a

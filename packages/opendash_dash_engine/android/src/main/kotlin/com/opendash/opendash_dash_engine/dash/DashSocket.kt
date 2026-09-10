@@ -140,6 +140,15 @@ class DashSocket(private val network: android.net.Network? = null) : AutoCloseab
  * Separate from [DashSocket] so the invariant can be tested: that class binds :2000 and :2002
  * in its constructor, which a JVM unit test cannot do, while ten threads can drive this in
  * milliseconds. See `DashSocketOrderingTest`.
+ *
+ * **The lock is held across the send, and that has a price worth naming.**
+ * `DashSession.disconnect()` reaches [DashSocket.send] from the main thread through
+ * `runBlocking`, so a sender parked inside `sendto()` stalls Main for as long as it is parked.
+ * Accepted deliberately: the socket is connectionless and addressed to a link-local broadcast,
+ * so `sendto` returns as soon as the datagram is queued — it waits on a full socket buffer, not
+ * on the network — and these are 14-to-60-byte control packets at eight a second. Releasing the
+ * lock before the send would buy that latency back by giving up the ordering this class exists
+ * for, which is the wrong trade in a protocol whose sequence byte the dash may well check.
  */
 internal class TxSequencer {
     private val lock = Any()

@@ -76,7 +76,11 @@ class SnatchDashApplication : Application() {
                 .build(),
         )
         StrictMode.setVmPolicy(
-            StrictMode.VmPolicy.Builder()
+            // Seeded, for the same reason as the thread policy above: a Builder() from
+            // scratch drops what the platform installed — for targetSdk >= 24 that includes
+            // detectFileUriExposure with penaltyDeath — and a debug build that stops
+            // enforcing what release still enforces is the guardrail upside down.
+            StrictMode.VmPolicy.Builder(StrictMode.getVmPolicy())
                 .detectLeakedClosableObjects()
                 .detectLeakedRegistrationObjects()
                 .detectLeakedSqlLiteObjects()

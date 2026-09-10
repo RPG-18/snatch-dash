@@ -329,10 +329,15 @@ class DashSession(private val scope: CoroutineScope) {
         // cooperative, so that coroutine still runs up to its next suspension point, and a
         // [fail] from there would put the session back into ERROR after this method has
         // deliberately left it IDLE.
-        // Taken over before anything is cancelled — see [farewellSocket].
+        // Taken over before anything is cancelled — see [farewellSocket]. The claim is
+        // published BEFORE the field is cleared, and the order is the point: [endLink] skips
+        // its close only for the socket named in [farewellSocket], so between a clear and a
+        // later claim there is a window where the RX loop's error path sees neither and
+        // closes the socket out from under the farewell below. Both fields are @Volatile, so
+        // these two writes reach the other thread in this order.
         val farewell = socket
-        socket = null
         farewellSocket = farewell
+        socket = null
         sessionSeq.incrementAndGet()
         sessionJob?.cancel(); sessionJob = null
         rxJob?.cancel(); projHbJob?.cancel(); routeCardJob?.cancel(); heartbeatJob?.cancel()

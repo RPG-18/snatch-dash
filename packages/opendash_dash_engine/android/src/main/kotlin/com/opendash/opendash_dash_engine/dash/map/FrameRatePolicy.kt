@@ -48,7 +48,15 @@ class FrameRatePolicy(
      */
     private var lastFlipMs: Long? = null
 
-    /** The verdict for this tick. [nowMs] is wall clock; [speedMps] is ground speed. */
+    /**
+     * The verdict for this tick. [speedMps] is ground speed.
+     *
+     * [nowMs] must be a MONOTONIC clock — `SystemClock.elapsedRealtime`, which is what the
+     * caller passes. The dwell below is a difference between two readings, and wall clock is
+     * not a duration: an NTP correction mid-ride jumps it, and the hysteresis this class
+     * exists to provide either evaporates or freezes. That exact bug is on record (CLAUDE.md,
+     * «Ревью перед коммитом»), and it got in because a comment said "wall clock".
+     */
     fun update(speedMps: Double, nowMs: Long): Boolean {
         val want = when {
             !moving && speedMps > enterMps -> true

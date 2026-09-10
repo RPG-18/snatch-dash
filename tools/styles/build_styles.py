@@ -4,12 +4,19 @@
 Upstream Positron and Dark Matter cannot be used as they ship: they point at
 MapTiler for glyphs (the very dependency offline maps exist to remove), at
 GitHub Pages for sprites, and they style layers our tile corpus does not carry.
-This script downloads them and applies exactly those six fixes, so the result
+This script downloads them and applies exactly those seven fixes, so the result
 can be regenerated when upstream moves instead of being hand-patched once.
 
 Output lands in the engine module's Android assets — *not* Flutter's `assets:`.
 MapLibre resolves `asset://` through the Android AssetManager, and Flutter
 assets live under a different prefix inside the APK.
+
+**transform() is NOT idempotent — run this against a fresh download, never against the
+shipped assets.** The widths it scales are scaled again on a second pass (1.5x becomes 2.25x),
+and the assets in the repository are already its output. Regenerating means letting main()
+fetch upstream; applying one new rule to what is already there means calling that rule alone,
+not transform(). Learned the direct way on 2026-09-10, when a second pass put motorway casings
+at 49 px.
 
 Run: python3 tools/styles/build_styles.py
 Read alongside: spec/drawing_from_local_tiles.md, "Стиль: берём готовый и правим".
@@ -111,12 +118,90 @@ DROPPED_LAYERS = (
     # rider needs only as a silhouette. Rides around lakes were the first place we noticed.
     "water-pattern",
 
+    # The other two thirds of the POI rank ladder — see [POI_LAYER] for why one layer is
+    # enough once the layer is 4% of its former self, and why level-3 could never draw at all.
+    "poi-level-2", "poi-level-3",
+
     # Invisible overdraw in our band. `water-offset` is the same water fill drawn shifted,
     # and the shift is `[[6, [2, 0]], [8, [0, 0]]]` — zero from z8 up, i.e. across the whole
     # dash ladder (z11-15) it is an exact copy sitting under the `water` layer that covers
     # it. A full-screen fill rendered for nothing on a lake.
     "water-offset",
 )
+
+# The only POI the dash keeps. Everything else in that layer is a shop, an office, a cafe, a
+# bench — or, by volume, a gate: a sample of six z14 tiles over Petersburg holds 9681 POIs, of
+# which 1613 are `gate` and 925 `waste_basket`. Business names are noise on a 526x300 panel a
+# rider glances at; what earns its place is what a rider might need mid-ride.
+#
+# Kept by class, and the classes are what the corpus actually contains (counted in that
+# sample): fuel 11, hospital 46 (subclass hospital/clinic), doctors 81, dentist 75,
+# pharmacy 93. Together 354 of 9681 — under 4% of the layer.
+POI_CLASSES = ("fuel", "hospital", "doctors", "dentist", "pharmacy")
+
+# СТО, and by subclass rather than class: OpenMapTiles files car repair, parts shops and
+# dealerships together under `car`. A dealership is not a service station and has no business
+# on a dash; the other two are where a broken bike gets fixed.
+POI_CAR_SUBCLASSES = ("car_repair", "car_parts")
+
+# `class=fuel` also carries EV chargers, and the icon name is built from the CLASS, so a
+# charging station would draw a petrol pump — worse than not drawing it, because it is a
+# station this bike cannot use, announced as one it can.
+POI_EXCLUDED_SUBCLASSES = ("charging_station",)
+
+# The icon is `<class>_11` out of the sprite sheet, and `doctors_11` is not in it — the sheet
+# ships `doctor_11`, singular. Pointing the class at the plural drew nothing and logged a
+# warning per feature; pointing it at `hospital_11` (the first fix) made 81 doctors' offices
+# indistinguishable from 46 hospitals. The singular is the icon that was always there.
+POI_ICON_SUBSTITUTES = {"doctors": "doctor_11"}
+
+# One layer, not three. Upstream splits POI across poi-level-1/2/3 by `rank` — a way to thin
+# out labels when the layer holds everything — and gates them at z14/15/16. Two consequences
+# once the layer is 4% of its former self, both measured: level-3 needs z16 while the dash's
+# camera stops at z15 (ZOOM_MAX in DashEngineController), so its features — 29 of 257 kept in
+# a sample, mostly pharmacies — could never render at all; and a kept POI with rank <= 14 and
+# no name matched NO layer, because level-1 demands a name and level-2 starts at rank 15. That
+# hole swallowed 12 of 41 gas stations. With the classes this narrow there is nothing left to
+# thin, so the rank tiers go and one layer carries the lot.
+POI_LAYER = "poi-level-1"
+POI_MIN_ZOOM = 13
+
+
+def restrict_poi(layer: dict) -> None:
+    """
+    Rewrite [POI_LAYER] to the categories a rider needs, in place.
+
+    The filter is REPLACED rather than extended, which is what makes this safe to run twice
+    (see the module docstring on idempotency) and independent of which filter dialect upstream
+    happens to ship — an appended legacy clause inside an expression filter is a layer MapLibre
+    rejects at runtime, silently, on the bike.
+
+    Two clauses are carried over from upstream rather than reinvented: geometry must be a
+    Point, and an indoor POI is only kept on the ground floor — a pharmacy on the third floor
+    of a shopping centre is not a pharmacy you can ride to.
+
+    `has name` is deliberately NOT carried over. It exists upstream to keep unlabelled clutter
+    off the map, but at this narrowness a nameless petrol station is still a petrol station,
+    and the icon is the half that matters.
+    """
+    layer["filter"] = [
+        "all",
+        ["==", "$type", "Point"],
+        ["any", ["!has", "level"], ["==", "level", 0]],
+        [
+            "any",
+            ["all", ["in", "class", *POI_CLASSES], ["!in", "subclass", *POI_EXCLUDED_SUBCLASSES]],
+            ["all", ["==", "class", "car"], ["in", "subclass", *POI_CAR_SUBCLASSES]],
+        ],
+    ]
+    layer["minzoom"] = POI_MIN_ZOOM
+    layout = layer.get("layout")
+    if layout and "icon-image" in layout:
+        icon = ["concat", ["to-string", ["get", "class"]], "_11"]
+        for cls, sprite in POI_ICON_SUBSTITUTES.items():
+            icon = ["match", ["get", "class"], cls, sprite, icon]
+        layout["icon-image"] = icon
+
 
 # What survives is drawn at least this wide. The railway family sits at 0.40 px at z14 —
 # a level crossing is worth knowing about, so it is thickened rather than dropped.
@@ -329,6 +414,8 @@ def transform(style: dict, name: str) -> tuple[dict, list[str]]:
             if "text-font" in layout:
                 layout["text-font"] = single_font(layout["text-font"])
             local_name_only(layout)
+        if layer["id"] == POI_LAYER:
+            restrict_poi(layer)
         if layer.get("type") == "line":
             paint = layer.setdefault("paint", {})
             if "line-width" not in paint:

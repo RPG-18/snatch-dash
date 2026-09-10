@@ -933,6 +933,18 @@ class DashEngineController(
         // failure. The render loop still never waits on the network — trySend, never send.
         val rtpOutbox = Channel<List<ByteArray>>(capacity = 4)
         val rtpDropped = AtomicInteger(0)
+
+        /**
+         * Dropped access units that were key frames, counted apart from [rtpDropped].
+         *
+         * The two cost different things and want different reactions. A dropped P-frame is
+         * one frame the dash never sees — at 4 fps, a quarter second. A dropped key frame is
+         * the whole GOP: every P-frame after it references a picture the decoder does not
+         * have, so the dash shows garbage until the next IDR, which at a 2 s interval is
+         * eight frames later. A single `drop=` number cannot tell "we lost a quarter second"
+         * from "we lost two seconds and showed mush for them".
+         */
+        val rtpDroppedIdr = AtomicInteger(0)
         // Read by the RTP sender to size the spread against the frame it belongs to.
         val currentIntervalMs = AtomicLong(1000L / FPS_IDLE)
         // Filled by the packetizer callback during one nalProc.process() call, then handed
@@ -995,7 +1007,10 @@ class DashEngineController(
                 // Never `send`: this runs inside the render loop, and a full outbox must
                 // cost a dropped frame, not a late one. A codec-config buffer emits no
                 // packets at all (SPS/PPS are cached, not sent), hence the guard.
-                if (rtpOutbox.trySend(auPackets.toList()).isFailure) rtpDropped.incrementAndGet()
+                if (rtpOutbox.trySend(auPackets.toList()).isFailure) {
+                    rtpDropped.incrementAndGet()
+                    if (isKey && !isConfig) rtpDroppedIdr.incrementAndGet()
+                }
             }
         }
 
@@ -1244,7 +1259,17 @@ class DashEngineController(
                                 RideDiagnostics.warn(
                                     "stream",
                                     "encoder output: 0 frames in the last ${intervalS}s while STREAMING " +
-                                        "— render/encode loop itself stalled (nothing to even send) — thermal=$thermal",
+                                        "— render/encode loop itself stalled (nothing to even send) — " +
+                                        // fpsFlips, and only it: [dFlips] is drained above the
+                                        // branch, so a stalled window that does not print it
+                                        // loses the count rather than saving it for the next
+                                        // one — and a window where the loop runs without
+                                        // encoding is exactly when an oscillating rate policy
+                                        // is worth seeing. The drop counters are NOT here on
+                                        // purpose: no encoded frame means no trySend, so they
+                                        // are structurally zero, and printing zeroes would
+                                        // imply the queue was examined when it was not.
+                                        "fpsFlips=$dFlips thermal=$thermal",
                                 )
                             } else {
                                 RideDiagnostics.log(
@@ -1254,7 +1279,9 @@ class DashEngineController(
                                         "frame=${frameBytes.drain()}B " +
                                         "idrPkts=${idrDatagrams.drain()} " +
                                         "idrShape=${nalProc.drainIdrShapes()} " +
-                                        "drop=${rtpDropped.getAndSet(0)} fpsFlips=$dFlips " +
+                                        "drop=${rtpDropped.getAndSet(0)} " +
+                                        "dropIdr=${rtpDroppedIdr.getAndSet(0)} " +
+                                        "fpsFlips=$dFlips " +
                                         "bitrate=${if (idleBitrate) "idle" else "moving"} " +
                                         "thermal=$thermal in the last ${intervalS}s",
                                 )

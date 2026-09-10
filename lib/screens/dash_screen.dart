@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -178,9 +180,11 @@ class DashScreen extends ConsumerWidget {
                   }
                   return;
                 }
-                DashEngine.instance.connect();
+                // Both are fire-and-forget: the button reports through the engine's
+                // state stream, not by awaiting the call that started it.
+                unawaited(DashEngine.instance.connect());
               } else {
-                DashEngine.instance.disconnect();
+                unawaited(DashEngine.instance.disconnect());
               }
             },
             icon: Icon(_isConnected(engine.stage) ? Icons.link_off : Icons.link),

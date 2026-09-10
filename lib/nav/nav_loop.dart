@@ -172,13 +172,15 @@ class NavLoop {
       _offRouteTicks = 0;
       onRerouted?.call(newRoute);
       VoiceManager.instance.resetTrip();
-      DashEngine.instance.setNavState(
+      // Fire-and-forget on purpose: this is a push down a platform channel from the
+      // navigation loop, and the loop's next tick must not wait on the dash side.
+      unawaited(DashEngine.instance.setNavState(
         remainingMeters: newRoute.totalMeters,
         nextTurnMeters: newRoute.totalMeters,
         offRoute: false,
         points: newRoute.geometry.map((p) => [p.lat, p.lng]).toList(),
         jamSegments: newRoute.jamSegments.map((j) => j.index).toList(),
-      );
+      ));
     } finally {
       _rerouting = false;
     }

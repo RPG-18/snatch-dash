@@ -96,8 +96,28 @@ android {
     }
 
     defaultConfig {
-        minSdk = 24
+        // Matches the app module. This module IS the dash engine, so the API 29
+        // floor its code carries (WifiNetworkSpecifier, NetworkCapabilities
+        // .transportInfo) belongs here first — see android/app/build.gradle.kts.
+        minSdk = 29
         buildConfigField("String", "GIT_SHA", "\"$gitLabel\"")
+    }
+
+    lint {
+        // Red means red: the build stops on errors, and warnings stay warnings. No baseline
+        // file — with the report this small, a baseline would only preserve the mess.
+        abortOnError = true
+        warningsAsErrors = false
+        // Turned off rather than baselined, because none of them can ever be actionable here:
+        // UseKtx suggests androidx extensions this module does not depend on, and the three
+        // version checks report that newer dependencies exist — a decision made deliberately
+        // per dependency in this file, not something a linter should nag about.
+        disable += setOf(
+            "UseKtx",
+            "GradleDependency",
+            "NewerVersionAvailable",
+            "AndroidGradlePluginVersion",
+        )
     }
 
     buildFeatures {

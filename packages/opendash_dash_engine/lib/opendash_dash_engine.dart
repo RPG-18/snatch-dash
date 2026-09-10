@@ -20,7 +20,7 @@ class DashEngine {
   /// gpsLost, gpsWeak, errorMessage, followMode, headingUp, zoom, and
   /// (on button events) button.
   ///
-  /// `zoom` is a MapLibre camera zoom as a double (e.g. 13.75), not the
+  /// `zoom` is a MapLibre camera zoom as a double (e.g. 13.50), not the
   /// hundredths the engine steps it in — see `DashEngineController.ZOOM_STEP`.
   Stream<Map<String, dynamic>> get stateStream =>
       OpendashDashEnginePlatform.instance.stateStream;

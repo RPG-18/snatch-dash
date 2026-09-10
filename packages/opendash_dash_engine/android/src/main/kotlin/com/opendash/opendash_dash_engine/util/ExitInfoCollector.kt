@@ -5,6 +5,7 @@ import android.app.ApplicationExitInfo
 import android.content.Context
 import android.os.Build
 import android.util.Log
+import androidx.annotation.RequiresApi
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -81,17 +82,25 @@ object ExitInfoCollector {
                 if (info.reason !in INTERESTING) continue
                 runCatching { writeExit(context, dir, info) }
                     .onFailure { Log.w(TAG, "write exit failed: ${it.message}") }
-                // Also surface it directly in the shared log — this runs from
-                // Application.onCreate, BEFORE the plugin attaches and wires DebugLog.sink to
-                // Dart, so on a true cold start this specific line only reaches native logcat;
-                // the file above is the durable copy that lands in app_log.txt's world either
-                // way (visible next time someone greps the diag folder).
+                // Also surface it directly in the shared log. This runs from
+                // Application.onCreate, long before Dart subscribes to the log channel —
+                // which used to mean the line reached native logcat and nothing else, i.e.
+                // nowhere that outlives the ride. DebugLog buffers pre-subscribe lines now
+                // and flushes them when Dart appears, marked with the time they were actually
+                // logged, so on a DEBUG build this one reaches app_log.txt too. In a release
+                // build DebugLog is compiled out entirely — which is why the file written
+                // above, not this line, is the durable copy.
                 DebugLog.w(TAG) { "Last exit: ${reasonName(info.reason)} — ${info.description ?: ""}" }
             }
             prefs.edit().putLong(KEY_LAST_TS, newest).apply()
         }.onFailure { Log.w(TAG, "collect failed: ${it.message}") }
     }
 
+    // Every read of [info] below is API 30, and the only caller — [collect] — returns above
+    // its own `SDK_INT < R` guard. Lint does not follow that across functions and reported
+    // eight NewApi errors here; the annotation states the contract instead of suppressing it,
+    // so a future second caller is checked rather than trusted.
+    @RequiresApi(Build.VERSION_CODES.R)
     private fun writeExit(context: Context, dir: File, info: ApplicationExitInfo) {
         val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date(info.timestamp))
         // ANR + native crashes expose a trace/tombstone; other reasons don't.

@@ -58,6 +58,21 @@ class DashSession(private val scope: CoroutineScope) {
     // Touched from Main (disconnect), IO (runSession/rxJob) and Default (sendRtp off the
     // stream loop), so the write that clears it on teardown has to be visible to the others.
     @Volatile private var socket: DashSocket? = null
+
+    /**
+     * The socket [disconnect] has taken over in order to send its farewell packets on it.
+     *
+     * A session cancelled before READY still owns its socket and closes it in [runSession]'s
+     * finally — which, for a disconnect landing mid-handshake, is a close racing the
+     * `projectionStop`/`projectionOff` below. The close usually wins (cancellation resumes on
+     * an IO thread while [disconnect] is still on Main), both sends then die inside
+     * `DashSocket.send`'s catch-all, and the dash stays frozen on the last frame until its own
+     * timeout — precisely the failure those two packets exist to prevent.
+     *
+     * Claimed BEFORE the job is cancelled, so the claim is visible to the finally by the time
+     * it can possibly run; `@Volatile` because that finally runs on another thread.
+     */
+    @Volatile private var farewellSocket: DashSocket? = null
     private var auth: DashAuth? = null
     @Volatile private var authConfirmed = false
 
@@ -204,6 +219,13 @@ class DashSession(private val scope: CoroutineScope) {
     fun connect(ssid: String, network: android.net.Network? = null) {
         if (_state.value != DashState.IDLE && _state.value != DashState.ERROR) return
         DebugLog.i(TAG) { "connect() — ssid='$ssid' network=$network" }
+        // Here, not in [runSession]: the guard above reads a state that used to be
+        // published from inside the coroutine, on Dispatchers.IO. Two connect() calls
+        // landing before that hop both passed the guard, and the first one then built a
+        // DashSocket and an RX loop under a token its own caller had already retired —
+        // a session nobody owns, whose socket leaks on the [fail] path below. Setting it
+        // on the caller's thread closes that window: the second call sees CONNECTING.
+        setState(DashState.CONNECTING)
         // ERROR is a legal state to reconnect from, and `fail()` can reach it from the RX
         // coroutine while `runSession` is still sitting in its auth wait — so the previous
         // session is not necessarily finished just because the state says we may start a new
@@ -225,14 +247,63 @@ class DashSession(private val scope: CoroutineScope) {
             DebugLog.w(TAG) { "startStreaming() with no socket — session was torn down" }
             return
         }
+        // Captured once and handed to every periodic sender below, which then send through
+        // [sendIfCurrent] — see there for why neither the capture nor the field alone is
+        // enough.
+        val sock = socket ?: return
         setState(DashState.STREAMING)
-        launchProjectionHeartbeat()
-        launchRouteCardKeepAlive()
-        launchNavInfo()
-        launchMediaInfo()
+        launchProjectionHeartbeat(sock)
+        launchRouteCardKeepAlive(sock)
+        launchNavInfo(sock)
+        launchMediaInfo(sock)
     }
 
     fun sendRtp(packet: ByteArray) { socket?.sendRtp(packet) }
+
+    /**
+     * A periodic sender's way onto the wire: this packet, on this session's socket, and only
+     * while that socket is still the live one.
+     *
+     * Both halves are load-bearing, and each covers what the other misses.
+     *
+     * Reading the `socket` FIELD alone (what these loops used to do) sends whatever socket is
+     * current at the tick — not necessarily this session's. Cancellation is cooperative and
+     * the loops sleep 250-1000 ms, so a tick belonging to a session that has already ended can
+     * wake after a NEW session installed its socket and push the old session's packet — a
+     * route card carrying the previous destination, say — into the live link. `_state ==
+     * STREAMING` does not catch that: the new session is streaming too.
+     *
+     * The captured socket alone is no better, and the failure is worse. [disconnect] takes the
+     * socket for its farewell, sends `projectionStop`/`projectionOff` on it, and only then
+     * settles the state at IDLE — so a tick already past its loop condition would send on the
+     * very socket the farewell is using. `projectionFrame` and `liveRouteCard(projectionOn =
+     * true)` are the exact inverse of that pair: the dash would be re-armed into projection
+     * right after being told to leave it, and would sit on the last frame until its own
+     * timeout. That is the failure the farewell exists to prevent, reintroduced from behind.
+     *
+     * The identity check is what closes both: the field is nulled the moment teardown claims
+     * the socket, and holds a different object once a new session starts.
+     */
+    private fun sendIfCurrent(sock: DashSocket, packet: ByteArray) {
+        if (socket === sock) sock.send(packet) else staleSends.incrementAndGet()
+    }
+
+    /**
+     * How often a race we designed against actually fired.
+     *
+     * Every guard in this class turns a race into silence — the packet is not sent, the
+     * teardown is not run — and silence is indistinguishable from "the race never happens".
+     * That leaves the question the guards were built to answer permanently open: was the
+     * window real on this hardware, or were we defending against arithmetic? Counting costs
+     * an atomic increment on a path that runs a few times a second, and turns it into a
+     * number in the ride file (see [launchAckCounterLog]) — from a release build, on a real
+     * bike, which is the only place the answer lives.
+     *
+     * Zero over a long ride is a result too: it says these paths are colder than the code
+     * around them implies, and the next reader can weigh that against the machinery.
+     */
+    private val staleSends = AtomicInteger(0)
+    private val supersededTeardowns = AtomicInteger(0)
 
     /**
      * Chrome (the route-card) always stays on, matching [enterNavMode] being the entry
@@ -258,6 +329,15 @@ class DashSession(private val scope: CoroutineScope) {
         // cooperative, so that coroutine still runs up to its next suspension point, and a
         // [fail] from there would put the session back into ERROR after this method has
         // deliberately left it IDLE.
+        // Taken over before anything is cancelled — see [farewellSocket]. The claim is
+        // published BEFORE the field is cleared, and the order is the point: [endLink] skips
+        // its close only for the socket named in [farewellSocket], so between a clear and a
+        // later claim there is a window where the RX loop's error path sees neither and
+        // closes the socket out from under the farewell below. Both fields are @Volatile, so
+        // these two writes reach the other thread in this order.
+        val farewell = socket
+        farewellSocket = farewell
+        socket = null
         sessionSeq.incrementAndGet()
         sessionJob?.cancel(); sessionJob = null
         rxJob?.cancel(); projHbJob?.cancel(); routeCardJob?.cancel(); heartbeatJob?.cancel()
@@ -281,8 +361,7 @@ class DashSession(private val scope: CoroutineScope) {
         // advertising STREAMING over a socket that is already gone — and that is exactly the
         // state [connect]'s guard refuses to reconnect from, so the rider would be stuck until
         // the process restarted.
-        socket?.let { sock ->
-            socket = null
+        farewell?.let { sock ->
             runCatching {
                 runBlocking(Dispatchers.IO) {
                     runCatching { sock.send(DashCommands.projectionStop()) }
@@ -291,6 +370,9 @@ class DashSession(private val scope: CoroutineScope) {
                 }
             }
         }
+        // Released only once the socket is closed: until then the claim is what keeps
+        // [runSession]'s finally off it.
+        farewellSocket = null
         setState(DashState.IDLE)
         DebugLog.i(TAG) { "Disconnected" }
     }
@@ -298,14 +380,41 @@ class DashSession(private val scope: CoroutineScope) {
     // ── Internal ──────────────────────────────────────────────────────────
 
     private suspend fun runSession(seq: Int, ssid: String, network: android.net.Network? = null) {
+        // CONNECTING is published by [connect] on the caller's thread — see the note there.
+        //
+        // The socket is CREATED inside the try below, and only referenced out here so the
+        // finally can reach it. Constructing it above the try instead costs the catch-all:
+        // only BindException is handled by name, while `Network.bindSocket` throws a plain
+        // IOException once the WiFi network is gone — routine on the 1.5s auth retry. That
+        // exception would leave runSession entirely, into the plugin's exception handler,
+        // which only logs (and logs nothing at all in a release build); with CONNECTING now
+        // published synchronously the session would sit wedged in CONNECTING, with no
+        // fail(), no onError, and no state that either connect() guard lets a retry past.
+        var owned: DashSocket? = null
+        // Whether the socket has become the running session's. Until READY this
+        // function owns it, and every other way out of here has to close it — which is
+        // not something those exits do on their own:
+        //   - fail() with a superseded token returns before closing anything, and even
+        //     on the live path it closes the `socket` FIELD, which a newer session may
+        //     already have replaced;
+        //   - the cancellation catch below rethrows, and a cancelled session is the
+        //     normal case — every connect() cancels the previous job;
+        //   - the "torn down during nav-mode entry" return leaves behind precisely a
+        //     socket that is no longer the field's.
+        // A finally states that invariant once instead of repeating it at three exits.
+        // What leaks otherwise is not just an fd: nothing reads that socket any more, but
+        // it stays bound to :2002 (SO_REUSEADDR lets the next session bind anyway), and on
+        // unicast the platform may hand part of the dash's traffic to the dead one — which
+        // shows up as "the dash went quiet" until the RX watchdog, not as an error.
+        var handedOff = false
         try {
-            setState(DashState.CONNECTING)
             val sock = try {
                 DashSocket(network).also { socket = it }
             } catch (e: java.net.BindException) {
                 fail(seq, "Port ${DashSocket.RX_PORT}/${DashSocket.CTRL_PORT} in use (${e.message})")
                 return
             }
+            owned = sock
 
             auth = DashAuth(ssid)
             authConfirmed = false
@@ -357,6 +466,9 @@ class DashSession(private val scope: CoroutineScope) {
                 DebugLog.w(TAG) { "Session torn down during nav-mode entry — not signalling READY" }
                 return
             }
+            // Set before the state change, not after: from the moment anything can observe
+            // READY the socket belongs to the session, and the finally must keep its hands off.
+            handedOff = true
             setState(DashState.READY)
 
         } catch (e: CancellationException) {
@@ -369,6 +481,12 @@ class DashSession(private val scope: CoroutineScope) {
         } catch (e: Exception) {
             DebugLog.e(TAG, { "Session error" }, e)
             fail(seq, "${e.javaClass.simpleName}: ${e.message}")
+        } finally {
+            val sock = owned
+            // Idempotent by design: on the paths where [fail] already closed this same
+            // socket, DatagramSocket.close() is a no-op. [farewellSocket] is the one case
+            // that is NOT idempotent — see its doc.
+            if (sock != null && !handedOff && sock !== farewellSocket) runCatching { sock.close() }
         }
     }
 
@@ -469,13 +587,21 @@ class DashSession(private val scope: CoroutineScope) {
      * and they break out of their own loop on return.
      */
     private fun endLink(seq: Int, sock: DashSocket) {
-        // Unconditional, and first: [sock] belongs to this RX loop whether or not the session
-        // it served is still the current one, and nothing else will close it.
-        runCatching { sock.close() }
+        // First, and for the same reason as ever: [sock] belongs to this RX loop whether or
+        // not the session it served is still the current one, and nothing else will close it.
+        //
+        // The one exception is [farewellSocket]. A disconnect on a link that is already dead
+        // races this path — the RX loop hits its socket error at the same moment disconnect
+        // claims the socket — and closing here would pull it out from under the
+        // `projectionStop`/`projectionOff` pair, leaving the dash in projection on its last
+        // frame. That is the failure the claim was introduced to prevent, and it arrives
+        // through the one teardown path that had no claim check.
+        if (sock !== farewellSocket) runCatching { sock.close() }
         // Everything past this point is state the LIVE session owns — the periodic senders, the
         // socket field, the state flow, the error callback — so it needs the same token guard as
         // [fail]. Socket identity alone (the check further down) covers only one of the four.
         if (seq != sessionSeq.get()) {
+            supersededTeardowns.incrementAndGet()
             DebugLog.w(TAG) { "RX loop of superseded session #$seq ended (now #${sessionSeq.get()}) — not reporting" }
             return
         }
@@ -654,43 +780,57 @@ class DashSession(private val scope: CoroutineScope) {
                 lastLoggedPFrameAcks = p
                 val intervalS = ACK_LOG_INTERVAL_MS / 1_000
                 DebugLog.i(TAG) { "Frame decode acks: IDR=$idrDelta P=$pDelta in the last ${intervalS}s" }
+                // Into the ride file, and only when nonzero: a guard that never fires should
+                // not cost a line a minute, but one that does is the first evidence any of
+                // these races exist outside the reasoning that predicted them.
+                val stale = staleSends.getAndSet(0)
+                val superseded = supersededTeardowns.getAndSet(0)
+                if (stale > 0 || superseded > 0) {
+                    RideDiagnostics.warn(
+                        TAG,
+                        "races fired in the last ${intervalS}s: $stale packet(s) held back from a " +
+                            "socket that is no longer current, $superseded teardown(s) from a " +
+                            "superseded session ignored",
+                    )
+                }
             }
         }
     }
 
-    private fun launchProjectionHeartbeat() {
+    private fun launchProjectionHeartbeat(sock: DashSocket) {
         projHbJob?.cancel()
         projHbJob = scope.launch(Dispatchers.IO) {
             while (isActive && _state.value == DashState.STREAMING) {
-                socket?.send(DashCommands.projectionFrame())
+                sendIfCurrent(sock, DashCommands.projectionFrame())
                 delay(PROJ_HB_MS)
             }
         }
     }
 
-    private fun launchRouteCardKeepAlive() {
+    private fun launchRouteCardKeepAlive(sock: DashSocket) {
         routeCardJob?.cancel()
         routeCardJob = scope.launch(Dispatchers.IO) {
             while (isActive && _state.value == DashState.STREAMING) {
-                socket?.send(liveRouteCard(projectionOn = true))
+                sendIfCurrent(sock, liveRouteCard(projectionOn = true))
                 delay(ROUTE_CARD_MS)
             }
         }
     }
 
-    private fun launchNavInfo() {
+    private fun launchNavInfo(sock: DashSocket) {
         navInfoJob?.cancel()
         navInfoJob = scope.launch(Dispatchers.IO) {
             while (isActive && _state.value == DashState.STREAMING) {
                 if (navActive) {
-                    socket?.send(
+                    sendIfCurrent(
+                        sock,
                         DashCommands.activeNavPacket(
                             maneuver = navManeuver,
                             primaryDist = navPrimaryDist,
                             primaryUnit = navPrimaryUnit,
                             totalDist = navTotalDist,
                             totalUnit = navTotalUnit,
-                        )
+                        ),
                     )
                 }
                 delay(ROUTE_CARD_MS)
@@ -698,20 +838,20 @@ class DashSession(private val scope: CoroutineScope) {
         }
     }
 
-    private fun launchMediaInfo() {
+    private fun launchMediaInfo(sock: DashSocket) {
         mediaInfoJob?.cancel()
         mediaInfoJob = scope.launch(Dispatchers.IO) {
             var previousCaller: String? = null
             while (isActive && _state.value == DashState.STREAMING) {
                 val caller = callerName
                 when {
-                    caller != null -> runCatching { socket?.send(DashCommands.callNotify(caller)) }
-                    previousCaller != null -> runCatching { socket?.send(DashCommands.callClear()) }
+                    caller != null -> runCatching { sendIfCurrent(sock, DashCommands.callNotify(caller)) }
+                    previousCaller != null -> runCatching { sendIfCurrent(sock, DashCommands.callClear()) }
                 }
                 previousCaller = caller
                 mediaTitle?.let { title ->
                     runCatching {
-                        socket?.send(DashCommands.nowPlaying(title, mediaAlbum, mediaArtist))
+                        sendIfCurrent(sock, DashCommands.nowPlaying(title, mediaAlbum, mediaArtist))
                     }
                 }
                 delay(ROUTE_CARD_MS)
@@ -731,6 +871,7 @@ class DashSession(private val scope: CoroutineScope) {
      */
     private fun fail(seq: Int, msg: String) {
         if (seq != sessionSeq.get()) {
+            supersededTeardowns.incrementAndGet()
             DebugLog.w(TAG) { "ignoring fail from superseded session #$seq (now #${sessionSeq.get()}): $msg" }
             return
         }

@@ -1,3 +1,10 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
   package="com.opendash.opendash_dash_engine">
+
+  <!-- DashWifiManager reads ConnectivityManager.getNetworkCapabilities on every signal
+       sample and on SSID resolution, which the platform gates on this permission. The app
+       module declares it too, but a library that needs a permission has to say so itself:
+       merged into whatever app embeds this plugin, it is what keeps those calls legal
+       there as well. Android Lint reported the omission as two MissingPermission errors. -->
+  <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 </manifest>

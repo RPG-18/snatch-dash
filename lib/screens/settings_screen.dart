@@ -8,12 +8,12 @@ import 'package:share_plus/share_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../l10n/app_localizations.dart';
+import '../models/offline_map.dart';
 import '../state/app_update_controller.dart';
 import '../state/auto_update_settings.dart';
 import '../state/currency_settings.dart';
 import '../state/dash_engine_state.dart';
 import '../state/map_theme_settings.dart';
-import '../models/offline_map.dart';
 import '../state/map_tile_cache.dart';
 import '../state/offline_maps_controller.dart';
 import '../state/update_channel_settings.dart';

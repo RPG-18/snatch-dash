@@ -2,11 +2,10 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
-import 'package:sqflite_common_ffi/sqflite_ffi.dart';
-
 import 'package:snatch_dash/data/app_database.dart';
 import 'package:snatch_dash/data/installed_packs_repository.dart';
 import 'package:snatch_dash/models/offline_map.dart';
+import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 InstalledPack _pack(String code, {String sha = 'aa', String generatedAt = 'T1', int size = 10}) =>
     InstalledPack(

@@ -101,6 +101,29 @@ local KNOWN = {
     ["0f.08"] = "HYPOTHESIS (external, unconfirmed, ciphertext here): part number/variant",
     ["0f.0a"] = "HYPOTHESIS (external, unconfirmed, ciphertext here): FOTA version",
 
+    -- incoming vehicle telemetry, dash -> app, type 0x0C. UNLIKE 0x0F this is
+    -- PLAINTEXT: DashSession logs it decoded already ("DASH TELEMETRY 0C
+    -- sub=0x.. (nB) val=.."), so a capture and the app's own log can be diffed
+    -- directly. The thirteen subs below are the ones actually seen on the wire
+    -- in snatch-dash's own field logs (2026-09-09 sessions); the value length is
+    -- from those same captures. None of the MEANINGS are known -- this is the
+    -- shortlist to attack with the baseline/action diff of section 2, and the
+    -- best target in the whole protocol right now, because it arrives
+    -- continuously and needs no decryption.
+    ["0c.01"] = "dash telemetry, plaintext, 1B -- meaning UNKNOWN",
+    ["0c.03"] = "dash telemetry, plaintext, 1B -- meaning UNKNOWN",
+    ["0c.04"] = "dash telemetry, plaintext, 2B -- meaning UNKNOWN",
+    ["0c.05"] = "dash telemetry, plaintext, 1B -- meaning UNKNOWN",
+    ["0c.07"] = "dash telemetry, plaintext, 2B -- meaning UNKNOWN",
+    ["0c.11"] = "dash telemetry, plaintext, 1B -- meaning UNKNOWN",
+    ["0c.14"] = "dash telemetry, plaintext, 1B -- meaning UNKNOWN",
+    ["0c.16"] = "dash telemetry, plaintext, 3B -- meaning UNKNOWN",
+    ["0c.18"] = "dash telemetry, plaintext, 4B -- meaning UNKNOWN",
+    ["0c.19"] = "dash telemetry, plaintext, 4B -- meaning UNKNOWN",
+    ["0c.20"] = "dash telemetry, plaintext, 1B -- meaning UNKNOWN",
+    ["0c.24"] = "dash telemetry, plaintext, 1B -- meaning UNKNOWN",
+    ["0c.25"] = "dash telemetry, plaintext, 1B -- meaning UNKNOWN",
+
     -- seen in the init burst / heartbeat template, meaning not yet confirmed
     ["05.1b"] = "unknown (init burst capability flag)",
     ["05.21"] = "unknown (init burst capability flag)",
@@ -118,9 +141,18 @@ local KNOWN = {
     ["0a.02"] = "unknown (init burst, 8-byte blob)",
 }
 
+-- Family fallbacks, so a sub that is not in the table above still says WHAT it
+-- is rather than only that we have not seen it. The distinction matters when
+-- diffing captures: a new 0x0C sub is a telemetry field nobody has enumerated
+-- yet, while a new 0x05 sub is a command the app sends and we do not implement.
+local FAMILY = {
+    [0x0c] = "dash telemetry (plaintext), sub not yet seen -- NEW, enumerate it",
+    [0x0f] = "device identity (AES-256-CBC, ciphertext here) -- see section 5",
+}
+
 local function tlv_name(t, s)
     local key = string.format("%02x.%02x", t, s)
-    return KNOWN[key] or "unknown -- new/unmapped, worth investigating"
+    return KNOWN[key] or FAMILY[t] or "unknown -- new/unmapped, worth investigating"
 end
 
 local MAGIC = "K1G "

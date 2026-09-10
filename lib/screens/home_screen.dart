@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -8,8 +10,8 @@ import '../models/route_preview_args.dart';
 import '../models/shared_location.dart';
 import '../nav/geo_point.dart';
 import '../state/dash_engine_state.dart';
-import '../state/rides_controller.dart';
 import '../state/offline_maps_controller.dart';
+import '../state/rides_controller.dart';
 import '../state/saved_destinations_controller.dart';
 import '../state/vehicle_store.dart';
 import '../util/current_position.dart';
@@ -55,7 +57,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       }
       return;
     }
-    DashEngine.instance.connect();
+    // Fire-and-forget: the screen follows the engine's state stream from here.
+    unawaited(DashEngine.instance.connect());
   }
 
   @override

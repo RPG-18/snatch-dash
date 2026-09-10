@@ -8,8 +8,8 @@ import android.graphics.PointF
 import android.graphics.Rect
 import android.media.AudioManager
 import android.media.ToneGenerator
-import android.os.Build
 import android.os.PowerManager
+import android.os.SystemClock
 import com.opendash.opendash_dash_engine.dash.DashConfig
 import com.opendash.opendash_dash_engine.dash.DashKeepAliveService
 import com.opendash.opendash_dash_engine.dash.DashSession
@@ -17,6 +17,7 @@ import com.opendash.opendash_dash_engine.dash.DashState
 import com.opendash.opendash_dash_engine.dash.DashWifiManager
 import com.opendash.opendash_dash_engine.dash.WifiConnStatus
 import com.opendash.opendash_dash_engine.dash.map.DashCamera
+import com.opendash.opendash_dash_engine.dash.map.FrameRatePolicy
 import com.opendash.opendash_dash_engine.dash.map.GeoPoint
 import com.opendash.opendash_dash_engine.dash.map.LocationTracker
 import com.opendash.opendash_dash_engine.dash.map.MapProjection
@@ -24,6 +25,7 @@ import com.opendash.opendash_dash_engine.dash.map.MapSnapshotProvider
 import com.opendash.opendash_dash_engine.dash.map.MapStyleAssembler
 import com.opendash.opendash_dash_engine.dash.map.MapTheme
 import com.opendash.opendash_dash_engine.dash.map.OverlayRenderer
+import com.opendash.opendash_dash_engine.dash.map.Percentiles
 import com.opendash.opendash_dash_engine.dash.map.RenderStats
 import com.opendash.opendash_dash_engine.dash.protocol.DashCommands
 import com.opendash.opendash_dash_engine.dash.video.DashEncoder
@@ -35,11 +37,14 @@ import com.opendash.opendash_dash_engine.media.MediaInfoProvider
 import com.opendash.opendash_dash_engine.util.DebugLog
 import com.opendash.opendash_dash_engine.util.RideDiagnostics
 import java.util.Locale
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -75,6 +80,29 @@ class DashEngineController(
         private const val FPS_IDLE = 2
         private const val FORCE_REDRAW_MS = 2_000L
         private const val SMOOTH_TAU = 0.35
+
+        /**
+         * Frame-rate hysteresis in m/s of ground speed, and the shortest time a verdict
+         * may stand — one GOP at [FPS_MOVING], so a bitrate retarget can never land more
+         * often than the key frames it lands between. Why these are two numbers and not
+         * one threshold: [FrameRatePolicy].
+         */
+        private const val CAM_MOVING_ENTER_MPS = 0.9   // 3.2 km/h
+        private const val CAM_MOVING_EXIT_MPS = 0.5    // 1.8 km/h
+        private const val CAM_MOVING_DWELL_MS = 2_000L
+
+        /**
+         * How long one access unit's datagrams are spread over, in ms.
+         *
+         * A key frame measured 17-18 datagrams on the 2026-09-09 ride (`idrPkts=17/18/18`)
+         * and used to go out back to back: `sendRtp` was called synchronously from the
+         * packetizer callback, so the whole burst hit the Wi-Fi driver in one go. Any ONE
+         * of those eighteen going missing makes the key frame undecodable and leaves the
+         * dash showing garbage until the next one — 2 s moving, 4 s parked. That ride saw
+         * exactly one such artifact against 583 key frames, which is the loss rate this
+         * spreading is for. 30 ms out of a 250 ms frame budget costs nothing.
+         */
+        private const val RTP_AU_SPREAD_MS = 30L
         private const val MANUAL_IDLE_MS = 8_000L
         /** A fix older than this counts as "GPS lost" for the Dash screen's chip. */
         private const val GPS_FIX_STALE_MS = 4_000L
@@ -115,28 +143,51 @@ class DashEngineController(
         // between is that tile scaled, with the style's `interpolate` expressions
         // following along — so the ladder need not land on integers, and it should
         // not: an integer step is ×2 apiece, which on 526×300 means a press either
-        // barely helps or overshoots. [ZOOM_STEP] of 25 is ×1.19. Hundredths
+        // barely helps or overshoots. [ZOOM_STEP] of 50 is ×1.41 — half a zoom
+        // level, so two presses cover one. It was 25 (×1.19) until 2026-09-09;
+        // that made the ladder 21 steps deep and a press too small to feel, which
+        // reads on the joystick as a button that did nothing. Hundredths
         // rather than a Float because repeated stepping cannot drift, the bounds
         // stay exact, and the redraw signature keeps appending an Int.
         //
-        // The floor is the pack corpus's `minzoom` and is not a preference:
-        // MapLibre asks for tile `floor(camera zoom)`, below 11 that tile does not
-        // exist, and rendering does not build downwards — a lower step is a blank
-        // screen, not a coarse map.
+        // Both ends are the pack corpus's own `minzoom`/`maxzoom`, not preferences.
         //
-        // The ceiling is one level past the corpus, which stops at z14. Everything
-        // above 14.00 is z14 scaled up, so 15.00 buys magnification and nothing
-        // else; the old ladder ran to 19.00, five steps of it, and the default sat
-        // two steps in.
-        private const val ZOOM_MIN = 1100
+        // The floor: MapLibre asks for tile `floor(camera zoom)`, and rendering does
+        // not build downwards — a step below the corpus is a blank screen, not a
+        // coarse map. It was 1100 while the corpus was z11-14; the corpus was rebuilt
+        // to z10-15 on 2026-09-09, which is what buys this step. The reason it was
+        // worth buying is in spec/drawing_from_local_tiles.md, «Лестница зумов»: the
+        // move to MapLibre halved the widest view, because the same tile number
+        // renders at 512 px instead of the 256 px `minzoom: 11` was calibrated for.
+        // 10.00 gives that width back — roughly 20 km across the 526 px frame at
+        // latitude 60, against 10.1 km at 11.00.
+        //
+        // The ceiling is unchanged at 15.00, but it is no longer overzoom: while the
+        // corpus stopped at z14, everything above 14.00 was z14 scaled up, magnified
+        // and no more detailed. z15 is now real data. (The old ladder ran to 19.00 —
+        // five overzoomed steps — with the default sitting two steps into them.)
+        private const val ZOOM_MIN = 1000
         private const val ZOOM_MAX = 1500
-        private const val ZOOM_STEP = 25
+        private const val ZOOM_STEP = 50
 
-        // The one parameter the bounds do not settle. 14.00 is the corpus's own
-        // detail ceiling, so a ride opens on the closest view that is still real
-        // data. The old default was 16.00, and the 2026-09-05 log argues it was
-        // too close: 110 zoom-out presses against 63 zoom-in.
-        private const val ZOOM_DEFAULT = 1400
+        // The one parameter the bounds do not settle. Set to the corpus's detail
+        // ceiling on 2026-09-09, so a ride opens on the closest view that is real
+        // data — which is what z15 became in the same rebuild. It was 14.00 while
+        // the ceiling was z14.
+        //
+        // **This equals [ZOOM_MAX], so `zoomIn` is inert until the rider zooms out.**
+        // The first press of that direction logs "zoomIn ignored — already at
+        // ZOOM_MAX" and does nothing, by construction rather than by fault.
+        //
+        // Counter-evidence on the record, because it argues the other way and the
+        // next ride is what settles it: on a default of 16.00 the 2026-09-05 log
+        // counted 110 zoom-out presses against 63 zoom-in — a ride opening too
+        // close. That was measured two corpora and one zoom unit ago (slippy zooms,
+        // 256 px tiles, [ZOOM_STEP] 25), so it does not transfer directly; what it
+        // does say is which direction to look. Read `[joystick] code=0x13` against
+        // `0x14` in the next ride file: if zoom-out still leads by that much, the
+        // number to move is this one.
+        private const val ZOOM_DEFAULT = 1500
 
         /** Hundredths → the units MapLibre's camera actually takes. */
         private const val ZOOM_SCALE = 100.0
@@ -171,6 +222,18 @@ class DashEngineController(
     private val session = DashSession(scope)
     private val locationTracker = LocationTracker(context, scope)
     private val styleAssembler = MapStyleAssembler(context)
+
+    /**
+     * The floor `zoomOut` may actually reach, in hundredths.
+     *
+     * [ZOOM_MIN] is what the CURRENT corpus supports; this is what the packs on
+     * THIS phone support, and they are versioned separately — a rider who has not
+     * re-downloaded since the 2026-09-09 rebuild still holds z11-14 packs, on
+     * which the bottom steps of the 10.00 ladder render nothing at all. Raised to
+     * whatever the installed packs actually carry, and reset from the style on
+     * every stream so a fresh download takes effect on the next connection.
+     */
+    private var zoomFloor = ZOOM_MIN
     private val snapshots = MapSnapshotProvider(context)
     private val overlays = OverlayRenderer()
     private val renderStats = RenderStats()
@@ -180,14 +243,13 @@ class DashEngineController(
     private val powerManager = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
 
     /**
-     * OK/Warm/Hot from [PowerManager.currentThermalStatus] (API 29+; "n/a" below that). Folded
+     * OK/Warm/Hot from [PowerManager.currentThermalStatus] (API 29, i.e. the project floor). Folded
      * into the encoder health log below — a hardware encoder throttling under heat is a
      * plausible, previously-uninstrumented explanation for the exact silent stall (0 frames,
      * no exception) the 2026-08-28 field session found. Ported from OpenMotoDash/NorthStar's
      * `updateThermal()` (see spec/wifi_retry_policy.md's "Из живого форка").
      */
     private fun thermalLabel(): String {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return "n/a"
         val status = runCatching { powerManager?.currentThermalStatus }.getOrNull() ?: return "?"
         return when (status) {
             PowerManager.THERMAL_STATUS_NONE, PowerManager.THERMAL_STATUS_LIGHT -> "OK"
@@ -274,6 +336,9 @@ class DashEngineController(
     @Volatile private var camHdg = 0f
     @Volatile private var camInit = false
     private var camMoving = false
+    /** Owns the hysteresis and the flip counter; touched from the frame loop only. */
+    private val frameRate =
+        FrameRatePolicy(CAM_MOVING_ENTER_MPS, CAM_MOVING_EXIT_MPS, CAM_MOVING_DWELL_MS)
 
     /**
      * Metres the camera centre has travelled since the last `[map]` line.
@@ -349,12 +414,37 @@ class DashEngineController(
         // for a rider, "Send to Dash" killed the picture ~10s later. Nothing is lost by
         // returning here: [setDestination] pushes the new destination to the session itself.
         val sessionState = session.state.value
-        if (sessionState != DashState.IDLE && sessionState != DashState.ERROR &&
-            wifiManager.state.value.status == WifiConnStatus.CONNECTED
-        ) {
+        val sessionLive = sessionState != DashState.IDLE && sessionState != DashState.ERROR
+        val linkStatus = wifiManager.state.value.status
+        if (sessionLive && linkStatus == WifiConnStatus.CONNECTED) {
             DebugLog.i(TAG) { "connect() ignored — session already $sessionState on a live WiFi link" }
             RideDiagnostics.log("connect", "connect() ignored — already $sessionState, link up")
             return
+        }
+        // A live session whose link is NOT up is the other half of the guard above, and it
+        // needs the opposite treatment: not "we are already connected", but the wreck of the
+        // previous session, still holding sockets bound to a network that is gone.
+        //
+        // Nothing below would clean it up. This method resets [sessionStarted] to false and
+        // starts a fresh wifi collector, which StateFlow immediately hands its current value —
+        // REQUESTING, not CONNECTED. The "link came up" branch needs CONNECTED; the teardown
+        // branch needs sessionStarted; neither fires, so `session.disconnect()` is never
+        // called and `session.connect()` later bounces off its own IDLE/ERROR guard. The old
+        // session then pushes RTP into a dead socket until the RX watchdog notices
+        // (RX_IDLE_TIMEOUT_MS = 10s) and the retry after it adds AUTH_RETRY_DELAY_MS: about
+        // 11.5 seconds of frozen picture on the dash after a "Send to Dash".
+        //
+        // Reachable because both ends land on Main: DashWifiManager's onLost/onUnavailable
+        // (requestNetwork is given a main-looper Handler) flip WifiState and return, while the
+        // collector that would tear the session down is a separate coroutine resumed on the
+        // next dispatch — and a method-channel call from Dart gets in between. Same treatment
+        // the collector's own else-branch gives, just from the path that overtook it.
+        if (sessionLive) {
+            RideDiagnostics.warn(
+                "connect",
+                "connect() over a $sessionState session whose link is $linkStatus — tearing it down first",
+            )
+            session.disconnect()
         }
         RideDiagnostics.init(context)
         RideDiagnostics.start("connect")
@@ -369,6 +459,13 @@ class DashEngineController(
         authRetries = 0
 
         val ssid = dashConfig.ssid
+        // A fresh attempt gets a fresh window. [armGiveupTimer] no-ops while a timer is
+        // already running, and nothing between here and there cancels one — so without
+        // this line a reconnect inherits whatever is left of the previous attempt's
+        // countdown, and a tap at t=115s of a 120s window is killed five seconds in,
+        // reported as "gave up — 120000ms without reaching STREAMING". The timer is
+        // re-armed by the session collector below on the first non-STREAMING state.
+        cancelGiveupTimer()
         wifiWatchJob?.cancel()
         sessionStarted = false
         wifiWatchJob = scope.launch {
@@ -455,13 +552,15 @@ class DashEngineController(
                     // retry actually happens, because the value that opens this branch can be
                     // stale before the delay even starts: StateFlow replays its current value to
                     // a brand-new collector, and on a `connect()` over an already-live WiFi link
-                    // that value is the PREVIOUS attempt's ERROR. [wifiWatchJob] runs first and
-                    // has already called session.connect() by then — but that only launches
-                    // runSession on Dispatchers.IO, so CONNECTING is not published yet, and this
-                    // collector sees the corpse of the old session. Retrying on it cancels a
-                    // handshake that is 1.5 s into its own life, every single time. Re-reading
-                    // the state after the delay is what tells the two apart: a session that
-                    // really is dead is still IDLE/ERROR, a replayed one has moved on.
+                    // that value is the PREVIOUS attempt's ERROR. Re-reading the state after the
+                    // delay is what tells the two apart: a session that really is dead is still
+                    // IDLE/ERROR, a replayed one has moved on.
+                    //
+                    // The window used to be wider: DashSession.connect() published CONNECTING
+                    // from inside its coroutine on Dispatchers.IO, so this collector could see
+                    // the corpse of a session [wifiWatchJob] had already restarted, and cancel a
+                    // handshake 1.5 s into its life every single time. CONNECTING is published
+                    // synchronously now, which closes that half of it.
                     DashState.ERROR, DashState.IDLE -> {
                         val wifi = wifiManager.state.value
                         if (sessionStarted && wifi.status == WifiConnStatus.CONNECTED && authRetries < MAX_AUTH_RETRIES) {
@@ -699,7 +798,7 @@ class DashEngineController(
         // small append per press is worth the line that told us the ceiling was too
         // low; a per-frame append would not be.
         val before = zoom
-        zoom = (zoom + delta).coerceIn(ZOOM_MIN, ZOOM_MAX)
+        zoom = (zoom + delta).coerceIn(zoomFloor, ZOOM_MAX)
         RideDiagnostics.log(
             "camera",
             if (zoom != before) "$action ${zoomText(before)}→${zoomText(zoom)}"
@@ -804,7 +903,7 @@ class DashEngineController(
         // startStream() call, same lifetime as everything else here (streamJob/encoder).
         var framesEncoded = 0
         var idrFramesEncoded = 0
-        var rtpPacketsSent = 0
+        val rtpPacketsSent = AtomicLong(0)
         // Bytes, not just packets. The packet count alone cannot answer the only
         // question that matters about this stream — are we inside the dash's own
         // ~200 kbps profile (see DashEncoder.BITRATE) — because a packet is
@@ -812,7 +911,33 @@ class DashEngineController(
         // rate somewhere between 168 and 470 kbps, which is the difference between
         // "fine" and "twice the dash's profile", and nothing in the log could
         // narrow it.
-        var rtpBytesSent = 0L
+        val rtpBytesSent = AtomicLong(0)
+        // Frame size and the datagram cost of a key frame — the two numbers the audit
+        // (§4.6) asks for and the ride file has never carried: the only frame size
+        // anywhere in it is "first video frame sent", once per session. They decide what
+        // a rider sees after ONE lost datagram, because a key frame is undecodable
+        // unless every one of its fragments arrives. Same [Percentiles] as the render
+        // stats, drained into the same minute.
+        val frameBytes = Percentiles()
+        val idrDatagrams = Percentiles()
+        // One access unit per element, so the sender knows the size of the burst it is
+        // pacing before it sends the first packet of it.
+        //
+        // FOUR, not the 64 this was first written with. A deep queue does not protect a
+        // realtime stream, it hides the stall and converts it into latency: 64 AUs is
+        // ~16 s of video at 4 fps, so a blocked socket would have kept `drop=0` in the
+        // ride file while the dash showed a map from a quarter-minute ago — worse than a
+        // gap, and invisible in exactly the file that exists to make it visible. One AU
+        // needs at most RTP_AU_SPREAD_MS of a 250 ms budget, so four is already a second
+        // of slack for a GC pause; past that, dropping and SAYING so is the honest
+        // failure. The render loop still never waits on the network — trySend, never send.
+        val rtpOutbox = Channel<List<ByteArray>>(capacity = 4)
+        val rtpDropped = AtomicInteger(0)
+        // Read by the RTP sender to size the spread against the frame it belongs to.
+        val currentIntervalMs = AtomicLong(1000L / FPS_IDLE)
+        // Filled by the packetizer callback during one nalProc.process() call, then handed
+        // to the outbox as a unit. Only ever touched from the frame-loop coroutine.
+        val auPackets = ArrayList<ByteArray>(32)
         // Which profile the encoder is currently on, so it is poked only on a
         // transition rather than every frame.
         var idleBitrate = false
@@ -832,11 +957,11 @@ class DashEngineController(
         // more correct RTP practice regardless, just not proven to fix anything real here.
         var videoPtsMs = 0L
 
-        val packetizer = RtpPacketizer { rtpPkt ->
-            session.sendRtp(rtpPkt)
-            rtpPacketsSent++
-            rtpBytesSent += rtpPkt.size
-        }
+        // Collects rather than sends. The frame loop runs on Dispatchers.Default, and
+        // DatagramSocket.send is a syscall that blocks when the Wi-Fi driver's queue is
+        // full — so the old shape put the render loop's deadline at the mercy of the
+        // radio, and gave the burst nowhere to be paced from (audit §4.1).
+        val packetizer = RtpPacketizer { rtpPkt -> auPackets += rtpPkt }
         // endOfAU comes from NalProcessor, which knows which NAL closes the access unit —
         // this used to be hardcoded `true`, marking every packet. Harmless while each AU
         // was exactly one NAL, but wrong the moment an IDR goes out as separate
@@ -853,13 +978,25 @@ class DashEngineController(
                 framesEncoded++
                 lastEncodedBytes = annexB.size
                 framesSentTotal = framesEncoded
+                frameBytes.add(annexB.size.toLong())
                 if (isKey) idrFramesEncoded++
             }
             if (!loggedFirstFrame && !isConfig) {
                 loggedFirstFrame = true
                 RideDiagnostics.log("stream", "first video frame sent (key=$isKey, ${annexB.size}B)")
             }
+            // process() runs the packetizer synchronously on this coroutine, so when it
+            // returns [auPackets] holds exactly this access unit — which is both the
+            // number the ride file wants and the group the sender has to pace as one.
+            auPackets.clear()
             nalProc.process(annexB)
+            if (auPackets.isNotEmpty()) {
+                if (isKey && !isConfig) idrDatagrams.add(auPackets.size.toLong())
+                // Never `send`: this runs inside the render loop, and a full outbox must
+                // cost a dropped frame, not a late one. A codec-config buffer emits no
+                // packets at all (SPS/PPS are cached, not sent), hence the guard.
+                if (rtpOutbox.trySend(auPackets.toList()).isFailure) rtpDropped.incrementAndGet()
+            }
         }
 
         streamJob?.cancelAndJoin()
@@ -906,6 +1043,17 @@ class DashEngineController(
         // collector on the main thread.
         val style = withContext(Dispatchers.IO) { styleAssembler.assembleCurrent() }
         overlays.darkMap = style.theme == MapTheme.DARK
+        // The packs decide how far out the camera may go, not the constant — see
+        // [zoomFloor]. Null means nothing readable said otherwise, so ZOOM_MIN stands.
+        // Clamped to the ceiling as well as the floor: [MapStyleAssembler.packMinZoom] reads
+        // a byte out of a PMTiles header, so its range is 0..255, not "something sensible".
+        // A pack claiming minzoom 20 would make the floor exceed ZOOM_MAX, and the next
+        // `coerceIn(zoomFloor, ZOOM_MAX)` in [stepZoom] throws IllegalArgumentException —
+        // a corrupt header taking out the zoom buttons for the whole ride.
+        zoomFloor = style.minZoom
+            ?.let { (it * ZOOM_SCALE.toInt()).coerceIn(ZOOM_MIN, ZOOM_MAX) }
+            ?: ZOOM_MIN
+        if (zoom < zoomFloor) zoom = zoomFloor
         snapshots.prepare(style.json, DashEncoder.WIDTH, DashEncoder.HEIGHT)
         // Captured so [disconnect]'s release can only ever free THIS snapshotter,
         // never one a later connection has since prepared.
@@ -913,7 +1061,9 @@ class DashEngineController(
         RideDiagnostics.log(
             "map",
             "style ${style.theme} from ${style.packs} pack(s), ${style.json.length / 1024} KiB, " +
-                "render ${(DashEncoder.WIDTH * MapSnapshotProvider.PIXEL_RATIO).toInt()}×" +
+                "zoom ${zoomText(zoomFloor)}-${zoomText(ZOOM_MAX)}" +
+                (if (zoomFloor > ZOOM_MIN) " (packs stop at z${style.minZoom}, floor raised)" else "") +
+                ", render ${(DashEncoder.WIDTH * MapSnapshotProvider.PIXEL_RATIO).toInt()}×" +
                 "${(DashEncoder.HEIGHT * MapSnapshotProvider.PIXEL_RATIO).toInt()}" +
                 "@${MapSnapshotProvider.PIXEL_RATIO}",
         )
@@ -935,12 +1085,47 @@ class DashEngineController(
         renderStats.reset()
 
         streamJob = scope.launch(Dispatchers.Default) {
+            // A child of this launch, so cancelling the stream cancels it — no separate
+            // teardown path, which is the property the rest of this file keeps paying for.
+            launch(Dispatchers.IO) {
+                for (au in rtpOutbox) {
+                    // Spread across a slice of the frame's own budget, never more than
+                    // RTP_AU_SPREAD_MS. A single-packet AU — most P-frames — waits for
+                    // nothing.
+                    //
+                    // Each packet is delayed to a CUMULATIVE target offset rather than by
+                    // a per-gap constant, and that is not style. The constant was
+                    // `spread / (n - 1)` in milliseconds, integer division: at 30 ms it
+                    // yields 1 ms up to 31 packets and then **0 for 32 and more**, so the
+                    // pacing switched itself off for precisely the largest bursts it
+                    // exists for — a 39.7 KB key frame was already 30 packets, one dense
+                    // frame from the cliff, and the z10-15 corpus makes key frames denser
+                    // still. Accumulating targets cannot collapse: with more packets than
+                    // milliseconds the wait is simply 0 for some of them and 1 ms whenever
+                    // the target advances, and the burst still lands inside `spread`.
+                    val spread = minOf(RTP_AU_SPREAD_MS, currentIntervalMs.get() / 4)
+                    val gaps = au.size - 1
+                    var atMs = 0L
+                    for ((i, pkt) in au.withIndex()) {
+                        session.sendRtp(pkt)
+                        rtpPacketsSent.incrementAndGet()
+                        rtpBytesSent.addAndGet(pkt.size.toLong())
+                        if (gaps > 0 && i < gaps) {
+                            val targetMs = spread * (i + 1) / gaps
+                            if (targetMs > atMs) {
+                                delay(targetMs - atMs)
+                                atMs = targetMs
+                            }
+                        }
+                    }
+                }
+            }
             try {
                 var failures = 0
                 var lastEncoderLogAt = System.currentTimeMillis()
                 var lastRenderLogAt = lastEncoderLogAt
                 var lastFrameSentAt = 0L
-                var loggedFrames = 0; var loggedIdr = 0; var loggedRtp = 0; var loggedBytes = 0L
+                var loggedFrames = 0; var loggedIdr = 0; var loggedRtp = 0L; var loggedBytes = 0L
                 // Declared outside the try/catch and assigned fresh once per iteration, so the
                 // trailing delay() below can reuse the SAME value the PTS advance used — both must
                 // agree on "how long is this frame", or the RTP timeline and the actual send
@@ -964,6 +1149,7 @@ class DashEngineController(
                         // stopped/started transition uses the previous iteration's [camMoving] for
                         // one frame — invisible next to the camera's own 350 ms smoothing.
                         frameIntervalMs = 1000L / (if (camMoving) FPS_MOVING else FPS_IDLE)
+                        currentIntervalMs.set(frameIntervalMs)
                         tick(frameIntervalMs)
                         val bmp = frameBitmap
                         val enc = encoder
@@ -1031,12 +1217,15 @@ class DashEngineController(
                             windowMovedM = 0.0
                         }
                         if (now - lastEncoderLogAt > ENCODER_LOG_INTERVAL_MS) {
+                            val nowRtp = rtpPacketsSent.get()
+                            val nowBytes = rtpBytesSent.get()
                             val dFrames = framesEncoded - loggedFrames
                             val dIdr = idrFramesEncoded - loggedIdr
-                            val dRtp = rtpPacketsSent - loggedRtp
-                            val dBytes = rtpBytesSent - loggedBytes
-                            loggedFrames = framesEncoded; loggedIdr = idrFramesEncoded; loggedRtp = rtpPacketsSent
-                            loggedBytes = rtpBytesSent
+                            val dRtp = nowRtp - loggedRtp
+                            val dBytes = nowBytes - loggedBytes
+                            val dFlips = frameRate.drainFlips()
+                            loggedFrames = framesEncoded; loggedIdr = idrFramesEncoded; loggedRtp = nowRtp
+                            loggedBytes = nowBytes
                             lastEncoderLogAt = now
                             val intervalS = ENCODER_LOG_INTERVAL_MS / 1_000
                             val thermal = thermalLabel()
@@ -1062,6 +1251,10 @@ class DashEngineController(
                                     "stream",
                                     "frames=$dFrames (idr=$dIdr) rtp=$dRtp ${dBytes / 1024}KiB " +
                                         "${dBytes * 8 / 1000 / intervalS}kbps " +
+                                        "frame=${frameBytes.drain()}B " +
+                                        "idrPkts=${idrDatagrams.drain()} " +
+                                        "idrShape=${nalProc.drainIdrShapes()} " +
+                                        "drop=${rtpDropped.getAndSet(0)} fpsFlips=$dFlips " +
                                         "bitrate=${if (idleBitrate) "idle" else "moving"} " +
                                         "thermal=$thermal in the last ${intervalS}s",
                                 )
@@ -1077,6 +1270,14 @@ class DashEngineController(
                             encoder = runCatching { DashEncoder(onEncoded).also { it.prepare() } }
                                 .onFailure { DebugLog.e(TAG, { "Encoder rebuild failed" }, it) }
                                 .getOrNull()
+                            // A fresh encoder is configured at DashEncoder.BITRATE, i.e. the
+                            // moving profile, whatever the old one was last told. Without
+                            // this the flag can claim "idle" over a codec running at the
+                            // moving target, and since requestBitrate only fires on a
+                            // TRANSITION, nothing corrects it until the rider stops and
+                            // starts again — a rebuild while parked would stream at the
+                            // moving rate for as long as the bike stands still.
+                            idleBitrate = false
                             lastSignature = ""
                             failures = 0
                         }
@@ -1095,6 +1296,15 @@ class DashEngineController(
                 // what makes "cancel the loop" a complete teardown on its own.
                 runCatching { encoder?.release() }
                 encoder = null
+                // cancel(), NOT close(). close() lets the sender drain what is queued, and
+                // DashSession.sendRtp writes to whatever `socket` is live at that moment —
+                // it has none of the identity guard that sendIfCurrent gives every control
+                // sender. On the Wi-Fi-loss path this loop exits on its own rather than
+                // being cancelled, so a drained queue could put the dead stream's packets,
+                // carrying the old packetizer's SSRC and sequence numbers, onto the NEXT
+                // session's freshly bound socket. Frames from a stream that has ended are
+                // stale by definition; there is nothing here worth delivering.
+                rtpOutbox.cancel()
             }
         }
     }
@@ -1134,7 +1344,13 @@ class DashEngineController(
         val targetLng = riderLng ?: destLng ?: camLng
 
         val nowNs = System.nanoTime()
-        val dt = if (lastTickNs == 0L) 0.042 else ((nowNs - lastTickNs) / 1e9).coerceIn(0.0, 0.5)
+        // Two readings of the same gap, deliberately. [dt] stays clamped because it drives
+        // the camera smoothing, where a long stall must not produce one giant jump. The
+        // speed below needs the UNclamped value: dividing a real 0.8 s of travel by a
+        // clamped 0.5 s would report 1.6x the rider's speed and bias every late frame
+        // towards "moving".
+        val dtRaw = if (lastTickNs == 0L) 0.042 else (nowNs - lastTickNs) / 1e9
+        val dt = dtRaw.coerceIn(0.0, 0.5)
         lastTickNs = nowNs
         val a = if (camInit) (1.0 - exp(-dt / SMOOTH_TAU)) else 1.0
 
@@ -1159,7 +1375,25 @@ class DashEngineController(
         }
         val movedM = if (wasInit) distMeters(prevLat, prevLng, camLat, camLng) else 0.0
         windowMovedM += movedM
-        camMoving = movedM > 0.25 || (loc?.speed ?: 0f) > 0.8f
+        // Ground speed, not distance-per-tick — see [CAM_MOVING_ENTER_MPS] for why the
+        // difference is the whole point. The camera's own speed and the fix's agree while
+        // riding steadily; the max of the two is what keeps a lagging camera from reading
+        // as a stopped bike right after pulling away.
+        val camSpeedMps = if (dtRaw > 0.0) movedM / dtRaw else 0.0
+        // A lost fix contributes nothing. `loc` survives its own staleness — it is the last
+        // fix, not a live one — so a bike that loses GPS at speed (tunnel, garage, underpass)
+        // would otherwise keep feeding its final speed into the policy forever, and the dash
+        // would sit at 4 fps and the moving bitrate for the whole stop. [gpsLost] is the same
+        // staleness test the overlays use; below it the camera's own movement still speaks,
+        // and a parked bike moves the camera not at all.
+        val fixSpeedMps = if (gpsLost) 0.0 else (loc?.speed ?: 0f).toDouble()
+        val speedMps = maxOf(camSpeedMps, fixSpeedMps)
+        // elapsedRealtime, not currentTimeMillis: this is a duration, and wall clock
+        // moves. An NTP correction backwards — routine the moment data comes back after a
+        // dead zone — makes the dwell's `now - last` negative and freezes the frame rate
+        // for the length of the jump; a forward one cancels the dwell entirely. The
+        // smoothing above already takes its elapsed time from nanoTime for the same reason.
+        camMoving = frameRate.update(speedMps, SystemClock.elapsedRealtime())
 
         val centerLat = if (haveTarget) camLat else 0.0
         val centerLng = if (haveTarget) camLng else 0.0

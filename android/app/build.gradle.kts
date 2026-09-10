@@ -18,9 +18,14 @@ android {
 
     defaultConfig {
         applicationId = "ru.snatchdash.app"
-        // yandex_maps_mapkit requires SDK 26+, which raises the floor from
-        // the original native app's minSdk 24.
-        minSdk = 26
+        // 29, not the 26 yandex_maps_mapkit asks for: connecting to the dash is
+        // `WifiNetworkSpecifier` (API 29) plus four unguarded reads of
+        // `NetworkCapabilities.transportInfo` (also 29) in DashWifiManager, so on
+        // 26-28 the dash half of the app was never going to work — the resulting
+        // NoClassDefFoundError is swallowed by the plugin scope's exception handler
+        // and the rider just sees a connection that never happens. The floor now
+        // says what the code has required all along.
+        minSdk = 29
         targetSdk = 36
         versionCode = flutter.versionCode
         versionName = flutter.versionName

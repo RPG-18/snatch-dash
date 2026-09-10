@@ -30,9 +30,11 @@ Future<void> attachPersistentLog() async {
 Future<List<File>> persistedLogFiles() async {
   final writer = _persistentLog;
   if (writer == null) return const [];
+  // existsSync, not the async pair through Future.wait: two stats on a path the app
+  // owns, from a share button the rider just tapped. The async variants buy nothing
+  // here and cost a round trip each (avoid_slow_async_io).
   final files = [writer.previousFile, writer.currentFile];
-  final existing = await Future.wait(files.map((f) => f.exists()));
-  return [for (var i = 0; i < files.length; i++) if (existing[i]) files[i]];
+  return [for (final f in files) if (f.existsSync()) f];
 }
 
 /// Pipes the native dash-protocol log (`DashSession`/`DashSocket`/…, see

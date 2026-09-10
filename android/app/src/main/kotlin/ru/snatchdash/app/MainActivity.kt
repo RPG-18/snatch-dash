@@ -2,7 +2,6 @@ package ru.snatchdash.app
 
 import android.content.Intent
 import android.net.Uri
-import android.os.Build
 import android.provider.Settings
 import androidx.core.content.FileProvider
 import io.flutter.embedding.android.FlutterActivity
@@ -165,10 +164,9 @@ class MainActivity : FlutterActivity() {
         }
     }
 
-    // Below API 26 this permission doesn't exist and installs from any source are
-    // allowed unconditionally — moot here anyway since the app's minSdk is 26.
-    private fun canInstallPackages(): Boolean =
-        Build.VERSION.SDK_INT < Build.VERSION_CODES.O || packageManager.canRequestPackageInstalls()
+    // REQUEST_INSTALL_PACKAGES has existed since API 26 and the floor is 29, so
+    // there is no version below which this is granted unconditionally.
+    private fun canInstallPackages(): Boolean = packageManager.canRequestPackageInstalls()
 
     private fun openInstallPermissionSettings() {
         val intent = Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:$packageName"))

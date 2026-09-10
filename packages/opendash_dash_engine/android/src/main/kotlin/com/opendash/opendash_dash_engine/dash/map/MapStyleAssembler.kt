@@ -3,6 +3,7 @@ package com.opendash.opendash_dash_engine.dash.map
 import android.content.Context
 import android.util.Log
 import java.io.File
+import java.io.RandomAccessFile
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -94,6 +95,49 @@ object MapStyleFactory {
     private fun sourceId(pack: File) = "pack_${codeOf(pack)}"
 
     private fun codeOf(pack: File) = pack.name.removeSuffix(PACK_SUFFIX)
+
+    /**
+     * A pack's own `minzoom`, straight out of the PMTiles v3 header.
+     *
+     * Byte 100, after the 7-byte "PMTiles" signature and the version byte — the
+     * same field `tools/planetiler/validate_packs.py` reads. Null if the file is
+     * short, unreadable or not PMTiles v3; the caller treats that as "no opinion"
+     * rather than as a floor, because refusing to zoom out on an unparseable
+     * header would be a worse failure than the one this guards.
+     */
+    fun packMinZoom(pack: File): Int? = runCatching {
+        RandomAccessFile(pack, "r").use { f ->
+            val head = ByteArray(PMTILES_HEADER_MIN)
+            f.readFully(head)
+            val signature = String(head, 0, 7, Charsets.US_ASCII)
+            if (signature != "PMTiles" || head[7].toInt() != 3) null
+            else head[PMTILES_MIN_ZOOM_OFFSET].toInt() and 0xFF
+        }
+    }.getOrNull()
+
+    /**
+     * The floor the camera may actually descend to across [packs], or null if
+     * nothing readable.
+     *
+     * **The MAXIMUM of the packs' minzooms, not the minimum.** Every downloaded
+     * pack is a live source at the same time (spec/drawing_from_local_tiles.md,
+     * "Источники: несколько паков одновременно"), so a camera below the highest
+     * floor renders nothing wherever the shallowest pack is the one under the
+     * rider — and MapLibre does not build downwards, so that is a blank panel, not
+     * a coarse map.
+     *
+     * This exists because the two ends are versioned separately. ZOOM_MIN dropped
+     * to 10.00 when the corpus was rebuilt to z10-15 on 2026-09-09, but a rider's
+     * phone still holds whatever it downloaded before — z11-14 packs, on which
+     * the bottom two steps of the new ladder would have gone black with no error
+     * anywhere. A constant cannot know that; the file on disk does.
+     */
+    fun corpusMinZoom(packs: List<File>): Int? =
+        packs.mapNotNull { packMinZoom(it) }.maxOrNull()
+
+    /** Enough of the PMTiles v3 header to reach [PMTILES_MIN_ZOOM_OFFSET]. */
+    private const val PMTILES_HEADER_MIN = 102
+    private const val PMTILES_MIN_ZOOM_OFFSET = 100
 }
 
 /**
@@ -102,7 +146,16 @@ object MapStyleFactory {
  * [packs] is the number that multiplies the layer count — the quiet driver of
  * per-frame cost, worth having in the telemetry next to the timings.
  */
-data class DashStyle(val json: String, val theme: MapTheme, val packs: Int)
+data class DashStyle(
+    val json: String,
+    val theme: MapTheme,
+    val packs: Int,
+    /**
+     * The highest `minzoom` among the installed packs, or null if none could be
+     * read. The camera floor, not a statistic — see [MapStyleFactory.corpusMinZoom].
+     */
+    val minZoom: Int?,
+)
 
 /**
  * Everything style assembly needs from the device: which packs are on disk,
@@ -156,10 +209,11 @@ class MapStyleAssembler(private val context: Context) {
         val theme = theme()
         val packs = installedPacks()
         val style = MapStyleFactory.assemble(template(theme), packs)
+        val minZoom = MapStyleFactory.corpusMinZoom(packs)
         // N packs is N copies of the layer set — the number that quietly grows
         // the per-frame cost, so it belongs in the log next to the theme.
-        Log.i(TAG, "style: $theme, ${packs.size} packs, ${style.length / 1024} KiB")
-        return DashStyle(style, theme, packs.size)
+        Log.i(TAG, "style: $theme, ${packs.size} packs, ${style.length / 1024} KiB, minzoom=$minZoom")
+        return DashStyle(style, theme, packs.size, minZoom)
     }
 
     private companion object {
@@ -167,6 +221,7 @@ class MapStyleAssembler(private val context: Context) {
         const val MAPS_DIR = "maps"
         const val PACK_SUFFIX = ".pmtiles"
         const val FLUTTER_PREFS = "FlutterSharedPreferences"
+
         const val KEY_THEME = "flutter.map_theme"
     }
 }

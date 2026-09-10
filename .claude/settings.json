@@ -10,5 +10,20 @@
       "Read(//Users/dmitry/Library/Android/sdk/platform-tools/**)",
       "Bash(flutter doctor *)"
     ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "jq -r '.tool_input.command // \"\"' | grep -qE '(^|[^-[:alnum:]_])git[[:space:]]+commit([[:space:]]|$)' && echo '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"ask\",\"permissionDecisionReason\":\"Перед коммитом обязателен /code-review по диффу: находки починить или явно отклонить с причиной. Подтвердите, только если ревью уже прогнано на ЭТОМ состоянии дерева.\"}}' || true",
+            "timeout": 10,
+            "statusMessage": "Проверяю, было ли ревью"
+          }
+        ]
+      }
+    ]
   }
 }

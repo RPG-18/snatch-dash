@@ -396,6 +396,20 @@ whether `0F05` matches the dash's own BSSID.
   borrow there. Note though that `0C` turns out to be **bidirectional** — the
   app sends `0C 14` with values `00`–`03` — so our comment calling `0C` a
   dash→phone type is at best incomplete.
+
+  **Updated 2026-09-10: the inbound side is now enumerated, if not decoded.**
+  snatch-dash's own field logs of 2026-09-09 carry thirteen distinct incoming
+  subs — `01` `03` `04` `05` `07` `11` `14` `16` `18` `19` `20` `24` `25` — with payloads of 1 to 4 bytes. Meanings are still unknown, but
+  this is a closed shortlist rather than an open question, and it is the best
+  target left in the protocol: `0C` is **plaintext** (unlike `0F`), it arrives
+  continuously, and `DashSession` already prints it decoded
+  (`DASH TELEMETRY 0C sub=0x.. (nB) val=..`), so a capture and the app's own
+  log can be diffed side by side. All thirteen are in the `KNOWN` table of
+  [`hack/k1g_dissector.lua`](../hack/k1g_dissector.lua) marked
+  `meaning UNKNOWN`, and a sub outside the list is labelled as new rather than
+  merely unknown. Method: [`hack/PACKET_CAPTURE.md`](../hack/PACKET_CAPTURE.md),
+  sections 1-2. Note `14` appears on **both** sides, which fits the
+  bidirectionality above.
 - `09 01` has 24 distinct two-byte values (`00 55`, `00 AA`, `00 BB`, `00 CC`,
   `01 55`, …) — a 2-D enum, structure unknown.
 - `06 13` … `06 1B` are nine consecutive runtime-value subs with no observed

@@ -2,13 +2,13 @@ import 'package:flutter/foundation.dart';
 import 'package:go_router/go_router.dart';
 import 'package:talker_flutter/talker_flutter.dart';
 
+import '../models/route_preview_args.dart';
 import '../screens/dash_screen.dart';
 import '../screens/debug/dash_debug_screen.dart';
 import '../screens/expenses_screen.dart';
 import '../screens/garage_screen.dart';
 import '../screens/home_screen.dart';
 import '../screens/offline_maps_screen.dart';
-import '../models/route_preview_args.dart';
 import '../screens/rides_screen.dart';
 import '../screens/route_preview_screen.dart';
 import '../screens/route_screen.dart';

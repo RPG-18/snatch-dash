@@ -46,6 +46,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -91,18 +92,12 @@ class DashEngineController(
         private const val CAM_MOVING_EXIT_MPS = 0.5    // 1.8 km/h
         private const val CAM_MOVING_DWELL_MS = 2_000L
 
-        /**
-         * How long one access unit's datagrams are spread over, in ms.
-         *
-         * A key frame measured 17-18 datagrams on the 2026-09-09 ride (`idrPkts=17/18/18`)
-         * and used to go out back to back: `sendRtp` was called synchronously from the
-         * packetizer callback, so the whole burst hit the Wi-Fi driver in one go. Any ONE
-         * of those eighteen going missing makes the key frame undecodable and leaves the
-         * dash showing garbage until the next one — 2 s moving, 4 s parked. That ride saw
-         * exactly one such artifact against 583 key frames, which is the loss rate this
-         * spreading is for. 30 ms out of a 250 ms frame budget costs nothing.
-         */
-        private const val RTP_AU_SPREAD_MS = 30L
+        // RTP_AU_SPREAD_MS (30 ms) lived here and is GONE as of 2026-09-11 — the reasoning
+        // that produced it is kept in the sender loop in startStream, together with the
+        // measurements that overturned it. Short version: it spread a key frame's 17-18
+        // datagrams over 30 ms to keep any one of them from being lost in the burst, and
+        // the 2026-09-10 ride made artifacts MORE frequent, not less, while showing the
+        // send path was never under pressure to begin with.
         private const val MANUAL_IDLE_MS = 8_000L
         /** A fix older than this counts as "GPS lost" for the Dash screen's chip. */
         private const val GPS_FIX_STALE_MS = 4_000L
@@ -920,15 +915,19 @@ class DashEngineController(
         // stats, drained into the same minute.
         val frameBytes = Percentiles()
         val idrDatagrams = Percentiles()
-        // One access unit per element, so the sender knows the size of the burst it is
-        // pacing before it sends the first packet of it.
+        // One access unit per element, not one packet. The original reason was pacing —
+        // the sender had to know the burst size before its first packet — and the pacing
+        // is gone as of 2026-09-11. The grouping stays because drop accounting needs it:
+        // an overflow has to discard a WHOLE frame and know whether it was a key frame
+        // ([rtpDroppedIdr]), and half an access unit on the wire is worth nothing to the
+        // decoder anyway.
         //
         // FOUR, not the 64 this was first written with. A deep queue does not protect a
         // realtime stream, it hides the stall and converts it into latency: 64 AUs is
         // ~16 s of video at 4 fps, so a blocked socket would have kept `drop=0` in the
         // ride file while the dash showed a map from a quarter-minute ago — worse than a
         // gap, and invisible in exactly the file that exists to make it visible. One AU
-        // needs at most RTP_AU_SPREAD_MS of a 250 ms budget, so four is already a second
+        // is a few ms of airtime out of a 250 ms budget, so four is already a second
         // of slack for a GC pause; past that, dropping and SAYING so is the honest
         // failure. The render loop still never waits on the network — trySend, never send.
         val rtpOutbox = Channel<List<ByteArray>>(capacity = 4)
@@ -945,8 +944,6 @@ class DashEngineController(
          * from "we lost two seconds and showed mush for them".
          */
         val rtpDroppedIdr = AtomicInteger(0)
-        // Read by the RTP sender to size the spread against the frame it belongs to.
-        val currentIntervalMs = AtomicLong(1000L / FPS_IDLE)
         // Filled by the packetizer callback during one nalProc.process() call, then handed
         // to the outbox as a unit. Only ever touched from the frame-loop coroutine.
         val auPackets = ArrayList<ByteArray>(32)
@@ -1104,34 +1101,45 @@ class DashEngineController(
             // teardown path, which is the property the rest of this file keeps paying for.
             launch(Dispatchers.IO) {
                 for (au in rtpOutbox) {
-                    // Spread across a slice of the frame's own budget, never more than
-                    // RTP_AU_SPREAD_MS. A single-packet AU — most P-frames — waits for
-                    // nothing.
+                    // Back to back, on purpose. This loop used to pace the packets of one
+                    // access unit across `min(30 ms, frameInterval / 4)`; the pacing was
+                    // REMOVED on 2026-09-11 because the ride of 2026-09-10 21:00 says it
+                    // made the picture worse, and the numbers say it was never needed.
                     //
-                    // Each packet is delayed to a CUMULATIVE target offset rather than by
-                    // a per-gap constant, and that is not style. The constant was
-                    // `spread / (n - 1)` in milliseconds, integer division: at 30 ms it
-                    // yields 1 ms up to 31 packets and then **0 for 32 and more**, so the
-                    // pacing switched itself off for precisely the largest bursts it
-                    // exists for — a 39.7 KB key frame was already 30 packets, one dense
-                    // frame from the cliff, and the z10-15 corpus makes key frames denser
-                    // still. Accumulating targets cannot collapse: with more packets than
-                    // milliseconds the wait is simply 0 for some of them and 1 ms whenever
-                    // the target advances, and the burst still lands inside `spread`.
-                    val spread = minOf(RTP_AU_SPREAD_MS, currentIntervalMs.get() / 4)
-                    val gaps = au.size - 1
-                    var atMs = 0L
-                    for ((i, pkt) in au.withIndex()) {
+                    // What it was for: keeping an 18-datagram key frame from overrunning
+                    // the send path. That premise is now measured and false. The same ride
+                    // printed `sndbuf=4096KiB` — the platform default on this phone is 4 MiB,
+                    // twenty times the stock-Linux figure the plan assumed — over a 65 Mbps
+                    // link carrying 200 kbps, and `drop=0 dropIdr=0` in all twenty windows.
+                    // Nothing was ever congested here.
+                    //
+                    // What it cost: at 65 Mbps those 18 datagrams are about 3 ms of airtime
+                    // sent as ONE A-MPDU — a single contention, a block ACK, and the driver
+                    // retransmitting just the missing subframes inside the same TXOP.
+                    // Stretching them over 30 ms is ten times longer than the burst needs
+                    // and hands the radio 18 separate transmissions instead, each
+                    // contending on its own in a 2.4 GHz band shared with a city. Losing
+                    // one datagram of a key frame costs a whole GOP — eight frames, two
+                    // seconds of mush — so trading aggregation for spacing is the wrong
+                    // way round for this stream.
+                    //
+                    // The queue above stays: it is what turns a genuine stall into a
+                    // counted drop instead of latency, and `drop=` is how we would find
+                    // out if the premise above ever stops being true.
+                    for (pkt in au) {
+                        // The cancellation check the `delay()` used to provide for free.
+                        // Iterating the channel suspends, so cancellation is seen BETWEEN
+                        // access units either way — but without a suspension point inside
+                        // this loop an AU that had already started would run to completion
+                        // after `rtpOutbox.cancel()`, and `DashSession.sendRtp` writes to
+                        // whichever socket is live at that moment: it has no identity guard,
+                        // which is what `sendIfCurrent` gives the control senders. That is
+                        // the leak `cancel()` rather than `close()` exists to prevent, and
+                        // dropping the pacing must not quietly hand it back.
+                        ensureActive()
                         session.sendRtp(pkt)
                         rtpPacketsSent.incrementAndGet()
                         rtpBytesSent.addAndGet(pkt.size.toLong())
-                        if (gaps > 0 && i < gaps) {
-                            val targetMs = spread * (i + 1) / gaps
-                            if (targetMs > atMs) {
-                                delay(targetMs - atMs)
-                                atMs = targetMs
-                            }
-                        }
                     }
                 }
             }
@@ -1164,7 +1172,6 @@ class DashEngineController(
                         // stopped/started transition uses the previous iteration's [camMoving] for
                         // one frame — invisible next to the camera's own 350 ms smoothing.
                         frameIntervalMs = 1000L / (if (camMoving) FPS_MOVING else FPS_IDLE)
-                        currentIntervalMs.set(frameIntervalMs)
                         tick(frameIntervalMs)
                         val bmp = frameBitmap
                         val enc = encoder

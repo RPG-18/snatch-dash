@@ -47,27 +47,32 @@ class DashSocket(private val network: android.net.Network? = null) : AutoCloseab
         private const val MAX_DATAGRAM    = 2048
         private const val RECV_BUF        = MAX_DATAGRAM + 1
 
-        /**
-         * DSCP for the control plane: EF (Expedited Forwarding), the class for small,
-         * loss-sensitive, non-bursty traffic. A dropped heartbeat is a session the dash
-         * gives up on.
-         *
-         * Whether anything honours it is another matter, and the platform says so out loud:
-         * `setTrafficClass` is documented as a value the network implementation "may ignore"
-         * and "applications should consider a hint", `getTrafficClass` "may return a
-         * different value than was previously set", and — relevant to EF specifically —
-         * "setting bits in the precedence field may result in a SocketException indicating
-         * that the operation is not permitted". EF is `101110xx`: it sets precedence. Hence
-         * `runCatching` on the setter, and the read-back in the ride file rather than a
-         * claim. On the air there is a second remapping to worry about: Wi-Fi carries four
-         * WMM access categories, not 64 DSCP values, and an AP may rewrite the field on
-         * upstream traffic anyway. Set because it costs nothing when it works and one
-         * caught exception when it does not.
-         */
-        private const val TOS_CONTROL     = 0xB8
-
-        /** AF41 for video: bulk, bursty, tolerant of a little delay but not of drops. */
-        private const val TOS_RTP         = 0x88
+        // DSCP is NOT set on any of the three sockets, and that is a reversal.
+        //
+        // 2026-09-10 evening this file marked the control plane EF (0xB8) and RTP AF41
+        // (0x88). The ride that night made graphical artifacts MORE frequent than the
+        // rides before it, and the reversal is on 2026-09-11. Nothing local explained the
+        // regression: `drop=0 dropIdr=0` in every window, RSSI -36..-38 dBm, a 65 Mbps
+        // link carrying 200 kbps, no send failures outside the one link loss.
+        //
+        // The mechanism that fits is the remapping the marking itself triggers. Wi-Fi does
+        // not carry 64 DSCP values, it carries four WMM access categories: AF41 lands RTP
+        // in AC_VI and EF lands control in AC_VO, where they used to share AC_BE. AC_VI's
+        // contention window tops out at 15 slots against best effort's 1023, so under
+        // collision it can barely back off, and drivers commonly give the real-time
+        // categories a lower retry limit on the grounds that late video is worthless. For
+        // this stream that trade is backwards: one datagram lost from a key frame costs a
+        // whole GOP — eight frames, two seconds of mush — so we would rather have the
+        // retries than the priority.
+        //
+        // Worth keeping in view if this is ever revisited: the ride log could only ever
+        // show that the OS ACCEPTED the value. What the Wi-Fi driver did with it, and what
+        // the dash saw, are not observable from this side — that needs a capture at the
+        // dash. `setTrafficClass` is documented as a hint the implementation "may ignore",
+        // `getTrafficClass` "may return a different value than was previously set", and
+        // setting precedence bits (EF is `101110xx`) "may result in a SocketException".
+        // The line below still reads the traffic class back, so a device that marks
+        // packets on its own initiative would still show up.
 
         // NOT set, deliberately — the plan's task 2.2 asked for a 256 KiB SO_SNDBUF on the
         // RTP socket and that is the wrong direction here. Its premise was that the default
@@ -129,7 +134,7 @@ class DashSocket(private val network: android.net.Network? = null) : AutoCloseab
             txSocket  = tx
             rxSocket  = rx
             rtpSocket = rtp
-            applyQos()
+            reportSocketOptions()
         } catch (e: Exception) {
             tx?.close(); rx?.close(); rtp?.close()
             throw e
@@ -137,30 +142,27 @@ class DashSocket(private val network: android.net.Network? = null) : AutoCloseab
     }
 
     /**
-     * DSCP and buffer sizes, then one line saying what the kernel actually took.
+     * Reports what the kernel gave the sockets. Sets nothing — see the block above the
+     * constants for why the DSCP marking that used to live here was withdrawn.
      *
-     * Every setter is wrapped: `IP_TOS` is refused outright on some firmwares, and a
-     * refused socket option must not cost a session. Read back rather than assumed for the
-     * same reason — the ride file is the only witness, and "we asked for EF" and "the
-     * socket carries EF" are different claims. A device that quietly ignores all of it
-     * shows `tos ctrl=0 rtp=0`, which is worth knowing before blaming the network for
-     * jitter it was never asked to avoid.
+     * Kept as a report rather than deleted because both numbers earned their place. The
+     * `sndbuf` reading is what overturned task 2.2 of the refactoring plan: this phone
+     * hands out 4 MiB by default, so the 256 KiB the plan asked for would have SHRUNK it
+     * sixteenfold. And the traffic class is worth watching even when we set nothing — a
+     * value other than zero would mean the platform marks packets on its own, which is the
+     * one way the withdrawal above could fail to take effect.
      */
-    private fun applyQos() {
-        runCatching { txSocket.trafficClass = TOS_CONTROL }
-        runCatching { rxSocket.trafficClass = TOS_CONTROL }
-        runCatching { rtpSocket.trafficClass = TOS_RTP }
-        // Read back rather than assumed, and printed as "n/a" when the read itself fails:
-        // a refused option and an option set to zero are different facts, and a log that
-        // showed `0xFFFFFFFF` for the first would just look broken.
+    private fun reportSocketOptions() {
+        // Read back and printed as "n/a" when the read itself fails: a refused option and
+        // an option reading zero are different facts, and a log that showed `0xFFFFFFFF`
+        // for the first would just look broken.
         fun tos(socket: DatagramSocket) =
             runCatching { "0x%02X".format(socket.trafficClass) }.getOrDefault("n/a")
         val sndBuf = runCatching { "${rtpSocket.sendBufferSize / 1024}KiB" }.getOrDefault("n/a")
         RideDiagnostics.log(
             "stream",
-            "sockets: tos ctrl=${tos(txSocket)} rtp=${tos(rtpSocket)} " +
-                "(asked 0x%02X/0x%02X) sndbuf=$sndBuf (platform default, not set)"
-                    .format(TOS_CONTROL, TOS_RTP),
+            "sockets: tos ctrl=${tos(txSocket)} rtp=${tos(rtpSocket)} (neither set) " +
+                "sndbuf=$sndBuf (platform default, not set)",
         )
     }
 

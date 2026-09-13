@@ -1363,7 +1363,14 @@ class DashEngineController(
 
         val fixAgeMs = loc?.let { System.currentTimeMillis() - it.time } ?: Long.MAX_VALUE
         val gpsLost = loc == null || fixAgeMs > GPS_FIX_STALE_MS
-        val gpsWeak = !gpsLost && (loc?.accuracy ?: 0f) > GPS_WEAK_ACCURACY_M
+        // A contradictory position reads as "weak" rather than getting a flag of its own.
+        // The distinction — imprecise versus untrustworthy — is real, but the rider's need
+        // is identical ("do not act on this"), and `gpsWeak` already reaches both the frame
+        // overlay and the Dart state, so folding it in warns them without a new field
+        // through two layers. See PositionTrust: on 2026-09-13 accuracy said 10-20 m while
+        // the position was 70 km out, and this chip stayed green for the whole ride.
+        val gpsWeak = !gpsLost &&
+            ((loc?.accuracy ?: 0f) > GPS_WEAK_ACCURACY_M || !locationTracker.trusted.value)
 
         // GPS/progress fields come from publishState's own read of the live sources now —
         // it is no longer this function's job to be their only supplier.
@@ -1700,7 +1707,14 @@ class DashEngineController(
         val loc = locationTracker.location.value
         val fixAgeMs = loc?.let { System.currentTimeMillis() - it.time } ?: Long.MAX_VALUE
         val gpsLost = loc == null || fixAgeMs > GPS_FIX_STALE_MS
-        val gpsWeak = !gpsLost && (loc?.accuracy ?: 0f) > GPS_WEAK_ACCURACY_M
+        // A contradictory position reads as "weak" rather than getting a flag of its own.
+        // The distinction — imprecise versus untrustworthy — is real, but the rider's need
+        // is identical ("do not act on this"), and `gpsWeak` already reaches both the frame
+        // overlay and the Dart state, so folding it in warns them without a new field
+        // through two layers. See PositionTrust: on 2026-09-13 accuracy said 10-20 m while
+        // the position was 70 km out, and this chip stayed green for the whole ride.
+        val gpsWeak = !gpsLost &&
+            ((loc?.accuracy ?: 0f) > GPS_WEAK_ACCURACY_M || !locationTracker.trusted.value)
         onState(
             mapOf(
                 "stage" to session.state.value.name,

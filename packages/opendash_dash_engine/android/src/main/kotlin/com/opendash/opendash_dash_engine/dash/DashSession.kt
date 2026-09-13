@@ -1,5 +1,7 @@
 package com.opendash.opendash_dash_engine.dash
 
+import android.os.SystemClock
+import com.opendash.opendash_dash_engine.dash.map.Percentiles
 import com.opendash.opendash_dash_engine.dash.protocol.DashCommands
 import com.opendash.opendash_dash_engine.dash.protocol.K1GPacket
 import com.opendash.opendash_dash_engine.util.DebugLog
@@ -42,6 +44,22 @@ class DashSession(private val scope: CoroutineScope) {
         // catch a stall within a couple of minutes on a live ride, long enough not to add to
         // the per-frame log spam dispatchIncoming already avoids (see its "onlyAcks" filter).
         private const val ACK_LOG_INTERVAL_MS = 60_000L
+
+        /**
+         * How often the RX loop summarises the gaps between incoming packets.
+         *
+         * The number this exists to produce: whether 802.11 power save is chewing the link.
+         * On Android 14+ our Wi-Fi lock is a no-op with the screen off (see
+         * DashKeepAliveService.acquireLocks), and until now the only way to tell was the
+         * rider's impression of the picture. A distribution of inter-packet intervals says it
+         * in numbers, and — unlike every other stream metric — it depends on neither GPS nor
+         * the map having anything to draw, which is why the three rides of 2026-09-10..13 all
+         * failed to measure anything.
+         *
+         * Baseline to compare against, measured off the 2026-09-13 debug log (Android 12,
+         * screen ON, 7675 samples): median 144 ms, p95 489 ms, max ~1 s inside a session.
+         */
+        private const val RX_GAP_LOG_INTERVAL_MS = 60_000L
     }
 
     private val _state = MutableStateFlow(DashState.IDLE)
@@ -511,7 +529,27 @@ class DashSession(private val scope: CoroutineScope) {
     }
 
     private fun launchReceiveLoop(seq: Int, sock: DashSocket) {
-        var lastRxAtMs = System.currentTimeMillis()
+        // elapsedRealtime, not currentTimeMillis, for every duration below — the rule this
+        // module already states at DashEngineController's frame-rate hysteresis: wall clock
+        // steps backwards on an NTP correction, and a correction right after data returns from
+        // a dead zone is routine, not exotic. A forward step over 10 s would tear down a
+        // healthy session ("dash silent 47s"), a backward one would suppress the gap report and
+        // feed negative samples to [rxGaps]. The pre-existing `lastRxAtMs` had the same flaw;
+        // widening the watchdog's reach made it worth fixing. Found by review.
+        var lastRxAtMs = SystemClock.elapsedRealtime()
+        // Sampled AND drained here, in the one coroutine that owns them. Percentiles is not
+        // thread-safe, and handing the drain to launchAckCounterLog would have put an add()
+        // on the RX loop against a drain() on another coroutine for no gain — the RX loop
+        // wakes at least twice a second on its own receive timeout, which is ample for a
+        // once-a-minute report.
+        // 1024, not the default 256. At the measured baseline of ~7 packets a second a 60 s
+        // window holds about 420 samples, so 256 would silently keep only the last ~37 s while
+        // `n=` claimed the whole minute — and an early long gap, the exact thing this metric
+        // exists to catch, would be the part dropped. Every other Percentiles user is bound by
+        // 4 fps and never exceeds 256. Found by review.
+        val rxGaps = Percentiles(capacity = 1024)
+        var rxGapCount = 0
+        var lastGapReportAtMs = SystemClock.elapsedRealtime()
         // Like every other launch* here — this was the one that only overwrote the field. A
         // previous RX loop is not a child of [sessionJob] (it is launched on the plugin scope),
         // so nothing else stops it, and it would sit in `receive()` on the old socket until
@@ -535,24 +573,78 @@ class DashSession(private val scope: CoroutineScope) {
                     endLink(seq, sock)
                     break
                 }
+                val nowMs = SystemClock.elapsedRealtime()
+                if (nowMs - lastGapReportAtMs >= RX_GAP_LOG_INTERVAL_MS) {
+                    lastGapReportAtMs = nowMs
+                    // From the top of the loop rather than from the packet branch so the window
+                    // boundary is driven by the clock, which keeps `n=` comparable between
+                    // windows instead of drifting with packet arrival.
+                    //
+                    // An empty window needs no special case: the watchdog below fires at 10 s
+                    // of silence and breaks this loop, fifty seconds before a 60 s window could
+                    // ever come up empty. The first draft printed a "NOT ONE packet" line for
+                    // it, which was unreachable — review caught it.
+                    if (rxGapCount > 0) {
+                        RideDiagnostics.log(
+                            TAG,
+                            "rx gap p50/p95/max=${rxGaps.drain()}ms n=$rxGapCount " +
+                                "in the last ${RX_GAP_LOG_INTERVAL_MS / 1_000}s",
+                        )
+                    }
+                    rxGapCount = 0
+                }
                 if (pkt == null) {
                     // Timeout — not itself a problem (see DashSocket.RECV_TIMEOUT_MS), but
-                    // repeated timeouts during STREAMING with no real packet in between mean
-                    // the dash has gone silent (see RX_IDLE_TIMEOUT_MS's doc). Same teardown as
-                    // the socket-error path above: tear down the session so a fresh `connect()`
-                    // isn't blocked by the stale-socket state guard.
-                    if (_state.value == DashState.STREAMING &&
-                        System.currentTimeMillis() - lastRxAtMs > RX_IDLE_TIMEOUT_MS
-                    ) {
+                    // repeated timeouts with no real packet in between mean the dash has gone
+                    // silent (see RX_IDLE_TIMEOUT_MS's doc). Same teardown as the socket-error
+                    // path above: tear down the session so a fresh `connect()` isn't blocked by
+                    // the stale-socket state guard.
+                    //
+                    // READY as well as STREAMING. It used to be STREAMING alone, which left
+                    // the whole of READY — everything between the nav-mode script and
+                    // startStream — with no watchdog at all: the dash could go silent there and
+                    // nothing noticed until the 120 s give-up timer.
+                    //
+                    // NOT widened all the way to [authConfirmed], which would also cover the
+                    // ~2 s of enterNavMode, and the reason is a race rather than caution.
+                    // [endLink] does not retire [sessionSeq] or cancel the session job, so a
+                    // teardown landing between runSession's `socket !== sock` guard and its
+                    // `setState(READY)` two statements later leaves the session parked in READY
+                    // with a null socket: startStreaming bails, the frame loop exits at once,
+                    // and no retry branch fires. While the gate was STREAMING that window was
+                    // unreachable; `authConfirmed` would open it, because enterNavMode is
+                    // exactly when runSession sits in it. In READY and STREAMING runSession is
+                    // already past the publication, so this gate cannot be overwritten.
+                    // Closing it properly is stage 4's one-shot session; found by review.
+                    //
+                    // Measured before touching it at all, because this path tears a session
+                    // down: across the ten auth→startStream windows of the 2026-09-13 ride the
+                    // dash sent 4-13 packets per window with a worst gap of 1010 ms, against
+                    // this 10 s threshold. Over the whole log the gaps ran median 144 ms /
+                    // p95 489 ms / p99 813 ms, and the only eight above 10 s were real link
+                    // losses. No quiet stretch here for the wider gate to trip on.
+                    val watched = _state.value == DashState.READY ||
+                        _state.value == DashState.STREAMING
+                    if (watched && nowMs - lastRxAtMs > RX_IDLE_TIMEOUT_MS) {
                         DebugLog.w(TAG) { "RX loop stopped — no data from dash for over ${RX_IDLE_TIMEOUT_MS}ms" }
-                        val silentS = (System.currentTimeMillis() - lastRxAtMs) / 1000
-                        RideDiagnostics.log("error", "RX watchdog: dash silent ${silentS}s → link lost")
+                        val silentS = (nowMs - lastRxAtMs) / 1000
+                        // The state is part of the finding, not decoration: silence in READY
+                        // means the dash never got as far as showing anything, while silence
+                        // in STREAMING means it stopped mid-ride. Additive to the existing
+                        // text, so the line stays greppable (инвариант 11).
+                        RideDiagnostics.log(
+                            "error",
+                            "RX watchdog: dash silent ${silentS}s → link lost" +
+                                " (state=${_state.value})",
+                        )
                         endLink(seq, sock)
                         break
                     }
                     continue
                 }
-                lastRxAtMs = System.currentTimeMillis()
+                rxGaps.add(nowMs - lastRxAtMs)
+                rxGapCount++
+                lastRxAtMs = nowMs
                 // Nothing downstream of here may escape: this coroutine's parent is the
                 // plugin-wide scope, so an uncaught throw would cancel every other dash
                 // coroutine with it and reach Android's default handler. Malformed or

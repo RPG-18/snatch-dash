@@ -48,6 +48,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.isActive
@@ -300,35 +302,50 @@ class DashEngineController(
      */
     private var memJob: Job? = null
 
-    // ── Destination / nav state, pushed from Dart ──
-    @Volatile private var destName: String? = null
-    @Volatile private var destLat: Double? = null
-    @Volatile private var destLng: Double? = null
-    @Volatile private var navigating = false
-    @Volatile private var routePoints: List<GeoPoint> = emptyList()
-    // Traffic-level code per geometry segment (index i covers routePoints[i]..[i+1]),
-    // same encoding as Dart's `JamLevel.index` — see setNavState's doc. Empty means
-    // "no traffic data for this route", OverlayRenderer then falls back to a solid line.
-    @Volatile private var routeJam: List<Int> = emptyList()
-    @Volatile private var remainingM: Double? = null
-    @Volatile private var offRoute = false
-
-    // ── Media/call info forwarded to the dash (and surfaced to Dart) ──
-    @Volatile private var nowPlayingTitle: String? = null
-    @Volatile private var incomingCaller: String? = null
-    // True for ANY call (ringing or already answered/outgoing) — unlike
-    // [incomingCaller], which only ever carries ringing calls. Dart's button
-    // dispatcher needs this to let the dash's reject/hangup button end an
-    // already-answered call too, same as the original DashViewModel.onButton
-    // (`call != null`, vs `call.incoming == true` for the answer button).
-    @Volatile private var hasActiveCall: Boolean = false
+    /**
+     * Everything Dart pushes in that the frame loop reads — as ONE immutable value.
+     *
+     * These were eleven `@Volatile` fields, and the reason they are not any more is that a
+     * frame reads several of them together while the main thread writes them one at a time.
+     * Two of those splits were confirmed defects (pipeline.md §4.4):
+     *
+     *  - `setNavState` assigned `routePoints` and then `routeJam`. A frame landing between the
+     *    two drew the NEW route coloured by the OLD traffic array. It did not crash only
+     *    because [OverlayRenderer] checks `jam.size == segCount` and falls back to a solid
+     *    line — a guard put there for "no traffic data", not for this, so the rider saw the
+     *    route blink colour for one frame.
+     *  - `setDestination` assigned `destLat` and then `destLng`, with no fallback at all: a
+     *    frame in between placed the pin at the new latitude and the old longitude.
+     *
+     * Both are gone by construction now, not by a check: latitude and longitude live inside
+     * one [Destination], points and jam inside one [RouteGeometry], and [tick] reads
+     * `inputs.value` ONCE per frame. There is nothing left to tear.
+     *
+     * Written with [MutableStateFlow.update] rather than by assignment so a read-modify-write
+     * cannot lose a concurrent one. Camera state is deliberately NOT here — see [zoom].
+     */
+    private val inputs = MutableStateFlow(DashInputs())
 
     // ── Camera state ──
+    // Still @Volatile fields rather than part of [DashInputs], and that is a decision, not an
+    // omission. The nav group above flows one way — Dart writes, the loop reads — which is
+    // what makes an immutable snapshot the whole answer. Camera state flows BOTH ways: [tick]
+    // itself resets pan and follow when the manual-pan idle expires, and [startStream] clamps
+    // zoom to the pack's floor. Folding that into one value would mean the loop reading a
+    // snapshot and writing a modified copy back, which is a read-modify-write across threads —
+    // a race class that does not exist today.
+    //
+    // Not because camera state is free of the problem — it is not. [redrawFrame] reads
+    // [headingUp] once and must carry that value across the snapshot suspension, and
+    // [panAtBound] below is written from both threads without @Volatile. The difference is
+    // that those are one-field problems with local fixes, while the nav group needed several
+    // fields to agree with each other. Revisit when the frame loop moves out of this class
+    // (pipeline.md §4.8), where the camera needs a home anyway.
+    //
     // The first six are written by the MethodChannel handlers on the main
     // thread (joystick zoom/pan/recenter) and read by [tick] on
-    // Dispatchers.Default, so they need the same @Volatile treatment as the
-    // nav fields above — otherwise a button press can go unseen by the frame
-    // loop. The rest are touched only by the frame loop and by [startStream]
+    // Dispatchers.Default, so they need @Volatile — otherwise a button press
+    // can go unseen by the frame loop. The rest are touched only by the frame loop and by [startStream]
     // (which launches it, establishing happens-before), so plain fields.
     @Volatile private var zoom = ZOOM_DEFAULT
     @Volatile private var panX = 0f
@@ -336,9 +353,14 @@ class DashEngineController(
     @Volatile private var headingUp = true
     @Volatile private var followMode = true
     @Volatile private var lastManualPanAt = 0L
-    // Whether [panBy] is currently pushing against a bound, so it can log the
-    // transition instead of every call. MethodChannel thread only — the frame loop
-    // never reads it.
+    // Whether [panBy] is currently pushing against a bound, so it can log the transition
+    // instead of every call.
+    //
+    // Written from BOTH threads — [panBy] and [setFollowMode] on the platform thread, [tick]
+    // on Dispatchers.Default when the manual-pan idle expires — and deliberately not
+    // @Volatile. It gates a log line and nothing else, so the worst case is one bound-hit
+    // message lost or repeated. Said out loud because the previous comment claimed
+    // "MethodChannel thread only", which was wrong and would send the next reader hunting.
     private var panAtBound = false
     private var camLat = 0.0
     private var camLng = 0.0
@@ -464,7 +486,8 @@ class DashEngineController(
         RideDiagnostics.start("connect")
         RideDiagnostics.log(
             "connect",
-            "ssid='${dashConfig.ssid}' needsDiscovery=${dashConfig.needsDiscovery} dest=$destName",
+            "ssid='${dashConfig.ssid}' needsDiscovery=${dashConfig.needsDiscovery} " +
+                "dest=${inputs.value.destName}",
         )
         DashKeepAliveService.start(context)
         // Started here, right after the ride file opens, so its lines cannot land in the
@@ -690,7 +713,7 @@ class DashEngineController(
         mediaForwardJob = scope.launch {
             mediaInfo.nowPlaying.collect { np ->
                 session.updateNowPlaying(np?.title, np?.album.orEmpty(), np?.artist.orEmpty())
-                nowPlayingTitle = np?.title
+                inputs.update { it.copy(nowPlayingTitle = np?.title) }
                 publishState()
             }
         }
@@ -702,8 +725,9 @@ class DashEngineController(
                 // here would show a nonsensical answer button in the dash UI.
                 val incoming = call?.takeIf { it.incoming }
                 session.updateCall(incoming?.caller)
-                incomingCaller = incoming?.caller
-                hasActiveCall = call != null
+                inputs.update {
+                    it.copy(incomingCaller = incoming?.caller, hasActiveCall = call != null)
+                }
                 publishState()
             }
         }
@@ -716,20 +740,30 @@ class DashEngineController(
     }
 
     fun setDestination(name: String?, lat: Double?, lng: Double?) {
-        destName = name
-        destLat = lat
-        destLng = lng
-        navigating = lat != null && lng != null
+        // One update, so a frame can never see half a destination — see Destination's doc.
+        inputs.update {
+            it.copy(
+                // [destName] separately from [dest], and not folded into it: the old field
+                // was assigned unconditionally, so setDestination(name, null, null) kept the
+                // name while clearing the coordinates. No Dart caller does that today, but
+                // the method channel allows it and the connect diagnostic reads the name.
+                // Dropping it would have been a silent behaviour change. Review, 2026-09-14.
+                destName = name,
+                dest = if (lat != null && lng != null) Destination(lat, lng) else null,
+                navigating = lat != null && lng != null,
+            )
+        }
         session.updateRouteCard(name ?: "OpenDash")
-        // DashSession reads [navigating] off the state stream for its own
+        // DashSession reads [DashInputs.navigating] off the state stream for its own
         // chrome/nav-info decisions — push immediately instead of waiting for
         // the next frame-loop tick() so "Send to Dash" takes effect at once.
         publishState()
     }
 
     fun clearDestination() {
-        destName = null; destLat = null; destLng = null
-        navigating = false; routePoints = emptyList(); routeJam = emptyList()
+        inputs.update {
+            it.copy(destName = null, dest = null, navigating = false, route = RouteGeometry())
+        }
         session.updateRouteCard("OpenDash")
         publishState()
     }
@@ -740,7 +774,7 @@ class DashEngineController(
      * is (re)computed — an empty list here means "keep the geometry already
      * held", so the 1 Hz progress tick doesn't have to resend it every call.
      * [jamSegments] rides along with [points] under the same rule (only
-     * applied when [points] is non-empty) — see [routeJam]'s doc.
+     * applied when [points] is non-empty) — see [RouteGeometry.jam]'s doc.
      */
     fun setNavState(
         remainingMeters: Double?,
@@ -751,13 +785,23 @@ class DashEngineController(
         points: List<GeoPoint>,
         jamSegments: List<Int> = emptyList(),
     ) {
-        remainingM = remainingMeters
-        offRoute = isOffRoute
-        if (points.isNotEmpty()) {
-            routePoints = points
-            // Mismatched length means stale/missing traffic data for this route —
-            // OverlayRenderer's solid-line fallback then kicks in (spec/yande_ruote.md).
-            routeJam = if (jamSegments.size == points.size - 1) jamSegments else emptyList()
+        inputs.update { cur ->
+            cur.copy(
+                remainingM = remainingMeters,
+                offRoute = isOffRoute,
+                // Points and jam land together or not at all. A mismatched length still
+                // means stale/missing traffic data and OverlayRenderer's solid-line
+                // fallback still catches it (spec/yande_ruote.md) — but that fallback is
+                // now for missing data only, never for a race.
+                route = if (points.isEmpty()) {
+                    cur.route
+                } else {
+                    RouteGeometry(
+                        points = points,
+                        jam = if (jamSegments.size == points.size - 1) jamSegments else emptyList(),
+                    )
+                },
+            )
         }
         if (remainingMeters != null && nextTurnMeters != null) {
             val (pv, pu) = toDashDistance(nextTurnMeters)
@@ -1446,6 +1490,12 @@ class DashEngineController(
      * snapshot" decision stands or falls on (see «Телеметрия»).
      */
     private suspend fun tick(frameIntervalMs: Long) {
+        // ONE read for the whole frame. Everything below — the camera target, the redraw
+        // signature, the overlay — works from this copy, so a `setNavState` landing mid-tick
+        // takes effect on the NEXT frame in full rather than on this one in part. That is the
+        // entire point of DashInputs; see its doc for the two defects it retires.
+        val inp = inputs.value
+
         if (!followMode && monotonicMs() - lastManualPanAt > MANUAL_IDLE_MS) {
             panX = 0f; panY = 0f; followMode = true; panAtBound = false
         }
@@ -1471,12 +1521,12 @@ class DashEngineController(
         publishState()
 
         // The frame is always a live map — idle is just the map with no route or
-        // destination, never a separate mode (see spec/fsm.md). [navigating] still gates
+        // destination, never a separate mode (see spec/fsm.md). [DashInputs.navigating] still gates
         // what isn't frame content: DashSession's chrome/nav-info decisions.
 
-        val haveTarget = riderLat != null || (destLat != null && destLng != null)
-        val targetLat = riderLat ?: destLat ?: camLat
-        val targetLng = riderLng ?: destLng ?: camLng
+        val haveTarget = riderLat != null || inp.dest != null
+        val targetLat = riderLat ?: inp.dest?.lat ?: camLat
+        val targetLng = riderLng ?: inp.dest?.lng ?: camLng
 
         val nowNs = System.nanoTime()
         // Two readings of the same gap, deliberately. [dt] stays clamped because it drives
@@ -1551,10 +1601,10 @@ class DashEngineController(
             append(zoom); append(panX.toInt()); append(panY.toInt())
             append(headingUp)
             append(if (headingUp) (camHeading * 10).toInt() else 0)
-            append(remainingM?.let { (it / 100).toInt() } ?: -1)
-            append(routeSignature())
-            append(destLat?.let { "%.5f".format(it) } ?: "-")
-            append(destLng?.let { "%.5f".format(it) } ?: "-")
+            append(inp.remainingM?.let { (it / 100).toInt() } ?: -1)
+            append(routeSignature(inp.route))
+            append(inp.dest?.let { "%.5f".format(it.lat) } ?: "-")
+            append(inp.dest?.let { "%.5f".format(it.lng) } ?: "-")
             append(gpsLost); append(gpsWeak)
         }
         val now = monotonicMs()
@@ -1565,6 +1615,7 @@ class DashEngineController(
             // signature is stable — kept a stale frame until FORCE_REDRAW_MS, and
             // the telemetry counted it as a deliberate reuse.
             if (redrawFrame(
+                    inp,
                     centerLat, centerLng, camHeading, riderLat != null, gpsWeak, gpsLost,
                     frameIntervalMs,
                 )
@@ -1598,17 +1649,20 @@ class DashEngineController(
      * would keep the previous one alive; the endpoints plus the count plus the
      * jam colours catch what actually changes on screen — a reroute (different
      * geometry, same length) and a traffic recolour (same geometry).
+     *
+     * Takes the route rather than reading it. The old version opened with "one read of each
+     * @Volatile field, not four: re-reading between isEmpty() and first() would throw
+     * NoSuchElementException on the frame loop" — correct then, unnecessary now that the
+     * caller holds one immutable snapshot for the whole frame. That is the kind of defensive
+     * reasoning [DashInputs] exists to delete.
      */
-    private fun routeSignature(): String {
-        // One read of each @Volatile field, not four: clearDestination() replaces
-        // the list from another thread, and re-reading between isEmpty() and
-        // first() would throw NoSuchElementException on the frame loop.
-        val points = routePoints
+    private fun routeSignature(route: RouteGeometry): String {
+        val points = route.points
         if (points.isEmpty()) return "r0"
         val first = points.first()
         val last = points.last()
         return "r${points.size}:${"%.5f".format(first.lat)},${"%.5f".format(first.lng)}" +
-            ":${"%.5f".format(last.lat)},${"%.5f".format(last.lng)}:${routeJam.hashCode()}"
+            ":${"%.5f".format(last.lat)},${"%.5f".format(last.lng)}:${route.jam.hashCode()}"
     }
 
     /**
@@ -1621,6 +1675,7 @@ class DashEngineController(
      * ahead of the roads under them.
      */
     private suspend fun redrawFrame(
+        inp: DashInputs,
         centerLat: Double, centerLng: Double, heading: Float,
         haveRider: Boolean, gpsWeak: Boolean, gpsLost: Boolean,
         frameIntervalMs: Long,
@@ -1661,14 +1716,21 @@ class DashEngineController(
         map.recycle()
 
         val frame = OverlayRenderer.Frame(
-            headingUp = headingUp,
+            // [headingUpNow], not a fresh read: the snapshot above suspends for up to
+            // SNAPSHOT_DEADLINE_MS, and a toggle landing inside that window would draw a
+            // heading-up overlay — an unrotated rider arrow — over a north-up raster. Found
+            // by review; it is also the counterexample to the note beside [zoom], so that
+            // note no longer claims camera fields are only ever read one at a time.
+            headingUp = headingUpNow,
             heading = heading,
             riderLat = if (haveRider) camLat else null,
             riderLng = if (haveRider) camLng else null,
-            destLat = destLat,
-            destLng = destLng,
-            route = routePoints,
-            routeJam = routeJam,
+            destLat = inp.dest?.lat,
+            destLng = inp.dest?.lng,
+            // From the SAME snapshot the signature above was built from, so the line the
+            // rider sees and the colours on it always describe one route.
+            route = inp.route.points,
+            routeJam = inp.route.jam,
             gpsWeak = gpsWeak,
             gpsLost = gpsLost,
         )
@@ -1798,6 +1860,10 @@ class DashEngineController(
         errorMessage: String? = null,
         explicitDisconnect: Boolean = false,
     ) {
+        // Its own read, not the frame's. publishState answers "what is true now" for Dart
+        // and is called from the main thread as well as from tick(); sharing the frame's
+        // snapshot would publish a value one tick stale on the main-thread path.
+        val inp = inputs.value
         val loc = locationTracker.location.value
         val fixAgeMs = loc?.ageMs() ?: Long.MAX_VALUE
         val gpsLost = loc == null || fixAgeMs > GPS_FIX_STALE_MS
@@ -1819,7 +1885,7 @@ class DashEngineController(
                 // Whether a destination is set, per [setDestination]/[clearDestination].
                 // Drives DashSession's chrome and the Dash screen's "exit navigation" FAB;
                 // the frame itself is a map either way.
-                "navigating" to navigating,
+                "navigating" to inp.navigating,
                 "hasGps" to (loc != null),
                 "riderLat" to loc?.latitude,
                 "riderLng" to loc?.longitude,
@@ -1828,8 +1894,8 @@ class DashEngineController(
                 // compute a real ETA — NavLoop used to pass a hardcoded 0, which made
                 // NavEngine fall back to its 11 m/s constant for every estimate.
                 "riderSpeed" to loc?.speed,
-                "remainingKm" to remainingM?.let { it / 1000.0 },
-                "offRoute" to offRoute,
+                "remainingKm" to inp.remainingM?.let { it / 1000.0 },
+                "offRoute" to inp.offRoute,
                 "gpsLost" to gpsLost,
                 "gpsWeak" to gpsWeak,
                 "errorMessage" to errorMessage,
@@ -1840,9 +1906,9 @@ class DashEngineController(
                 // opendash_dash_engine.dart, and 1400 under that name would be
                 // read as a zoom of 1400 by whoever first consumes it.
                 "zoom" to zoom / ZOOM_SCALE,
-                "nowPlayingTitle" to nowPlayingTitle,
-                "incomingCaller" to incomingCaller,
-                "hasActiveCall" to hasActiveCall,
+                "nowPlayingTitle" to inp.nowPlayingTitle,
+                "incomingCaller" to inp.incomingCaller,
+                "hasActiveCall" to inp.hasActiveCall,
             )
         )
     }

@@ -1,5 +1,6 @@
 package com.opendash.opendash_dash_engine.dash.map
 
+import com.opendash.opendash_dash_engine.util.monotonicMs
 import com.opendash.opendash_dash_engine.util.DebugLog
 import com.opendash.opendash_dash_engine.util.RideDiagnostics
 import kotlin.test.AfterTest
@@ -34,7 +35,7 @@ class MapLibreLogBridgeTest {
     @AfterTest
     fun tearDown() {
         DebugLog.sink = null
-        MapLibreLogBridge.clockMs = System::currentTimeMillis
+        MapLibreLogBridge.clockMs = ::monotonicMs
     }
 
     private fun log(msg: String) = MapLibreLogBridge.ride("Mbgl", msg, null)

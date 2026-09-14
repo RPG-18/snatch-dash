@@ -45,6 +45,17 @@ class PositionQualityTest {
         speed: Float = 14f,
     ) = Fix(lat, lon, acc, atMs, speed, isGps = true)
 
+    /**
+     * A [PositionTrust] on a clock that does not move.
+     *
+     * The clock is a required constructor parameter — see PositionTrust's own doc for why it
+     * has no default. Frozen is right for every test below that does not exercise the latch:
+     * those reason about fix timestamps, which are their own argument, and a frozen `nowMs`
+     * keeps the verdict from expiring underneath an assertion. The latch tests build their
+     * own movable clock instead.
+     */
+    private fun trust() = PositionTrust(nowMs = { T0 })
+
     private fun network(
         lat: Double = NET_LAT,
         lon: Double = NET_LON,
@@ -200,7 +211,7 @@ class PositionQualityTest {
         // Android returns 0 from getAccuracy() when hasAccuracy() is false, so a naive read
         // makes an accuracy-less cell fix look millimetre-perfect. That collapsed the
         // disagreement allowance to its floor and latched a doubt for the whole ride.
-        val trust = PositionTrust()
+        val trust = trust()
         trust.observe(gps(lat = 60.0, lon = 30.0, acc = 15f), accepted = true)
 
         val doubt = trust.observe(
@@ -213,7 +224,7 @@ class PositionQualityTest {
 
     @Test
     fun `an unknown accuracy still cannot excuse a 35 km contradiction`() {
-        val trust = PositionTrust()
+        val trust = trust()
         trust.observe(gps(acc = 15f), accepted = true)
 
         val doubt = trust.observe(
@@ -276,7 +287,7 @@ class PositionQualityTest {
 
     @Test
     fun `the two sources of the jammed ride are reported as contradictory`() {
-        val trust = PositionTrust()
+        val trust = trust()
 
         assertNull(trust.observe(network(), accepted = true), "one source alone proves nothing")
         val doubt = trust.observe(gps(atMs = T0 + 1_000), accepted = true)
@@ -291,7 +302,7 @@ class PositionQualityTest {
     fun `an ordinary disagreement between a tower fix and GPS is not flagged`() {
         // The threshold exists to catch the impossible, not the imprecise. A cell fix claiming
         // 816 m that lands 800 m away is doing its job.
-        val trust = PositionTrust()
+        val trust = trust()
         trust.observe(gps(lat = 60.0, lon = 30.0, acc = 15f), accepted = true)
 
         val doubt = trust.observe(
@@ -310,7 +321,7 @@ class PositionQualityTest {
         // The two fixes here are 35 km and 60 s apart, so this also pins that the SPEED check
         // stays out of it: measuring a baseline across the provider handover implied 585 m/s
         // and reported an ImplausibleSpeed where the honest answer is "no opinion".
-        val trust = PositionTrust()
+        val trust = trust()
         trust.observe(network(), accepted = true)
 
         assertNull(trust.observe(gps(atMs = T0 + 60_000), accepted = true))
@@ -318,7 +329,7 @@ class PositionQualityTest {
 
     @Test
     fun `a provider handover is never reported as a speed`() {
-        val trust = PositionTrust()
+        val trust = trust()
         trust.observe(network(lat = 60.0, lon = 30.0, atMs = T0), accepted = true)
 
         // 35 km away and 31 s later — implausible as motion, meaningless as a measurement.
@@ -334,7 +345,7 @@ class PositionQualityTest {
     fun `a rejected fix still counts as evidence about the receiver`() {
         // The filter throwing a fix away does not make it uninformative — under jamming the
         // rejected ones are most of what there is.
-        val trust = PositionTrust()
+        val trust = trust()
         trust.observe(network(), accepted = true)
 
         val doubt = trust.observe(gps(atMs = T0 + 1_000), accepted = false)
@@ -344,7 +355,7 @@ class PositionQualityTest {
 
     @Test
     fun `agreement after a disagreement clears the doubt`() {
-        val trust = PositionTrust()
+        val trust = trust()
         trust.observe(network(), accepted = true)
         assertIs<PositionTrust.Doubt.ProviderDisagreement>(
             trust.observe(gps(atMs = T0 + 1_000), accepted = true),
@@ -365,7 +376,7 @@ class PositionQualityTest {
     fun `a jump implying 200 km per hour over half a minute is flagged`() {
         // The ride log's own numbers: 1726 m of camera movement in a 30 s window is 207 km/h.
         // Those figures were already in the file and nothing was checking them.
-        val trust = PositionTrust()
+        val trust = trust()
         trust.observe(gps(lat = 60.0, lon = 30.0, atMs = T0), accepted = true)
 
         val doubt = trust.observe(gps(lat = 60.0, lon = 30.0 + 0.031, atMs = T0 + 30_001), accepted = true)
@@ -379,7 +390,7 @@ class PositionQualityTest {
     fun `legal motorway speed over the same window is not flagged`() {
         // 110 km/h sustained for 30 s. The gate has to sit above anything a bike does legally,
         // or it cries wolf on every trunk road.
-        val trust = PositionTrust()
+        val trust = trust()
         trust.observe(gps(lat = 60.0, lon = 30.0, atMs = T0), accepted = true)
 
         val doubt = trust.observe(gps(lat = 60.00825, lon = 30.0, atMs = T0 + 30_001), accepted = true)
@@ -390,7 +401,7 @@ class PositionQualityTest {
     @Test
     fun `a short baseline is not used to imply a speed`() {
         // Two fixes a second apart with 20 m of noise each imply 144 km/h and mean nothing.
-        val trust = PositionTrust()
+        val trust = trust()
         trust.observe(gps(lat = 60.0, lon = 30.0, atMs = T0), accepted = true)
 
         assertNull(trust.observe(gps(lat = 60.00036, lon = 30.0, atMs = T0 + 1_000), accepted = true))
@@ -400,7 +411,7 @@ class PositionQualityTest {
     fun `rejected fixes do not move the speed baseline`() {
         // The baseline must follow the positions actually shown to the rider; a rejected
         // teleport feeding it would manufacture an implausible speed out of a fix we refused.
-        val trust = PositionTrust()
+        val trust = trust()
         trust.observe(gps(lat = 60.0, lon = 30.0, atMs = T0), accepted = true)
 
         trust.observe(gps(lat = 61.0, lon = 30.0, atMs = T0 + 10_000), accepted = false)
@@ -411,7 +422,7 @@ class PositionQualityTest {
 
     @Test
     fun `reset drops both the provider record and the speed baseline`() {
-        val trust = PositionTrust()
+        val trust = trust()
         trust.observe(network(), accepted = true)
 
         trust.reset()

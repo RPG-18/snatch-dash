@@ -1,6 +1,7 @@
 package com.opendash.opendash_dash_engine.dash.map
 
 import com.opendash.opendash_dash_engine.util.DebugLog
+import com.opendash.opendash_dash_engine.util.monotonicMs
 import com.opendash.opendash_dash_engine.util.RideDiagnostics
 import org.maplibre.android.log.Logger
 import org.maplibre.android.log.LoggerDefinition
@@ -49,8 +50,14 @@ object MapLibreLogBridge {
     /** Distinct messages this window had no budget left to write. */
     private var dropped = 0
 
-    /** The wall clock, replaced in tests so a 10-second window need not be waited out. */
-    internal var clockMs: () -> Long = System::currentTimeMillis
+    /**
+     * The clock for the rate-limit window, replaced in tests so 10 s need not be waited out.
+     *
+     * Monotonic: the window is a duration, and the failure mode of the wall clock here is that
+     * an NTP step mid-ride either silences the bridge for the length of the step or empties the
+     * budget instantly. See util/Clock.kt.
+     */
+    internal var clockMs: () -> Long = ::monotonicMs
 
     /** Safe to call on every [MapSnapshotProvider.prepare]; only does work once. */
     fun install() {

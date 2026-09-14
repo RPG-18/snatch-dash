@@ -3,6 +3,7 @@ package com.opendash.opendash_dash_engine.dash.map
 import android.content.Context
 import android.graphics.Bitmap
 import com.opendash.opendash_dash_engine.util.DebugLog
+import com.opendash.opendash_dash_engine.util.monotonicMs
 import com.opendash.opendash_dash_engine.util.RideDiagnostics
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -80,7 +81,10 @@ class MapSnapshotProvider(private val context: Context) {
     private var needsRebuild = false
 
     /** When the last [rebuild] ran, so a failing one cannot be retried every frame. */
-    private var lastRebuildAtMs = 0L
+    // Not 0: the clock is boot-relative now, so on a phone up for less than the cooldown
+    // a zero origin reads as "rebuilt just now" and blocks the first rebuild. Halved to keep
+    // `now - lastRebuildAtMs` from overflowing. Review, 2026-09-14.
+    private var lastRebuildAtMs = Long.MIN_VALUE / 2
 
     /**
      * Rebuilds since the last snapshot that actually landed.
@@ -257,7 +261,7 @@ class MapSnapshotProvider(private val context: Context) {
         if (json == null) return // never prepared — nothing to rebuild from
         rebuilds++
         rebuildsSinceSuccess++
-        lastRebuildAtMs = System.currentTimeMillis()
+        lastRebuildAtMs = monotonicMs()
         DebugLog.w(TAG) { "rebuilding the snapshotter: $reason" }
         releaseCurrent()
         snapshotter = runCatching { buildSnapshotter(json, frameWidth, frameHeight) }
@@ -291,7 +295,7 @@ class MapSnapshotProvider(private val context: Context) {
         padding: IntArray,
         deadlineMs: Long,
     ): MapSnapshot? = withContext(Dispatchers.Main) {
-        val now = System.currentTimeMillis()
+        val now = monotonicMs()
         if (inFlight) {
             if (now - inFlightSince < WEDGED_MS) {
                 // Still out, but not for long enough to call it dead. Skip this

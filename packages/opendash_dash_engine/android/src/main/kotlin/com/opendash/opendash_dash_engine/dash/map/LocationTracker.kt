@@ -8,6 +8,8 @@ import android.location.LocationManager
 import android.os.Looper
 import com.opendash.opendash_dash_engine.util.DebugLog
 import com.opendash.opendash_dash_engine.util.RideDiagnostics
+import com.opendash.opendash_dash_engine.util.ageMs
+import com.opendash.opendash_dash_engine.util.monotonicMs
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -54,7 +56,7 @@ class LocationTracker(context: Context, private val scope: CoroutineScope) {
     val location = _location.asStateFlow()
 
     private val filter = FixFilter()
-    private val trust = PositionTrust()
+    private val trust = PositionTrust(nowMs = ::monotonicMs)
 
     /**
      * False while [PositionTrust] is objecting — read by the Dash screen's GPS chip through
@@ -80,6 +82,11 @@ class LocationTracker(context: Context, private val scope: CoroutineScope) {
     // Per KIND, not one shared timestamp: ProviderDisagreement is evaluated on every fix and
     // would otherwise permanently starve out the once-per-window ImplausibleSpeed line, which
     // is the rarer and more informative of the two. Review.
+    // Absent means "never logged", and that has to be distinct from 0: the clock is now
+    // boot-relative, so on a phone up for less than DOUBT_LOG_INTERVAL_MS a zero default made
+    // `now - 0` smaller than the interval and swallowed the FIRST doubt line of the session —
+    // leaving `doubted=N` in the minute summary with nothing explaining it, which is the exact
+    // state the clear() in start() exists to avoid. Review, 2026-09-14.
     private val lastDoubtLogAtMs = HashMap<String, Long>()
 
     private fun Location.toFix() = Fix(
@@ -88,7 +95,8 @@ class LocationTracker(context: Context, private val scope: CoroutineScope) {
         // getAccuracy() returns 0 when hasAccuracy() is false, and 0 read as a number means
         // "perfect" — the opposite of "unknown". See Fix.accuracyM.
         accuracyM = if (hasAccuracy()) accuracy else null,
-        atMs = time,
+        // Monotonic, not Location.time — see Fix.atMs and util/Clock.kt.
+        atMs = elapsedRealtimeNanos / 1_000_000,
         speedMps = speed,
         isGps = provider == LocationManager.GPS_PROVIDER,
     )
@@ -104,11 +112,15 @@ class LocationTracker(context: Context, private val scope: CoroutineScope) {
             if (!loc.hasAccuracy() || loc.accuracy > DEGRADED_ACCURACY_M) {
                 degradedCount.incrementAndGet()
             }
-            lastFixAtMs = System.currentTimeMillis()
+            lastFixAtMs = monotonicMs()
             DebugLog.d(TAG) { "fix ${loc.provider} acc=${loc.accuracy} (${loc.latitude},${loc.longitude})" }
         } else {
             rejectedCount.incrementAndGet()
-            DebugLog.d(TAG) { "REJECT ${loc.provider} acc=${loc.accuracy} dt=${loc.time - (cur?.time ?: 0)}ms" }
+            // dt on the clock the decision was MADE on (Fix.atMs, monotonic), not on
+            // Location.time — otherwise a clock step makes the logged number unable to
+            // reproduce the verdict it is supposed to explain. Review, 2026-09-14.
+            val dtMs = fix.atMs - (cur?.toFix()?.atMs ?: 0L)
+            DebugLog.d(TAG) { "REJECT ${loc.provider} acc=${loc.accuracy} dt=${dtMs}ms" }
         }
         // Every fix, accepted or not: a rejected one is still evidence about the receiver.
         reportDoubt(trust.observe(fix, accepted))
@@ -126,10 +138,11 @@ class LocationTracker(context: Context, private val scope: CoroutineScope) {
         _trusted.value = trust.trusted
         if (doubt == null) return
         doubtCount.incrementAndGet()
-        val now = System.currentTimeMillis()
+        val now = monotonicMs()
 
         val kind = doubt::class.simpleName ?: "doubt"
-        if (now - (lastDoubtLogAtMs[kind] ?: 0L) < DOUBT_LOG_INTERVAL_MS) return
+        val lastAt = lastDoubtLogAtMs[kind]
+        if (lastAt != null && now - lastAt < DOUBT_LOG_INTERVAL_MS) return
         lastDoubtLogAtMs[kind] = now
         when (doubt) {
             is PositionTrust.Doubt.ProviderDisagreement -> RideDiagnostics.warn(
@@ -174,7 +187,7 @@ class LocationTracker(context: Context, private val scope: CoroutineScope) {
                 }
             }
             running = true
-            lastFixAtMs = System.currentTimeMillis()
+            lastFixAtMs = monotonicMs()
             launchQualityLog()
             DebugLog.i(TAG) { "Location updates started" }
         } catch (e: SecurityException) {
@@ -198,7 +211,7 @@ class LocationTracker(context: Context, private val scope: CoroutineScope) {
         // NETWORK fix behind it and leaving the dash on `gpsLost` until GPS cold-started.
         for (provider in listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER)) {
             val candidate = lm.getLastKnownLocation(provider) ?: continue
-            val ageMs = System.currentTimeMillis() - candidate.time
+            val ageMs = candidate.ageMs()
             if (ageMs <= SEED_MAX_AGE_MS) return candidate
             DebugLog.i(TAG) { "seed $provider discarded — ${ageMs}ms old" }
         }
@@ -234,7 +247,7 @@ class LocationTracker(context: Context, private val scope: CoroutineScope) {
         qualityLogJob = scope.launch(Dispatchers.Default) {
             while (isActive) {
                 delay(1_000)
-                val gapMs = System.currentTimeMillis() - lastFixAtMs
+                val gapMs = monotonicMs() - lastFixAtMs
                 if (gapMs > FIX_GAP_WARN_MS) {
                     if (!warnedForThisGap) {
                         warnedForThisGap = true

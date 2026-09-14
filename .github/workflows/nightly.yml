@@ -121,12 +121,6 @@ jobs:
       - name: Accept Android SDK licenses
         run: yes | "$ANDROID_HOME"/cmdline-tools/latest/bin/sdkmanager --licenses > /dev/null || true
 
-      - name: Write API key secrets
-        env:
-          YANDEX_API_KEY: ${{ secrets.YANDEX_API_KEY }}
-        run: |
-          echo "YANDEX_API_KEY=${YANDEX_API_KEY}" > android/dart_defines.local.properties
-
       - run: flutter pub get
 
       - name: Analyze
@@ -134,6 +128,13 @@ jobs:
 
       - name: Test
         run: flutter test
+
+      - name: Validate the Gradle wrapper
+        # The wrapper jar is a binary in the repository, so something has to say it is the
+        # one Gradle published. This action checksums it against Gradle's known-good list and
+        # fails the build on a mismatch — the standard answer to "why is there a .jar in git".
+        # Added 2026-09-14 together with the wrapper itself.
+        uses: gradle/actions/wrapper-validation@v4
 
       - name: Test and lint the native engine
         # Neither is covered by `flutter test`/`flutter analyze`, which see only Dart. Lint
@@ -145,6 +146,19 @@ jobs:
         run: |
           ./gradlew :opendash_dash_engine:testDebugUnitTest
           ./gradlew :opendash_dash_engine:lintDebug
+
+      - name: Write API key secrets
+        # As late as possible, and that placement is the point: this writes a real secret to
+        # the workspace, and every step after it runs with the key on disk in a job that also
+        # holds `contents: write` and a GITHUB_TOKEN. It used to sit before `flutter pub get`,
+        # so `./gradlew` — which executes a committed wrapper script — ran four steps deep into
+        # that window. Only `flutter build apk` below consumes the file; nothing in Gradle
+        # reads it (checked: no reference to dart_defines anywhere under android/ or the
+        # plugin's build files). Moved 2026-09-14, found by review.
+        env:
+          YANDEX_API_KEY: ${{ secrets.YANDEX_API_KEY }}
+        run: |
+          echo "YANDEX_API_KEY=${YANDEX_API_KEY}" > android/dart_defines.local.properties
 
       - name: Build release APKs
         run: |

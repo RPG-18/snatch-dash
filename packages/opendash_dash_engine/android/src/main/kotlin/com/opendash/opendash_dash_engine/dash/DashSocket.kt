@@ -2,8 +2,10 @@ package com.opendash.opendash_dash_engine.dash
 
 import com.opendash.opendash_dash_engine.dash.protocol.K1GPacket
 import com.opendash.opendash_dash_engine.util.DebugLog
+import com.opendash.opendash_dash_engine.util.RideDiagnostics
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.io.IOException
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
@@ -28,7 +30,64 @@ class DashSocket(private val network: android.net.Network? = null) : AutoCloseab
         const val CTRL_PORT  = 2000
         const val RX_PORT    = 2002
         const val RTP_PORT   = 5000
-        private const val BUF             = 65535
+        /**
+         * The largest datagram this link is expected to carry, plus one.
+         *
+         * K1G control packets are hundreds of bytes; the dash has never sent anything near
+         * a kilobyte. The buffer used to be 65535 and freshly allocated **per receive** —
+         * twice a second on timeouts alone, plus one per packet, all of it garbage.
+         *
+         * The `+ 1` is not decoration. `DatagramSocket.receive`'s own contract is "if the
+         * message is longer than the packet's length, the message is truncated" — silently,
+         * with `length` capped at the buffer — so with a buffer of exactly [MAX_DATAGRAM] a
+         * full-size read is indistinguishable from one that was cut, and a truncated K1G
+         * packet parses into nonsense rather than being refused. One spare byte turns
+         * "length > MAX_DATAGRAM" into the anomaly signal, which [receive] logs and skips.
+         */
+        private const val MAX_DATAGRAM    = 2048
+        private const val RECV_BUF        = MAX_DATAGRAM + 1
+
+        // DSCP is NOT set on any of the three sockets, and that is a reversal.
+        //
+        // 2026-09-10 evening this file marked the control plane EF (0xB8) and RTP AF41
+        // (0x88). The ride that night made graphical artifacts MORE frequent than the
+        // rides before it, and the reversal is on 2026-09-11. Nothing local explained the
+        // regression: `drop=0 dropIdr=0` in every window, RSSI -36..-38 dBm, a 65 Mbps
+        // link carrying 200 kbps, no send failures outside the one link loss.
+        //
+        // The mechanism that fits is the remapping the marking itself triggers. Wi-Fi does
+        // not carry 64 DSCP values, it carries four WMM access categories: AF41 lands RTP
+        // in AC_VI and EF lands control in AC_VO, where they used to share AC_BE. AC_VI's
+        // contention window tops out at 15 slots against best effort's 1023, so under
+        // collision it can barely back off, and drivers commonly give the real-time
+        // categories a lower retry limit on the grounds that late video is worthless. For
+        // this stream that trade is backwards: one datagram lost from a key frame costs a
+        // whole GOP — eight frames, two seconds of mush — so we would rather have the
+        // retries than the priority.
+        //
+        // Worth keeping in view if this is ever revisited: the ride log could only ever
+        // show that the OS ACCEPTED the value. What the Wi-Fi driver did with it, and what
+        // the dash saw, are not observable from this side — that needs a capture at the
+        // dash. `setTrafficClass` is documented as a hint the implementation "may ignore",
+        // `getTrafficClass` "may return a different value than was previously set", and
+        // setting precedence bits (EF is `101110xx`) "may result in a SocketException".
+        // The line below still reads the traffic class back, so a device that marks
+        // packets on its own initiative would still show up.
+
+        // NOT set, deliberately — the plan's task 2.2 asked for a 256 KiB SO_SNDBUF on the
+        // RTP socket and that is the wrong direction here. Its premise was that the default
+        // is "a few tens of KB". Per `man 7 socket` the default comes from
+        // `/proc/sys/net/core/wmem_default` — 212992 B on a stock Linux, and Android does
+        // not lower it — and "the kernel doubles this value ... when it is set", so both the
+        // default and anything asked for are larger than they read. Either way the socket
+        // already holds seconds of a 200 kbps stream; the line below prints what THIS device
+        // actually gives, which is the number to argue from.
+        // More buffer does not protect a realtime stream, it hides a stalled radio: `sendto`
+        // stops blocking, `rtpOutbox` never overflows, `drop=` stays zero, and the dash shows
+        // a map from ten seconds ago — the exact failure the capacity-4 outbox (task 2.5) was
+        // sized to turn into an honest drop, moved one layer down where the telemetry cannot
+        // see it. The line below reports what the platform actually gives us; if a ride ever
+        // shows sends blocking, that number is the evidence to change it with.
         private const val RECV_TIMEOUT_MS = 500
         private const val TAG             = "DashSocket"
     }
@@ -40,6 +99,18 @@ class DashSocket(private val network: android.net.Network? = null) : AutoCloseab
     private val rtpSocket: DatagramSocket
 
     private val sequencer = TxSequencer()
+
+    /**
+     * One receive buffer for the life of the socket, reused by every [receive].
+     *
+     * Safe because there is exactly one reader: [DashSession]'s RX loop, a single coroutine
+     * that calls [receive] in sequence and copies out what it needs before asking again.
+     * Nothing else in the engine touches this socket's inbound side.
+     */
+    private val rxBuffer = ByteArray(RECV_BUF)
+
+    /** So an oversized-datagram firmware costs one ride-file line, not one per packet. */
+    private var loggedOversized = false
 
     init {
         var tx:  DatagramSocket? = null
@@ -63,10 +134,36 @@ class DashSocket(private val network: android.net.Network? = null) : AutoCloseab
             txSocket  = tx
             rxSocket  = rx
             rtpSocket = rtp
+            reportSocketOptions()
         } catch (e: Exception) {
             tx?.close(); rx?.close(); rtp?.close()
             throw e
         }
+    }
+
+    /**
+     * Reports what the kernel gave the sockets. Sets nothing — see the block above the
+     * constants for why the DSCP marking that used to live here was withdrawn.
+     *
+     * Kept as a report rather than deleted because both numbers earned their place. The
+     * `sndbuf` reading is what overturned task 2.2 of the refactoring plan: this phone
+     * hands out 4 MiB by default, so the 256 KiB the plan asked for would have SHRUNK it
+     * sixteenfold. And the traffic class is worth watching even when we set nothing — a
+     * value other than zero would mean the platform marks packets on its own, which is the
+     * one way the withdrawal above could fail to take effect.
+     */
+    private fun reportSocketOptions() {
+        // Read back and printed as "n/a" when the read itself fails: a refused option and
+        // an option reading zero are different facts, and a log that showed `0xFFFFFFFF`
+        // for the first would just look broken.
+        fun tos(socket: DatagramSocket) =
+            runCatching { "0x%02X".format(socket.trafficClass) }.getOrDefault("n/a")
+        val sndBuf = runCatching { "${rtpSocket.sendBufferSize / 1024}KiB" }.getOrDefault("n/a")
+        RideDiagnostics.log(
+            "stream",
+            "sockets: tos ctrl=${tos(txSocket)} rtp=${tos(rtpSocket)} (neither set) " +
+                "sndbuf=$sndBuf (platform default, not set)",
+        )
     }
 
     /** Send a K1G control packet (seq patched here, like K1GTx in the reference). */
@@ -79,36 +176,74 @@ class DashSocket(private val network: android.net.Network? = null) : AutoCloseab
         DebugLog.d(TAG) { "TX →$BROADCAST:$CTRL_PORT  ${pkt.size}B  ${pkt.hexFull()}" }
         // UDP fire-and-forget: a dropped/unreachable link (ENETUNREACH, EBADF) must never
         // crash the app — the session will fail and reconnect.
+        //
+        // IOException, not Exception. The broad catch also swallowed every RuntimeException,
+        // and one of those is NetworkOnMainThreadException — the platform's own alarm that
+        // this call is on the wrong thread. Swallowed, it reads as "TX send failed (link
+        // down?): null", which is what the 2026-09-05 log said while the real fault was a
+        // send from Main (see DashSession.disconnect's runBlocking). Let it through: a
+        // programming error should stop the caller, not disguise itself as a bad link.
         try {
             txSocket.send(DatagramPacket(pkt, pkt.size, broadcastAddr, CTRL_PORT))
-        } catch (e: Exception) {
+        } catch (e: IOException) {
             DebugLog.w(TAG) { "TX send failed (link down?): ${e.message}" }
         }
     }
 
     fun sendRtp(data: ByteArray) {
+        // IOException only — see the note in [send] on why a broad catch hid a
+        // NetworkOnMainThreadException as a link failure.
         try {
             rtpSocket.send(DatagramPacket(data, data.size, dashAddr, RTP_PORT))
-        } catch (e: Exception) {
+        } catch (e: IOException) {
             DebugLog.d(TAG) { "RTP send failed (link down?): ${e.message}" }
         }
     }
 
     /**
-     * Blocks up to RECV_TIMEOUT_MS; returns null on timeout. Throws on a genuine socket
-     * error (closed/unreachable) — the caller's receive loop catches it and ends the
-     * session instead of letting the exception crash the whole app.
+     * Blocks up to RECV_TIMEOUT_MS; **null means timeout and nothing else.** Throws on a
+     * genuine socket error (closed/unreachable) — the caller's receive loop catches it and
+     * ends the session instead of letting the exception crash the whole app.
+     *
+     * That contract is load-bearing: `DashSession`'s RX loop reads null as "no traffic" and
+     * leaves `lastRxAtMs` alone, so a null returned for any OTHER reason feeds the idle
+     * watchdog and tears down a link that is in fact carrying packets. An oversized datagram
+     * therefore loops back for the next one instead of returning — it is discarded, but it
+     * is not silence.
      */
     suspend fun receive(): ByteArray? = withContext(Dispatchers.IO) {
-        val buf = DatagramPacket(ByteArray(BUF), BUF)
-        return@withContext try {
-            rxSocket.receive(buf)
+        val buf = DatagramPacket(rxBuffer, rxBuffer.size)
+        while (true) {
+            try {
+                buf.length = rxBuffer.size
+                rxSocket.receive(buf)
+            } catch (_: java.net.SocketTimeoutException) {
+                return@withContext null
+            }
+            if (buf.length > MAX_DATAGRAM) {
+                // Bigger than anything this protocol produces, and already truncated by the
+                // buffer — the tail is gone. `K1GPacket.parseIncoming` would not crash on it
+                // (it clamps every TLV to the array), it would simply read the cut-off bytes
+                // as a shorter, wrong message. Better to have nothing than a plausible lie.
+                //
+                // Reported once per socket: a firmware that sends these will send them
+                // steadily, and a warn per datagram is a synchronized append to external
+                // storage on the RX loop's own thread.
+                if (!loggedOversized) {
+                    loggedOversized = true
+                    RideDiagnostics.warn(
+                        TAG,
+                        "RX datagram over ${MAX_DATAGRAM}B from ${buf.address?.hostAddress} — " +
+                            "truncated and dropped; further ones this session are silent",
+                    )
+                }
+                continue
+            }
             val bytes = buf.data.copyOf(buf.length)
             DebugLog.d(TAG) { "RX ←${buf.address?.hostAddress}:${buf.port}  ${bytes.size}B  ${bytes.hexFull()}" }
-            bytes
-        } catch (_: java.net.SocketTimeoutException) {
-            null
+            return@withContext bytes
         }
+        @Suppress("UNREACHABLE_CODE") null
     }
 
     override fun close() {

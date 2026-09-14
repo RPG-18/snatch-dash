@@ -9,9 +9,11 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.net.wifi.WifiManager
+import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
 import com.opendash.opendash_dash_engine.util.DebugLog
+import com.opendash.opendash_dash_engine.util.RideDiagnostics
 
 /**
  * Foreground service that keeps OpenDash streaming to the dash while the
@@ -54,6 +56,8 @@ class DashKeepAliveService : Service() {
 
     private var wakeLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
+    /** LOW_LATENCY alongside HIGH_PERF — see acquireLocks for why both. */
+    private var lowLatencyLock: WifiManager.WifiLock? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -91,7 +95,22 @@ class DashKeepAliveService : Service() {
         DebugLog.i(TAG) { "Foreground service up — wake+wifi locks held" }
     }
 
+    /**
+     * Idempotent, which it was not.
+     *
+     * `ACTION_START` reaches an already-running service on a reachable path — `connect()`'s
+     * "live session, dead link" branch calls `DashKeepAliveService.start()` again — and each
+     * call used to overwrite the three lock fields while the old locks were still held. Nothing
+     * could reach them afterwards, so [releaseLocks] freed the new ones and the previous set
+     * stayed acquired for the life of the process. With the wake lock and HIGH_PERF that cost
+     * battery; with LOW_LATENCY added it also pins the Wi-Fi chip out of power save long after
+     * the ride is over. Found by review, 2026-09-13.
+     */
     private fun acquireLocks() {
+        if (wakeLock != null || wifiLock != null || lowLatencyLock != null) {
+            DebugLog.i(TAG) { "Locks already held — not acquiring a second set" }
+            return
+        }
         val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
         wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "opendash:dash").apply {
             setReferenceCounted(false)
@@ -103,9 +122,24 @@ class DashKeepAliveService : Service() {
             acquire()
         }
 
-        // HIGH_PERF keeps the link awake (prevents WiFi power-save from dropping the
-        // WifiNetworkSpecifier connection) at lower power than LOW_LATENCY. 4 fps /
-        // ~200 kbps doesn't need low-latency mode's extra power draw.
+        // TWO Wi-Fi locks, and the reason is that neither one covers the whole SDK range.
+        //
+        // The old comment here said HIGH_PERF "keeps the link awake even with the screen off,
+        // at lower power than LOW_LATENCY". True through Android 13. From 14 it is not: with
+        // `high_perf_lock_deprecated` on (its default), WifiLockManager.acquireWifiLock
+        // silently substitutes LOW_LATENCY — and LOW_LATENCY is active only while the screen
+        // is ON and the UID sits at IMPORTANCE_FOREGROUND (100). A process holding one
+        // foreground service is 125 and does not qualify. So on 14+ with the screen off, which
+        // is exactly how this app is meant to be ridden, our lock did nothing and the chip sat
+        // in 802.11 power save. Charging does not change it: WifiLockManager never looks at the
+        // battery. Sources: WifiManager javadoc, WifiLockManager.java, DeviceConfigFacade.java
+        // in packages/modules/Wifi.
+        //
+        // Holding both is the scheme the javadoc itself describes. On 10-13 HIGH_PERF does the
+        // work; on 14+ neither lock helps with the screen off, and the honest fix there is the
+        // "on the handlebars, charging" mode (a foreground activity with a black screen at
+        // minimum brightness) — not implemented, and not worth implementing until the `rx gap`
+        // numbers from DashSession say power save is actually costing us something.
         @Suppress("DEPRECATION")
         val wm = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
         @Suppress("DEPRECATION")
@@ -113,13 +147,41 @@ class DashKeepAliveService : Service() {
             setReferenceCounted(false)
             acquire()
         }
+        lowLatencyLock = wm.createWifiLock(
+            WifiManager.WIFI_MODE_FULL_LOW_LATENCY,
+            "opendash:dash-lowlatency",
+        ).apply {
+            setReferenceCounted(false)
+            acquire()
+        }
+
+        // What we know, not what we infer. The substitution is gated on the runtime
+        // `wifi_high_perf_lock_deprecated` DeviceConfig flag, not on SDK_INT — the flag merely
+        // defaults to on from 34 — and an app cannot read it. So the line says which locks are
+        // held and that a remap is LIKELY above 34, and leaves the conclusion to whoever reads
+        // it next to the `rx gap` numbers. Writing "neither lock is doing anything" into the
+        // file that exists to carry the evidence would be the same mistake the `sockets: tos`
+        // line had to unlearn: the OS accepting a request is not the request taking effect.
+        RideDiagnostics.log(
+            TAG,
+            "wifi lock: sdk=${Build.VERSION.SDK_INT} modes=high_perf+low_latency — " +
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                    "high_perf is likely remapped to low_latency here (device flag, not " +
+                        "readable), and low_latency needs the screen on — compare rx gap " +
+                        "with the screen off against the 144/489ms baseline of 2026-09-13"
+                } else {
+                    "high_perf applies on this SDK regardless of screen state"
+                },
+        )
     }
 
     private fun releaseLocks() {
         runCatching { if (wakeLock?.isHeld == true) wakeLock?.release() }
         runCatching { if (wifiLock?.isHeld == true) wifiLock?.release() }
+        runCatching { if (lowLatencyLock?.isHeld == true) lowLatencyLock?.release() }
         wakeLock = null
         wifiLock = null
+        lowLatencyLock = null
     }
 
     override fun onDestroy() {

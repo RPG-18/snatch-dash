@@ -170,7 +170,7 @@ analyze`, ни в `dart analyze` — проверено файлом с заве
 пост-мортем — файлы на устройстве. Ничего, кроме кабеля, не нужно:
 
 ```
-adb pull /sdcard/Android/data/ru.snatchdash.app/files/diag   # по файлу на сессию: [map], [session], [stream], [DashWifiManager], [MapLibre]
+adb pull /sdcard/Android/data/ru.snatchdash.app/files/diag   # по файлу на сессию: [map], [session], [stream], [gps], [DashWifiManager], [MapLibre]
 adb exec-out run-as ru.snatchdash.app cat files/app_log.txt > app_log.txt
 ```
 
@@ -183,7 +183,11 @@ adb exec-out run-as ru.snatchdash.app cat files/app_log.txt > app_log.txt
 (`if (!BuildConfig.DEBUG) return`), поэтому нативных строк в `app_log.txt` там
 нет вообще, а сам файл наполняют только Dart-строки Talker'а. Всё, что должно
 пережить релиз, идёт через `RideDiagnostics.log`/`.warn` — телеметрия рендера и
-потока, переходы WiFi-линка и нативный лог MapLibre (`MapLibreLogBridge`, W и
+потока, качество позиции (тег `[gps]`: расхождение провайдеров,
+неправдоподобная скорость, минутная сводка — заведено 13.09.2026, когда разбор
+заезда под GPS-глушилками потребовал 4.6 МБ отладочного `app_log.txt`, потому
+что `LocationTracker` писал только в `DebugLog`), переходы WiFi-линка и нативный
+лог MapLibre (`MapLibreLogBridge`, W и
 выше, с ограничением: повторы одной строки схлопываются, и не больше шести
 разных строк за 10 с — остальные считаются и отчитываются одной строкой). Что осталось только в `DebugLog` и
 поэтому доступно лишь на debug: пакетные hex-дампы `DashSocket`, покадровые

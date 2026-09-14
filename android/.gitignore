@@ -1,8 +1,24 @@
-gradle-wrapper.jar
+# The Gradle wrapper IS committed here, unlike in Flutter's stock template, which
+# ignores `gradle-wrapper.jar`, `/gradlew` and `/gradlew.bat`. That default is fine
+# for a project where Gradle is only ever invoked through `flutter build`, which
+# finds Gradle itself and never needs the script. It is wrong for this one: CI runs
+# `./gradlew :opendash_dash_engine:testDebugUnitTest` and `lintDebug` directly
+# (see .github/workflows/nightly.yml), and with the wrapper ignored those steps died
+# with `./gradlew: No such file or directory` on every run from 2026-09-11 to 09-14 —
+# four nightlies and every release, because release.yml carries the same two lines.
+#
+# Committing it is also what Gradle intends: the wrapper exists precisely so a
+# checkout builds with a pinned Gradle and no preinstalled toolchain.
+#
+# What is verified, and what is not. `gradle/actions/wrapper-validation` in both
+# workflows checksums `gradle-wrapper.jar` alone against Gradle's published list,
+# and `distributionSha256Sum` in gradle-wrapper.properties pins the 232 MB
+# distribution the jar then downloads and executes. Neither covers `gradlew` or
+# `gradlew.bat`, which are ordinary committed shell/batch scripts that CI runs —
+# they are reviewed like any other code, not checksummed. The API-key step in both
+# workflows was moved to sit after the Gradle steps for that reason.
 /.gradle
 /captures/
-/gradlew
-/gradlew.bat
 /local.properties
 /dart_defines.local.properties
 /maptiler.local.properties

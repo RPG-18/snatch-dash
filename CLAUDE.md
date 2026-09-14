@@ -171,7 +171,7 @@ analyze`, ни в `dart analyze` — проверено файлом с заве
 пост-мортем — файлы на устройстве. Ничего, кроме кабеля, не нужно:
 
 ```
-adb pull /sdcard/Android/data/ru.snatchdash.app/files/diag   # по файлу на сессию: [map], [session], [stream], [gps], [DashWifiManager], [MapLibre]
+adb pull /sdcard/Android/data/ru.snatchdash.app/files/diag   # по файлу на сессию: [map], [session], [stream], [gps], [mem], [DashWifiManager], [MapLibre]
 adb exec-out run-as ru.snatchdash.app cat files/app_log.txt > app_log.txt
 ```
 
@@ -187,7 +187,12 @@ adb exec-out run-as ru.snatchdash.app cat files/app_log.txt > app_log.txt
 потока, качество позиции (тег `[gps]`: расхождение провайдеров,
 неправдоподобная скорость, минутная сводка — заведено 13.09.2026, когда разбор
 заезда под GPS-глушилками потребовал 4.6 МБ отладочного `app_log.txt`, потому
-что `LocationTracker` писал только в `DebugLog`), переходы WiFi-линка и нативный
+что `LocationTracker` писал только в `DebugLog`), потребление памяти (тег
+`[mem]`: PSS с разбивкой java/native/graphics/code плюс системные `avail`,
+`threshold` и `lowMemory` — раз в минуту на `Dispatchers.IO`, НЕ из кадрового
+цикла, потому что `Debug.getMemoryInfo` ходит в `/proc/self/smaps` и стоит
+десятки миллисекунд; заведено 14.09.2026 после двух `LOW_MEMORY_KILL` на Xiaomi
+с 3.6 ГиБ, где ride-файл умел сказать только сам факт убийства), переходы WiFi-линка и нативный
 лог MapLibre (`MapLibreLogBridge`, W и
 выше, с ограничением: повторы одной строки схлопываются, и не больше шести
 разных строк за 10 с — остальные считаются и отчитываются одной строкой). Что осталось только в `DebugLog` и

@@ -37,6 +37,7 @@ import com.opendash.opendash_dash_engine.media.MediaInfoProvider
 import com.opendash.opendash_dash_engine.util.DebugLog
 import com.opendash.opendash_dash_engine.util.RideDiagnostics
 import com.opendash.opendash_dash_engine.util.ageMs
+import com.opendash.opendash_dash_engine.util.memorySummary
 import com.opendash.opendash_dash_engine.util.monotonicMs
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicInteger
@@ -283,6 +284,22 @@ class DashEngineController(
     // RECONNECT_GIVEUP_MS's doc.
     private var giveupJob: Job? = null
 
+    /**
+     * Per-minute `[mem]` sampler, tied to the CONNECTION rather than to the stream.
+     *
+     * Stream-scoped was the first attempt and it missed the point: the two LOW_MEMORY_KILLs
+     * of 2026-09-14 both landed at `importance=400` (CACHED), i.e. between sessions, and a
+     * sampler that only lives while STREAMING has nothing to say about the run-up. Spanning
+     * the connection covers CONNECTING/AUTHENTICATING/READY as well, which is where the short
+     * 5-12 s sessions of that ride spent most of their time.
+     *
+     * What it still cannot cover, and this is a limit of the design rather than an oversight:
+     * once the app is genuinely cached there is no session, no foreground service and no open
+     * ride file, so nothing here runs. The trend up to teardown plus [ExitInfoCollector]'s
+     * reading at the exit is the whole of what is observable from inside the process.
+     */
+    private var memJob: Job? = null
+
     // ── Destination / nav state, pushed from Dart ──
     @Volatile private var destName: String? = null
     @Volatile private var destLat: Double? = null
@@ -450,6 +467,18 @@ class DashEngineController(
             "ssid='${dashConfig.ssid}' needsDiscovery=${dashConfig.needsDiscovery} dest=$destName",
         )
         DashKeepAliveService.start(context)
+        // Started here, right after the ride file opens, so its lines cannot land in the
+        // previous ride's file — and restarted with every connect(), so a reconnect gets a
+        // fresh baseline rather than a continuation of the last one. On IO, never from the
+        // frame loop: Debug.getMemoryInfo walks /proc/self/smaps and costs tens of
+        // milliseconds against a 250 ms budget. See [memJob].
+        memJob?.cancel()
+        memJob = scope.launch(Dispatchers.IO) {
+            while (isActive) {
+                RideDiagnostics.log("mem", memorySummary(context))
+                delay(ENCODER_LOG_INTERVAL_MS)
+            }
+        }
         session.onButton = { code -> onButton?.invoke(code.toInt() and 0xFF) }
         session.onError = { msg -> publishState(errorMessage = msg) }
         locationTracker.start()
@@ -581,6 +610,9 @@ class DashEngineController(
 
     fun disconnect() {
         RideDiagnostics.log("connect", "disconnect() called")
+        // Last reading before the file closes — the one nearest whatever happens next.
+        runCatching { RideDiagnostics.log("mem", memorySummary(context)) }
+        memJob?.cancel(); memJob = null
         giveupJob?.cancel(); giveupJob = null
         // Cancelled but deliberately NOT nulled, unlike every other job here. cancel() is
         // cooperative: the frame loop keeps running on Dispatchers.Default until its next

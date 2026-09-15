@@ -498,7 +498,13 @@ class DashEngineController(
         memJob?.cancel()
         memJob = scope.launch(Dispatchers.IO) {
             while (isActive) {
-                RideDiagnostics.log("mem", memorySummary(context))
+                // Guarded, because an unguarded throw here is silent: the scope's
+                // SupervisorJob plus its handler would swallow it and this job would simply
+                // stop, taking [mem] out for the rest of the ride with nothing in the file
+                // saying so. Every other periodic reporter on this path is wrapped; this one
+                // was the exception. Review, 2026-09-15.
+                runCatching { RideDiagnostics.log("mem", memorySummary(context)) }
+                    .onFailure { DebugLog.w(TAG) { "memory probe failed: ${it.message}" } }
                 delay(ENCODER_LOG_INTERVAL_MS)
             }
         }
@@ -633,8 +639,19 @@ class DashEngineController(
 
     fun disconnect() {
         RideDiagnostics.log("connect", "disconnect() called")
-        // Last reading before the file closes — the one nearest whatever happens next.
-        runCatching { RideDiagnostics.log("mem", memorySummary(context)) }
+        // Last reading before the file closes, and worth having: on 2026-09-15 it was this
+        // sample that showed the footprint falling from 335 to 239 MiB as the snapshotter went
+        // away, which the per-minute cadence would have missed entirely.
+        //
+        // On IO, not here. [disconnect] runs on the platform thread, and memorySummary walks
+        // /proc/self/smaps — tens of milliseconds of UI stall, on the low-RAM phone this probe
+        // exists for, against its own KDoc saying never to do that. Fire-and-forget: it races
+        // the ride file closing and may occasionally lose, which is the right way round —
+        // a missing last line costs a data point, a blocked main thread costs the rider.
+        // Review, 2026-09-15.
+        scope.launch(Dispatchers.IO) {
+            runCatching { RideDiagnostics.log("mem", memorySummary(context)) }
+        }
         memJob?.cancel(); memJob = null
         giveupJob?.cancel(); giveupJob = null
         // Cancelled but deliberately NOT nulled, unlike every other job here. cancel() is
@@ -1026,21 +1043,26 @@ class DashEngineController(
         /**
          * Gate 0 of pipeline.md: what each `drain()` actually yielded.
          *
-         * [drainMiss] counts iterations where the frame just rendered did NOT come out within
-         * DRAIN_TIMEOUT_US, so it is drained on a later iteration and carries THAT iteration's
-         * `videoPtsMs`. [drainDouble] counts iterations that yielded two or more frames — the
-         * visible consequence, because those go out stamped identically and a decoder
-         * scheduling by timestamp shows the second immediately.
+         * [drainMiss] counts iterations where the frame just rendered did not come out within
+         * DRAIN_TIMEOUT_US and was left for a later one; [drainDouble] counts iterations that
+         * yielded two or more frames, which is the same event seen from the other end.
          *
-         * Two counters rather than one because they answer different questions. A steady
-         * stream of misses with no doubles is a constant one-interval lag: invisible on a
-         * static 526x300 map and not worth work. Doubles mean the even spacing `videoPtsMs`
-         * exists to provide is already broken in the field.
+         * **What they measured, and what they measure now.** Until 2026-09-15 a double meant
+         * two access units went out with the SAME RTP timestamp, because the clock advanced
+         * per iteration rather than per frame — and that was the one telemetry difference
+         * between a Huawei whose map kept freezing (drainMiss median 22 a minute) and a Xiaomi
+         * whose map did not (0 in 73 of 92 windows). Since the clock moved into `onEncoded`
+         * the stamps are distinct and evenly spaced whatever the codec does, so these two now
+         * report a property of the ENCODER and nothing about what reaches the dash:
+         * `OMX.hisi.video.encoder.avc` misses 5-20% of its windows, `c2.mtk.avc.encoder`
+         * almost none. Still worth watching — a rise means the codec is falling behind — but
+         * a nonzero is no longer a defect in the stream.
          *
-         * This exists BEFORE any rework of the encode path, on purpose. The last three
-         * attempts to improve this pipeline by reasoning — RTP pacing, DSCP, a 256 KiB
-         * SO_SNDBUF — were all wrong in the field, and the two that shipped made the picture
-         * worse. Three lines of counter first.
+         * This existed BEFORE any rework of the encode path, on purpose, and that paid off:
+         * the reading redirected the fix from pipeline.md's stage 6 (async MediaCodec, a
+         * rewrite of the live encoder) to three lines in the callback. The three attempts
+         * before it — RTP pacing, DSCP, a 256 KiB SO_SNDBUF — were reasoned rather than
+         * measured, all wrong in the field, and the two that shipped made the picture worse.
          */
         val drainMiss = AtomicInteger(0)
         val drainDouble = AtomicInteger(0)
@@ -1066,6 +1088,21 @@ class DashEngineController(
         // more correct RTP practice regardless, just not proven to fix anything real here.
         var videoPtsMs = 0L
 
+        /**
+         * How far [videoPtsMs] moves per FRAME — set by the loop, consumed by `onEncoded`.
+         *
+         * It lives out here because the callback runs inside `enc.drain()` and cannot see the
+         * loop's `frameIntervalMs`. Plain `var` for the same reason [videoPtsMs] is: `drain()`
+         * invokes the callback synchronously on the frame loop's own coroutine, so both are
+         * single-threaded.
+         *
+         * A frame drained late therefore carries the step in force when it came OUT, not when
+         * it was rendered. Across an fps flip that shifts one frame's spacing once; the old
+         * scheme mis-stamped that same frame more coarsely, and neither is worth carrying a
+         * per-frame step around for.
+         */
+        var ptsStepMs = 1000L / FPS_IDLE
+
         // Collects rather than sends. The frame loop runs on Dispatchers.Default, and
         // DatagramSocket.send is a syscall that blocks when the Wi-Fi driver's queue is
         // full — so the old shape put the render loop's deadline at the mercy of the
@@ -1084,6 +1121,27 @@ class DashEngineController(
             // anyone reading "size of the last frame", once per session, at exactly
             // the moment they start looking.
             if (!isConfig) {
+                // Advanced HERE, per frame that actually came out of the codec, and not once
+                // per loop iteration as it was until 2026-09-15. Before `nalProc.process`
+                // below, which runs the packetizer synchronously and reads [videoPtsMs].
+                //
+                // The defect this fixes, measured on the ride of that date: when the encoder
+                // misses its DRAIN_TIMEOUT_US window the frame comes out on the NEXT
+                // iteration — by which time the old code had already advanced the clock — so
+                // it carried that iteration's stamp, and if the next frame made it too, two
+                // access units went out stamped identically. On the Huawei's
+                // OMX.hisi.video.encoder.avc that was 5-20% of frames (drainMiss median 22 a
+                // minute); on the Xiaomi's c2.mtk.avc.encoder it was 0 in 73 of 92 windows.
+                // The Huawei is also the phone whose map kept freezing while the Xiaomi's kept
+                // updating, with drop=, wedged=, timeouts= and link losses identical and clean
+                // on both — this was the only telemetry difference between them.
+                //
+                // Counting frames instead of iterations makes the stamps monotonic and evenly
+                // spaced by construction, which is the property videoPtsMs was introduced for
+                // and did not actually have. The misses themselves remain; they belong to the
+                // encoder, and RFC 6184's 90 kHz clock does not care when a frame was handed
+                // over, only that distinct frames carry distinct instants.
+                videoPtsMs += ptsStepMs
                 framesEncoded++
                 lastEncodedBytes = annexB.size
                 framesSentTotal = framesEncoded
@@ -1306,10 +1364,10 @@ class DashEngineController(
                             }
                             val encodeStart = monotonicMs()
                             enc.renderFrame { canvas -> canvas.drawBitmap(bmp, 0f, 0f, null) }
-                            // Advance the presentation clock by THIS frame's interval BEFORE
-                            // draining, so the frame(s) pulled this iteration carry an
-                            // evenly-spaced RTP timestamp — see videoPtsMs's own doc above.
-                            videoPtsMs += frameIntervalMs
+                            // Publish the step; the clock itself advances per drained frame
+                            // inside `onEncoded`. Advancing it here was what let two frames
+                            // pulled in one drain share a timestamp — see that callback.
+                            ptsStepMs = frameIntervalMs
                             when (enc.drain()) {
                                 0 -> drainMiss.incrementAndGet()
                                 1 -> Unit
@@ -1634,7 +1692,17 @@ class DashEngineController(
      * them upright itself (spec/drawing_from_local_tiles.md, «Камера, а не
      * поворот растра»).
      */
-    private fun cameraFor(centerLat: Double, centerLng: Double, heading: Float): CameraPosition =
+    private fun cameraFor(
+        centerLat: Double,
+        centerLng: Double,
+        heading: Float,
+        // Passed in, not read from the field. This used to read the volatile [headingUp]
+        // TWICE — once for bearing, once for tilt — so a toggle landing between them produced
+        // a north-up raster with a 45° tilt, or the reverse. The caller already holds one read
+        // for the whole frame; taking it as a parameter makes that the only read there is.
+        // Review, 2026-09-15.
+        headingUp: Boolean,
+    ): CameraPosition =
         CameraPosition.Builder()
             .target(LatLng(centerLat, centerLng))
             .zoom(zoom / ZOOM_SCALE)
@@ -1685,7 +1753,7 @@ class DashEngineController(
         // One read of the volatile [headingUp] for both the padding and the log, so
         // a toggle landing mid-frame cannot make them disagree about the mode.
         val headingUpNow = headingUp
-        val camera = cameraFor(centerLat, centerLng, heading)
+        val camera = cameraFor(centerLat, centerLng, heading, headingUpNow)
         val padding = DashCamera.padding(DashEncoder.WIDTH, DashEncoder.HEIGHT, headingUpNow, panX, panY)
         logCameraSend(camera, padding, headingUpNow)
 

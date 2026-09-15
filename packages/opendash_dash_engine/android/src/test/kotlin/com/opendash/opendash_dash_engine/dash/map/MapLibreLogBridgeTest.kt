@@ -1,6 +1,5 @@
 package com.opendash.opendash_dash_engine.dash.map
 
-import com.opendash.opendash_dash_engine.util.monotonicMs
 import com.opendash.opendash_dash_engine.util.DebugLog
 import com.opendash.opendash_dash_engine.util.RideDiagnostics
 import kotlin.test.AfterTest
@@ -35,7 +34,12 @@ class MapLibreLogBridgeTest {
     @AfterTest
     fun tearDown() {
         DebugLog.sink = null
-        MapLibreLogBridge.clockMs = ::monotonicMs
+        // NOT the production default `::monotonicMs`: that calls SystemClock.elapsedRealtime,
+        // which throws "not mocked" in this module's unit tests — the same reason PositionTrust
+        // has no default clock at all. Restoring it here would leave a throwing clock on a
+        // shared singleton for whatever test runs next. A wall clock is wrong for a duration in
+        // production and perfectly safe as a test's parting value. Review, 2026-09-15.
+        MapLibreLogBridge.clockMs = System::currentTimeMillis
     }
 
     private fun log(msg: String) = MapLibreLogBridge.ride("Mbgl", msg, null)

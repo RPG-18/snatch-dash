@@ -196,8 +196,7 @@ internal class FixFilter {
  * Separate from [FixFilter] on purpose: the filter picks between fixes, this one asks whether
  * any of them should be trusted at all. It therefore observes EVERY fix, including the ones the
  * filter threw away — a rejected fix is still evidence about the receiver.
- */
-/**
+ *
  * @param nowMs the monotonic clock, REQUIRED — there is deliberately no default.
  *
  * A default of `::monotonicMs` would drag `SystemClock` into a file whose whole point is that

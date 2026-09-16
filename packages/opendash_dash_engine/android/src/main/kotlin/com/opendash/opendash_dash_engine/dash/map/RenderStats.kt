@@ -91,30 +91,6 @@ class RenderStats {
     }
 
     /**
-     * Starts a fresh window, throwing away whatever the previous stream left.
-     *
-     * Called at the top of each stream because the window and the frame loop have
-     * different lifetimes: this object belongs to the controller, `lastRenderLogAt`
-     * is a local of the loop. A session that ended before its 30-second window
-     * closed used to carry its frames into the NEXT session's first window, which
-     * was measured from zero — that is where `frames=195/120` came from in the
-     * 2026-09-04 logs (plan.md 1.6). Not a fast loop: two sessions added up.
-     * `frames=sent/expected` is the number the whole "wait for the snapshot"
-     * decision rests on, so it has to mean one session's worth of frames.
-     */
-    fun reset() {
-        snapshotMs.drain()
-        overlayMs.drain()
-        encodeMs.drain()
-        sendIntervalMs.drain()
-        frames = 0
-        redraws = 0
-        lateSnapshots = 0
-        blankMaps = 0
-        intendedTotalMs = 0
-    }
-
-    /**
      * One line for the ride log, then the window resets.
      *
      * The `frames=sent/expected` pair is the number the whole "the loop waits for

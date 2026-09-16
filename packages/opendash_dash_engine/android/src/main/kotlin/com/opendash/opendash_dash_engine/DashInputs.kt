@@ -47,7 +47,8 @@ internal data class RouteGeometry(
  * every field it draws describes the same instant — which is the property the individual
  * fields could not give however carefully each one was published.
  *
- * Camera state is deliberately absent; see the note next to `DashEngineController.zoom`.
+ * Camera state is deliberately absent — it flows both ways and lives in `DashCameraState`,
+ * whose KDoc says why.
  */
 internal data class DashInputs(
     /** The destination's label, which may be set while [dest] is not — see [Destination]. */

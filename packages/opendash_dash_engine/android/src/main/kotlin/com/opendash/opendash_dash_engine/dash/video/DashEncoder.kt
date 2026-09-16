@@ -29,7 +29,7 @@ import com.opendash.opendash_dash_engine.util.RideDiagnostics
  *   any other (NalProcessor needs it) but is not a frame — anything counting frames or
  *   measuring their size has to skip it or it reports 30 bytes of parameter sets.
  */
-class DashEncoder(private val onEncodedData: (ByteArray, Boolean, Boolean) -> Unit) {
+class DashEncoder(private val onEncodedData: (ByteArray, Boolean, Boolean) -> Unit) : FrameEncoder {
     companion object {
         const val WIDTH   = 526
         const val HEIGHT  = 300
@@ -329,7 +329,7 @@ class DashEncoder(private val onEncodedData: (ByteArray, Boolean, Boolean) -> Un
     }
 
     /** Draw one frame into the encoder via hardware canvas. */
-    fun renderFrame(draw: (Canvas) -> Unit) {
+    override fun renderFrame(draw: (Canvas) -> Unit) {
         val surface = inputSurface ?: return
         val canvas = try {
             surface.lockHardwareCanvas()
@@ -361,7 +361,7 @@ class DashEncoder(private val onEncodedData: (ByteArray, Boolean, Boolean) -> Un
      *   Whether any of that happens in the field is unmeasured, and the whole point of
      *   returning a number here is to stop guessing before rebuilding this path.
      */
-    fun drain(): Int {
+    override fun drain(): Int {
         val codec = codec ?: return 0
         var frames = 0
         val info = MediaCodec.BufferInfo()
@@ -402,14 +402,14 @@ class DashEncoder(private val onEncodedData: (ByteArray, Boolean, Boolean) -> Un
      * dash has two. Failure is logged and swallowed: a codec that will not
      * retarget is a stream at the wrong bitrate, not a stream that should stop.
      */
-    fun requestBitrate(bps: Int) {
+    override fun requestBitrate(bps: Int) {
         val c = codec ?: return
         runCatching {
             c.setParameters(Bundle().apply { putInt(MediaCodec.PARAMETER_KEY_VIDEO_BITRATE, bps) })
         }.onFailure { DebugLog.w(TAG) { "requestBitrate($bps) failed: ${it.message}" } }
     }
 
-    fun release() {
+    override fun release() {
         runCatching { codec?.stop() }
         runCatching { codec?.release() }
         codec = null

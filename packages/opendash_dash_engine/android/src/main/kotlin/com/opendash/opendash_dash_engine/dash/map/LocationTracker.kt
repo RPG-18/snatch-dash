@@ -288,3 +288,33 @@ class LocationTracker(context: Context, private val scope: CoroutineScope) {
         null
     }
 }
+
+/** How good the current fix is, as the frame overlay and the Dash screen both read it. */
+internal data class GpsFlags(val lost: Boolean, val weak: Boolean)
+
+/** A fix older than this counts as "GPS lost" for the Dash screen's chip. */
+internal const val GPS_FIX_STALE_MS = 4_000L
+
+/** Horizontal accuracy (m) above which a fix counts as "GPS weak". */
+internal const val GPS_WEAK_ACCURACY_M = 25f
+
+/**
+ * The two GPS chips, derived from one fix and one verdict.
+ *
+ * Takes the fix rather than reading the tracker, because the two callers must each derive
+ * the flags from the read THEY made: the frame loop works from one snapshot of the position
+ * for the whole frame, while `publishState` takes its own — a shared read would publish a
+ * value one tick stale on the main-thread path.
+ *
+ * A contradictory position reads as "weak" rather than getting a flag of its own. The
+ * distinction — imprecise versus untrustworthy — is real, but the rider's need is identical
+ * ("do not act on this"), and `gpsWeak` already reaches both the frame overlay and the Dart
+ * state, so folding it in warns them without a new field through two layers. See
+ * [PositionTrust]: on 2026-09-13 accuracy said 10-20 m while the position was 70 km out, and
+ * this chip stayed green for the whole ride.
+ */
+internal fun gpsFlags(loc: Location?, trusted: Boolean): GpsFlags {
+    val lost = loc == null || loc.ageMs() > GPS_FIX_STALE_MS
+    val weak = !lost && ((loc?.accuracy ?: 0f) > GPS_WEAK_ACCURACY_M || !trusted)
+    return GpsFlags(lost = lost, weak = weak)
+}

@@ -119,6 +119,15 @@ class FrameStreamerTest {
 
     // ── Helpers ──────────────────────────────────────────────────────────
 
+    /**
+     * The periodic `[stream]` line, not the `[map]` one.
+     *
+     * Both open with `frames=`, so picking by prefix quietly matched whichever was written
+     * last — which is how the first draft of these tests read a render window and looked for
+     * drop accounting in it. `drainMiss=` appears only in the stream line.
+     */
+    private fun streamLine(): String = logLines.last { it.contains("drainMiss=") }
+
     /** One `name=<number>` field out of a ride-log line, by exact name. */
     private fun field(line: String, name: String): Int =
         Regex("(?:^|\\s)$name=(\\d+)").find(line)?.groupValues?.get(1)?.toInt()
@@ -149,6 +158,16 @@ class FrameStreamerTest {
         var encoders = 0
         var lastEncoder: FakeEncoder? = null
         var streaming = true
+
+        /**
+         * How far the clock runs ahead of the scheduler once [penaltyFromMs] passes.
+         *
+         * Virtual `delay` is exact, so a late wake-up cannot happen on its own here — and
+         * "the clock says more time passed than we asked to sleep" is precisely what being
+         * descheduled looks like from inside the loop.
+         */
+        var clockPenaltyMs = 0L
+        var penaltyFromMs = Long.MAX_VALUE
         var sender: ((ByteArray) -> Unit)? = { sent += it }
         var previewSink: ((Map<String, Any?>) -> Unit)? = null
 
@@ -166,10 +185,16 @@ class FrameStreamerTest {
             previewSink = { previewSink },
             decoderOpens = { 0 },
             thermal = { "OK" },
-            clock = { scope.testScheduler.currentTime },
+            clock = {
+                val t = scope.testScheduler.currentTime
+                if (t >= penaltyFromMs) t + clockPenaltyMs else t
+            },
             // The sender shares the test's scheduler instead of Dispatchers.IO, so "the
             // socket is busy" is something the test can hold still rather than race with.
             senderContext = EmptyCoroutineContext,
+            // The counterfactual probe too: on Dispatchers.Default it would sleep in REAL
+            // time while everything else here runs on virtual, and compare two clocks.
+            probeContext = EmptyCoroutineContext,
         )
 
         fun start(): Job {
@@ -321,7 +346,7 @@ class FrameStreamerTest {
         advanceTimeBy(500)
         job.join()
 
-        val line = logLines.last { it.startsWith("frames=") }
+        val line = streamLine()
         // Parsed, not matched as a substring: `contains("drop=11")` was the first version
         // of this assertion and it passed against the real `drop=118` as a prefix — so it
         // would have passed against 110 or 1100 just as happily, and the one test guarding
@@ -333,6 +358,68 @@ class FrameStreamerTest {
         assertEquals(encoded - 4, dropped, "every frame past the queue's depth is counted: $line")
         assertEquals(0, field(line, "dropIdr"), "none of them were key frames: $line")
         assertTrue(rig.sent.isEmpty())
+    }
+
+    // ── The stage-6 gate: was the loop waiting for a scheduler? ──────────
+
+    @Test
+    fun `a frame that overruns its budget is not reported as scheduling delay`() = runTest {
+        val rig = Rig(this)
+        rig.source.advanceCostMs = 700      // 200 ms past the idle budget, every iteration
+        val job = rig.start()
+
+        advanceTimeBy(61_000)
+        rig.streaming = false
+        advanceTimeBy(1_000)
+        job.join()
+
+        // The loop never slept, so there was nothing to be late from. Counting the overrun
+        // here would blame the scheduler for our own work — and would have made the case for
+        // dedicated threads out of a snapshot that took too long.
+        val line = streamLine()
+        // `-`, not `0/0/0`: an empty sample is not a measurement of zero, and the ride file
+        // says so — the same marker every other percentile field in this line uses.
+        assertTrue(line.contains("wakeLate=-ms"), "no sleep, no lateness: $line")
+        // And the reason the sample is empty is printed next to it. Without this number a
+        // window where EVERY frame overran looks exactly like a window where nothing went
+        // wrong — both show `wakeLate=-ms`. Found by review, 2026-09-16.
+        assertTrue(field(line, "overrun") > 0, "the overruns are counted: $line")
+    }
+
+    @Test
+    fun `a late wake-up is measured and reported`() = runTest {
+        val rig = Rig(this)
+        val job = rig.start()
+        rig.penaltyFromMs = 30_000
+        rig.clockPenaltyMs = 40
+
+        advanceTimeBy(61_000)
+        rig.streaming = false
+        advanceTimeBy(1_000)
+        job.join()
+
+        val line = streamLine()
+        val max = Regex("wakeLate=\\d+/\\d+/(\\d+)ms").find(line)?.groupValues?.get(1)?.toInt()
+        assertTrue(max != null && max >= 40, "the hiccup reaches the ride file: $line")
+    }
+
+    @Test
+    fun `the shared pool is probed alongside every sleep`() = runTest {
+        val rig = Rig(this)
+        val job = rig.start()
+
+        advanceTimeBy(61_000)
+        rig.streaming = false
+        advanceTimeBy(1_000)
+        job.join()
+
+        // max/over50/n. The count is what matters here: one probe per sleeping iteration, so
+        // the counterfactual covers the same window the loop does. Its VALUE is meaningless
+        // under virtual time — nothing is ever late — and that is fine: what a real pool does
+        // is a question for the ride file, not for this test.
+        val probes = Regex("poolLate=\\d+/\\d+/(\\d+)").find(streamLine())?.groupValues?.get(1)?.toInt()
+        assertTrue(probes != null && probes > 100, "one probe per sleep: ${streamLine()}")
+        assertTrue(job.isCompleted, "and no probe outlives the stream")
     }
 
     // ── Failures ─────────────────────────────────────────────────────────

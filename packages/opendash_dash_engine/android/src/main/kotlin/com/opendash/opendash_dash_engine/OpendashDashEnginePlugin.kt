@@ -59,7 +59,7 @@ class OpendashDashEnginePlugin : FlutterPlugin, MethodCallHandler, EventChannel.
     private val frameStreamHandler = object : EventChannel.StreamHandler {
         override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
             // Hops to Main: EventSink.success must be called on the platform
-            // thread, and the frame loop runs on Dispatchers.Default.
+            // thread, and the frame loop runs on its own `dash-frame` thread.
             val sink: (Map<String, Any?>) -> Unit = { payload -> scope.launch { events?.success(payload) } }
             frameSink = sink
             controller?.onFramePreview = sink

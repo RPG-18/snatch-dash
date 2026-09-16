@@ -13,6 +13,7 @@ import java.util.concurrent.atomic.AtomicLong
 import kotlin.coroutines.CoroutineContext
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
@@ -93,8 +94,11 @@ internal interface FrameSource {
  *   [com.opendash.opendash_dash_engine.dash.map.PositionTrust]: a default of `::monotonicMs`
  *   drags `SystemClock` into a JVM test, and a default of `System::currentTimeMillis` is the
  *   wall-clock bug this project keeps re-learning (pipeline.md §4.1).
- * @param senderContext where the RTP sender runs. `Dispatchers.IO` in production because
- *   `DatagramSocket.send` is a blocking syscall; the test scheduler in tests.
+ * @param senderContext where the RTP sender runs: `StreamThreads.rtp` — a thread of this
+ *   stream's own — in production, because `DatagramSocket.send` is a blocking syscall and
+ *   blocking a shared pool thread is how the rest of the engine loses its workers. The
+ *   `Dispatchers.IO` default is what a caller gets who arranges nothing; the tests pass the
+ *   test scheduler.
  */
 internal class FrameStreamer(
     private val source: FrameSource,
@@ -106,6 +110,16 @@ internal class FrameStreamer(
     private val thermal: () -> String,
     private val clock: () -> Long,
     private val senderContext: CoroutineContext = Dispatchers.IO,
+    /** One line naming the threads this stream runs on; null when nobody arranged any. */
+    private val threadsReport: suspend () -> String? = { null },
+    /**
+     * Where the counterfactual probe sleeps — the shared pool in production, see [poolLateMax].
+     *
+     * A parameter for the same reason [clock] is: `Dispatchers.Default` inside `runTest` runs
+     * on real threads and real time while everything else in the test runs on virtual time,
+     * so the probe would both slow the suite down and compare two different clocks.
+     */
+    private val probeContext: CoroutineContext = Dispatchers.Default,
 ) {
     companion object {
         private const val TAG = "FrameStreamer"
@@ -135,7 +149,7 @@ internal class FrameStreamer(
     }
 
     // Written by [prepareEncoder] on the thread that starts the stream and read by the loop
-    // on Dispatchers.Default (and rewritten there when it rebuilds a wedged encoder) —
+    // on `dash-frame` (and rewritten there when it rebuilds a wedged encoder) —
     // @Volatile so neither side works off a cached reference. The encoder is released by the
     // loop itself, in its finally: nothing else can know that the last renderFrame/drain has
     // returned.
@@ -222,6 +236,57 @@ internal class FrameStreamer(
     private val drainMiss = AtomicInteger(0)
     private val drainDouble = AtomicInteger(0)
 
+    /**
+     * Gate for stage 6 of pipeline.md: how long after its deadline the loop actually woke up.
+     *
+     * Measured only on iterations that really slept — if the body overran the budget there
+     * was no sleep to be late from, and counting the overrun here would report our own work
+     * as scheduling delay, which is the one thing this number must not do.
+     *
+     * **What it does NOT measure, and the mistake that matters.** This counter shipped in the
+     * same build as the dedicated threads it was meant to judge, so it can only ever describe
+     * the NEW arrangement — it never saw `Dispatchers.Default` and cannot say what the shared
+     * pool used to cost. Gate 0 worked precisely because it shipped one build EARLIER than the
+     * change it gated; this one did not, and calling it a verdict on the pool would be reading
+     * a number that was never taken. Found by review, 2026-09-16.
+     *
+     * What it does measure is still worth having: how late this loop wakes on its own thread.
+     * Near zero means the current arrangement meets its deadline; tens of milliseconds mean
+     * even a dedicated thread at `THREAD_PRIORITY_DISPLAY` is losing the CPU, which would be
+     * a finding about the phone rather than about the dispatcher. The counterfactual — what
+     * the shared pool would have done under the same conditions — is [poolLate].
+     */
+    private val wakeLate = Percentiles()
+
+    /**
+     * The same sleep, on `Dispatchers.Default`, for as long as this stream runs.
+     *
+     * A probe rather than an argument. §4.3 makes the case against the shared pool entirely
+     * from documentation, and three earlier changes made from equally sound unmeasured
+     * arguments — RTP pacing, DSCP, a 256 KiB SO_SNDBUF — were all wrong in the field, two of
+     * them visibly. Since the gate above can no longer answer the question (it ships with the
+     * cure), this samples the pool directly: every iteration that sleeps also asks a coroutine
+     * on `Default` to sleep exactly as long, and records how late THAT one woke.
+     *
+     * Atomics, not [Percentiles]: this is the one counter written from another thread, and
+     * `Percentiles` is not thread-safe — the same reason `rxGaps` is collected inside the RX
+     * loop rather than in the logger. Max and a count past 50 ms rather than percentiles,
+     * because the question is binary — was the pool ever late enough to miss a frame — and 50
+     * ms is a fifth of the 4 fps budget.
+     */
+    private val poolLateMax = AtomicLong(0)
+    private val poolLateOver50 = AtomicInteger(0)
+    private val poolProbes = AtomicInteger(0)
+
+    /**
+     * Iterations whose body overran the budget, so there was no sleep to be late from.
+     *
+     * Printed next to [wakeLate] because without it an empty sample reads as a calm window:
+     * a stretch where every single frame overran would print `wakeLate=-ms`, which looks
+     * exactly like a stretch where nothing ever went wrong. Found by review, 2026-09-16.
+     */
+    private val overruns = AtomicInteger(0)
+
     // Filled by the packetizer callback during one nalProc.process() call, then handed
     // to the outbox as a unit. Only ever touched from the frame-loop coroutine.
     private val auPackets = ArrayList<ByteArray>(32)
@@ -265,10 +330,10 @@ internal class FrameStreamer(
      */
     private var ptsStepMs = 1000L / FPS_IDLE
 
-    // Collects rather than sends. The frame loop runs on Dispatchers.Default, and
-    // DatagramSocket.send is a syscall that blocks when the Wi-Fi driver's queue is
-    // full — so the old shape put the render loop's deadline at the mercy of the
-    // radio, and gave the burst nowhere to be paced from (audit §4.1).
+    // Collects rather than sends. `DatagramSocket.send` is a syscall that blocks when the
+    // Wi-Fi driver's queue is full, and the frame loop calling it inline put the render
+    // deadline at the mercy of the radio (audit §4.1). The queue is what decouples them;
+    // since 2026-09-16 the sender also has a thread of its own to block on.
     private val packetizer = RtpPacketizer { rtpPkt -> auPackets += rtpPkt }
 
     // endOfAU comes from NalProcessor, which knows which NAL closes the access unit —
@@ -354,6 +419,11 @@ internal class FrameStreamer(
      * The stream itself. Returns when the session stops streaming or the caller cancels.
      */
     suspend fun run() = coroutineScope {
+        // Before anything else, and once per stream: which threads this loop and its sender
+        // actually got, and at what priority. Asking for THREAD_PRIORITY_DISPLAY is not the
+        // same as getting it (see StreamThreads.report), and a refusal that says nothing is
+        // a change that cannot be told from a working one.
+        threadsReport()?.let { RideDiagnostics.log("stream", it) }
         // A child of this scope, so cancelling the stream cancels it — no separate
         // teardown path, which is the property the rest of this file keeps paying for.
         launch(senderContext) {
@@ -409,6 +479,10 @@ internal class FrameStreamer(
                 }
             }
         }
+        // Kept outside the try so the finally can reach it: the probes are children of this
+        // scope, and without cancelling the last one the stream's teardown would wait out a
+        // sleep whose answer nobody will read.
+        var probeJob: Job? = null
         try {
             var failures = 0
             var lastEncoderLogAt = clock()
@@ -533,6 +607,9 @@ internal class FrameStreamer(
                                     // stalled window's count leaks into the next one.
                                     "drainMiss=${drainMiss.getAndSet(0)} " +
                                     "drainDouble=${drainDouble.getAndSet(0)} " +
+                                    "wakeLate=${wakeLate.drain()}ms " +
+                                    "overrun=${overruns.getAndSet(0)} " +
+                                    "poolLate=${drainPoolLate()} " +
                                     "fpsFlips=$dFlips thermal=$thermalLabel",
                             )
                         } else {
@@ -547,6 +624,9 @@ internal class FrameStreamer(
                                     "dropIdr=${rtpDroppedIdr.getAndSet(0)} " +
                                     "drainMiss=${drainMiss.getAndSet(0)} " +
                                     "drainDouble=${drainDouble.getAndSet(0)} " +
+                                    "wakeLate=${wakeLate.drain()}ms " +
+                                    "overrun=${overruns.getAndSet(0)} " +
+                                    "poolLate=${drainPoolLate()} " +
                                     "fpsFlips=$dFlips " +
                                     "bitrate=${if (idleBitrate) "idle" else "moving"} " +
                                     "thermal=$thermalLabel in the last ${intervalS}s",
@@ -602,9 +682,30 @@ internal class FrameStreamer(
                 // and shows up as `frames=X/expected` plus `late=` in the render log,
                 // which is the honest reading — videoPtsMs advances by the nominal
                 // interval, and that stays truthful for as long as the budget is kept.
-                delay((frameIntervalMs - (clock() - iterationStartMs)).coerceAtLeast(0L))
+                val remainingMs = frameIntervalMs - (clock() - iterationStartMs)
+                if (remainingMs > 0) {
+                    // The counterfactual, started before our own sleep so both wait through
+                    // the same stretch of wall time under the same system load — see
+                    // [poolLateMax]. It is a child of this scope, so it dies with the stream.
+                    probeJob = launch(probeContext) {
+                        val target = clock() + remainingMs
+                        delay(remainingMs)
+                        val late = (clock() - target).coerceAtLeast(0L)
+                        poolProbes.incrementAndGet()
+                        if (late > 50) poolLateOver50.incrementAndGet()
+                        poolLateMax.updateAndGet { maxOf(it, late) }
+                    }
+                    delay(remainingMs)
+                    wakeLate.add((clock() - (iterationStartMs + frameIntervalMs)).coerceAtLeast(0L))
+                } else {
+                    overruns.incrementAndGet()
+                    // Still a suspension point: without one, a loop that never fits its budget
+                    // would never give the dispatcher a chance to deliver cancellation.
+                    delay(0L)
+                }
             }
         } finally {
+            probeJob?.cancel()
             // The loop is the last thing that draws into this encoder, so it is the only
             // place that can free it without racing renderFrame/drain — see the note in
             // DashEngineController.disconnect. Runs on cancellation too (nothing here
@@ -627,6 +728,10 @@ internal class FrameStreamer(
             rtpOutbox.cancel()
         }
     }
+
+    /** `max/over50/n` for the window, and a fresh window — see [poolLateMax]. */
+    private fun drainPoolLate(): String =
+        "${poolLateMax.getAndSet(0)}/${poolLateOver50.getAndSet(0)}/${poolProbes.getAndSet(0)}"
 
     /**
      * One frame plus its numbers to the debug screen, or nothing at all — see [previewSink].

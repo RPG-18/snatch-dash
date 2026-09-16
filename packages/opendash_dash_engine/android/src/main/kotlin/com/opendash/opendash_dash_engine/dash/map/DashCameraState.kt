@@ -1,7 +1,6 @@
 package com.opendash.opendash_dash_engine.dash.map
 
 import com.opendash.opendash_dash_engine.util.RideDiagnostics
-import com.opendash.opendash_dash_engine.util.monotonicMs
 
 /**
  * Where the dash's map camera is pointing, and the controls that move it.
@@ -15,15 +14,21 @@ import com.opendash.opendash_dash_engine.util.monotonicMs
  * class, where the camera needs a home anyway"; this is that home (pipeline.md §4.8).
  *
  * Nothing about the concurrency changed in the move. The same six fields carry `@Volatile`
- * for the same reason — a button press has to be seen by a loop on `Dispatchers.Default` —
+ * for the same reason — a button press has to be seen by a loop on another thread —
  * and [panAtBound] is still deliberately without it, because it gates a log line and nothing
  * else.
  *
  * @param frameWidth  frame width in pixels; with [frameHeight] it bounds the pan.
+ * @param clock monotonic milliseconds, and a parameter with NO default — the same rule
+ *   [PositionTrust] follows and for the same two reasons: `::monotonicMs` would drag
+ *   `SystemClock` into a JVM test, and `System::currentTimeMillis` is the wall-clock bug this
+ *   project keeps re-learning. Without it this class could not be tested at all, which is how
+ *   `setFollowMode(false)` stayed a no-op unnoticed (see it).
  */
 internal class DashCameraState(
     private val frameWidth: Int,
     private val frameHeight: Int,
+    private val clock: () -> Long,
 ) {
     companion object {
         // ── Map camera (spec/drawing_from_local_tiles.md) ──
@@ -103,7 +108,7 @@ internal class DashCameraState(
 
     // The first six are written by the MethodChannel handlers on the main
     // thread (joystick zoom/pan/recenter) and read by the frame loop on
-    // Dispatchers.Default, so they need @Volatile — otherwise a button press
+    // the `dash-frame` thread, so they need @Volatile — otherwise a button press
     // can go unseen by the frame loop.
     @Volatile var zoom = ZOOM_DEFAULT
         private set
@@ -122,7 +127,7 @@ internal class DashCameraState(
      * instead of every call.
      *
      * Written from BOTH threads — [panBy] and [setFollowMode] on the platform thread,
-     * [releasePanIfIdle] on Dispatchers.Default when the manual-pan idle expires — and
+     * [releasePanIfIdle] on `dash-frame` when the manual-pan idle expires — and
      * deliberately not @Volatile. It gates a log line and nothing else, so the worst case is
      * one bound-hit message lost or repeated. Said out loud because a previous comment
      * claimed "MethodChannel thread only", which was wrong and would send the next reader
@@ -150,7 +155,7 @@ internal class DashCameraState(
         private set
 
     // These two are the exception to the note above: the frame loop writes them on
-    // Dispatchers.Default while publishState() reads them from Main for the Dash
+    // `dash-frame` while publishState() reads them from Main for the Dash
     // screen's compass. Without @Volatile that read is a data race — in practice a
     // stale or torn heading on the phone's own preview, which is cosmetic, but
     // "cosmetic race" is not a thing the memory model promises.
@@ -163,10 +168,21 @@ internal class DashCameraState(
 
     fun setFollowMode(enabled: Boolean) {
         followMode = enabled
-        // Cleared with the pan itself, here and in the other two places pan resets:
-        // a stale flag would swallow the log line for the next genuine bound-hit,
-        // which is the one thing this flag exists to report.
-        if (enabled) { panX = 0f; panY = 0f; panAtBound = false }
+        if (enabled) {
+            // Cleared with the pan itself, here and in the other two places pan resets:
+            // a stale flag would swallow the log line for the next genuine bound-hit,
+            // which is the one thing this flag exists to report.
+            panX = 0f; panY = 0f; panAtBound = false
+        } else {
+            // Turning follow OFF starts the manual window, exactly as a pan does. Without
+            // this the timer still held whatever the last pan left — usually zero — so
+            // [releasePanIfIdle] found `now - 0 > MANUAL_IDLE_MS` on the very next frame and
+            // turned follow straight back on: the method was a no-op unless the rider also
+            // panned. Predates the move out of DashEngineController (the old code had the
+            // same shape) and survived because nothing in the Dart app calls it yet — only
+            // the plugin API exposes it. Found by review, 2026-09-16.
+            lastManualPanAt = clock()
+        }
     }
 
     /**
@@ -177,7 +193,7 @@ internal class DashCameraState(
      */
     fun panBy(dx: Float, dy: Float) {
         followMode = false
-        lastManualPanAt = monotonicMs()
+        lastManualPanAt = clock()
         val maxX = frameWidth * DashCamera.MAX_PAN_FRACTION
         val maxY = frameHeight * DashCamera.MAX_PAN_FRACTION
         val beforeX = panX

@@ -6,6 +6,7 @@ import android.media.ToneGenerator
 import android.os.PowerManager
 import com.opendash.opendash_dash_engine.dash.DashConfig
 import com.opendash.opendash_dash_engine.dash.FrameStreamer
+import com.opendash.opendash_dash_engine.dash.StreamThreads
 import com.opendash.opendash_dash_engine.dash.DashKeepAliveService
 import com.opendash.opendash_dash_engine.dash.DashSession
 import com.opendash.opendash_dash_engine.dash.DashState
@@ -185,7 +186,7 @@ class DashEngineController(
      * Outlives a stream on purpose — a reconnect mid-ride resumes on the zoom and the centre
      * the rider left — which is exactly why it is here and not inside [MapFrameRenderer].
      */
-    private val cameraState = DashCameraState(DashEncoder.WIDTH, DashEncoder.HEIGHT)
+    private val cameraState = DashCameraState(DashEncoder.WIDTH, DashEncoder.HEIGHT, ::monotonicMs)
 
     /**
      * The map side of the CURRENT stream, or null between streams.
@@ -436,7 +437,7 @@ class DashEngineController(
         memJob?.cancel(); memJob = null
         giveupJob?.cancel(); giveupJob = null
         // Cancelled but deliberately NOT nulled, unlike every other job here. cancel() is
-        // cooperative: the frame loop keeps running on Dispatchers.Default until its next
+        // cooperative: the frame loop keeps running on its own `dash-frame` thread until its next
         // suspension point, and [FrameStreamer.run]'s finally releases the encoder. Dropping
         // the reference is what let the NEXT [startStream] skip its cancelAndJoin() — it would
         // see null, join nothing, and install a fresh encoder that the still-unwinding old loop
@@ -453,7 +454,7 @@ class DashEngineController(
         wifiManager.disconnect()
         locationTracker.stop()
         // The encoder is NOT released here. cancel() above is cooperative — the frame
-        // loop runs on Dispatchers.Default and only stops at its next suspension point,
+        // loop runs on `dash-frame` and only stops at its next suspension point,
         // so releasing from this thread raced with renderFrame/drain on a dead
         // MediaCodec: an IllegalStateException storm, and at failures >= 3 the loop
         // would rebuild an encoder nobody owns any more. [startStream] already fixed
@@ -737,6 +738,11 @@ class DashEngineController(
         )
         frameRenderer = renderer
 
+        // Two threads of this stream's own, instead of the shared pools — see
+        // [StreamThreads] for what that buys and what it only ASKS for. Created here so the
+        // frame loop below launches straight onto its own thread rather than migrating to it.
+        val threads = StreamThreads()
+
         val streamer = FrameStreamer(
             source = renderer,
             encoderFactory = { onEncoded -> DashEncoder(onEncoded).also { it.prepare() } },
@@ -746,6 +752,8 @@ class DashEngineController(
             decoderOpens = { session.decoderOpenCount },
             thermal = ::thermalLabel,
             clock = ::monotonicMs,
+            senderContext = threads.rtp,
+            threadsReport = threads::report,
         )
 
         // Built here, not inside the loop, so a codec that refuses to configure still throws
@@ -762,12 +770,13 @@ class DashEngineController(
         } catch (e: Throwable) {
             frameRenderer?.release()
             frameRenderer = null
+            threads.close()
             throw e
         }
 
         session.startStreaming()
 
-        streamJob = scope.launch(Dispatchers.Default) {
+        streamJob = scope.launch(threads.frame) {
             try {
                 streamer.run()
             } finally {
@@ -777,6 +786,13 @@ class DashEngineController(
                 streamer.releaseEncoder()
             }
         }
+        // From the completion handler, not from inside the job: quitting a looper from a
+        // coroutine still running on it would be pulling the floor up as we walk off it.
+        // Here the job is already finished, so the encoder is released and the outbox is
+        // cancelled before either thread is given back. A stream that never starts because
+        // the scope is already cancelled still reaches this — invokeOnCompletion fires on a
+        // cancelled job too — so the threads cannot outlive their stream.
+        streamJob?.invokeOnCompletion { threads.close() }
     }
 
     private fun toDashDistance(meters: Double): Pair<Int, Int> =

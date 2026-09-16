@@ -428,7 +428,9 @@ flutter build apk --debug --dart-define-from-file=android/dart_defines.local.pro
    потом сокет закрывается.
 9. **Control-plane — broadcast** на `192.168.1.255:2000`, RTP — unicast
    `192.168.1.1:5000`. Не переводить control на unicast.
-10. **RTP**: PT 96, 90 кГц, monotonic PTS, marker только на последнем пакете
+10. **RTP**: PT 96, 90 кГц, monotonic PTS — **счётчик кадров, продвигаемый в
+    `onEncoded`** (не стенной клок и не раз за итерацию цикла; почему — в
+    [`spec/video.md`](spec/video.md)), marker только на последнем пакете
     AU, FU-A для NAL > 1380 байт, без STAP-A, SPS/PPS склеены с IDR, если
     влезают в один пакет, иначе раздельно.
 11. **Формат ride-лога**: существующие теги и тексты строк не менять,

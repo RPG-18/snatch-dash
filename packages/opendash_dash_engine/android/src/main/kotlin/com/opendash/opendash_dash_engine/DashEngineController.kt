@@ -335,9 +335,10 @@ class DashEngineController(
     // snapshot and writing a modified copy back, which is a read-modify-write across threads —
     // a race class that does not exist today.
     //
-    // Not because camera state is free of the problem — it is not. [redrawFrame] reads
-    // [headingUp] once and must carry that value across the snapshot suspension, and
-    // [panAtBound] below is written from both threads without @Volatile. The difference is
+    // Not because camera state is free of the problem — it is not. [tick] reads [headingUp]
+    // exactly once per frame and hands that value down, because it has to survive both the
+    // signature hash and the snapshot suspension unchanged, and [panAtBound] below is written
+    // from both threads without @Volatile. The difference is
     // that those are one-field problems with local fixes, while the nav group needed several
     // fields to agree with each other. Revisit when the frame loop moves out of this class
     // (pipeline.md §4.8), where the camera needs a home anyway.
@@ -1642,6 +1643,16 @@ class DashEngineController(
         val centerLng = if (haveTarget) camLng else 0.0
         val camHeading = if (haveTarget) camHdg else heading
 
+        // ONE read of the volatile [headingUp] for the whole frame. It used to be read three
+        // times per tick: twice inside `sig` below — where a toggle between the two appends
+        // writes "heading-up" next to a north-up heading of 0, a combination no real frame
+        // has — and a third time in [redrawFrame], so the signature committed as drawn could
+        // describe an orientation the frame was never drawn in. Both are self-correcting on
+        // the next tick and cost one wasted redraw; the reason to fix them anyway is that
+        // [cameraFor] now states as fact that the caller holds a single read.
+        // Review, 2026-09-16.
+        val headingUpNow = headingUp
+
         // Everything the frame is drawn FROM has to be in here, or the change is
         // invisible until FORCE_REDRAW_MS two seconds later. Three things used to
         // be missing, each with its own way of showing up on the panel:
@@ -1657,8 +1668,8 @@ class DashEngineController(
             append("nav")
             append("%.6f".format(centerLat)); append("%.6f".format(centerLng))
             append(zoom); append(panX.toInt()); append(panY.toInt())
-            append(headingUp)
-            append(if (headingUp) (camHeading * 10).toInt() else 0)
+            append(headingUpNow)
+            append(if (headingUpNow) (camHeading * 10).toInt() else 0)
             append(inp.remainingM?.let { (it / 100).toInt() } ?: -1)
             append(routeSignature(inp.route))
             append(inp.dest?.let { "%.5f".format(it.lat) } ?: "-")
@@ -1674,7 +1685,8 @@ class DashEngineController(
             // the telemetry counted it as a deliberate reuse.
             if (redrawFrame(
                     inp,
-                    centerLat, centerLng, camHeading, riderLat != null, gpsWeak, gpsLost,
+                    centerLat, centerLng, camHeading, headingUpNow,
+                    riderLat != null, gpsWeak, gpsLost,
                     frameIntervalMs,
                 )
             ) {
@@ -1745,14 +1757,15 @@ class DashEngineController(
     private suspend fun redrawFrame(
         inp: DashInputs,
         centerLat: Double, centerLng: Double, heading: Float,
+        // The caller's single read of the volatile [headingUp], passed in rather than read
+        // again here: the camera, the padding, the log and the overlays below must agree
+        // with each other AND with the signature the caller hashed from the same value.
+        headingUpNow: Boolean,
         haveRider: Boolean, gpsWeak: Boolean, gpsLost: Boolean,
         frameIntervalMs: Long,
     ): Boolean {
         val bmp = frameBitmap ?: return false
 
-        // One read of the volatile [headingUp] for both the padding and the log, so
-        // a toggle landing mid-frame cannot make them disagree about the mode.
-        val headingUpNow = headingUp
         val camera = cameraFor(centerLat, centerLng, heading, headingUpNow)
         val padding = DashCamera.padding(DashEncoder.WIDTH, DashEncoder.HEIGHT, headingUpNow, panX, panY)
         logCameraSend(camera, padding, headingUpNow)

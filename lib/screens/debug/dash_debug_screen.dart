@@ -7,9 +7,10 @@ import 'package:opendash_dash_engine/opendash_dash_engine.dart';
 
 import '../dash_screen.dart';
 
-/// The frame that is actually going to the dash, 1:1, plus the numbers behind it.
+/// The frame that is actually going to the dash, blown up to fit, plus the
+/// numbers behind it.
 ///
-/// See `spec/dash_screen_debug.md`. Three things here are decisions, not
+/// See `spec/dash_screen_debug.md`. Four things here are decisions, not
 /// incidentals:
 ///
 /// - **It is a bench instrument, not a ride screen.** The whole app exists so the
@@ -23,6 +24,11 @@ import '../dash_screen.dart';
 ///   disconnect, exit navigation, answering a call — lives on `DashScreen`. The
 ///   button in the app bar is the way back to them, and it is not optional
 ///   garnish: without it a debug build cannot end a session.
+/// - **The frame is enlarged, and says by how much.** It used to be drawn pixel
+///   for pixel, because an interpolated copy cannot answer a question about
+///   sharpness. That was reversed on 2026-09-16 for readability — 526x300 on a
+///   2.75x screen is a matchbox — and the two things that keep the enlargement
+///   honest are `FilterQuality.none` and the scale in the caption below it.
 class DashDebugScreen extends StatefulWidget {
   const DashDebugScreen({super.key});
 
@@ -104,13 +110,20 @@ class _DashDebugScreenState extends State<DashDebugScreen> {
       body: _frame == null
           ? const Center(child: Text('Нет кадров — стрим не запущен'))
           : SingleChildScrollView(
-              scrollDirection: Axis.horizontal,
-              child: Row(
+              // Vertical, and scrolling because the two panes below are now
+              // stacked rather than side by side: on a short screen the
+              // telemetry is what goes under the fold, and it is the half that
+              // can be scrolled to without losing sight of the frame.
+              child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   _FramePane(frame: _frame!, stale: _stale),
-                  const SizedBox(width: 16),
-                  _Telemetry(data: _data ?? const {}, stale: _stale),
+                  const SizedBox(height: 16),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 12),
+                    child: _Telemetry(data: _data ?? const {}, stale: _stale),
+                  ),
+                  const SizedBox(height: 16),
                 ],
               ),
             ),
@@ -126,33 +139,54 @@ class _FramePane extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // Sized in DEVICE pixels, not logical ones. Flutter measures in logical
-    // pixels, so asking for 526 wide on this phone would paint the frame ~2.75x
-    // magnified — and the point of this pane is to look at sharpness, which a
-    // magnified copy cannot show. Dividing by the device ratio makes one frame
-    // pixel land on one screen pixel.
+    // Full width, and the height follows the frame's own ratio rather than a
+    // constant: 526x300 is what the dash gets, and a distorted copy would
+    // misrepresent what fits inside the panel's frame.
+    //
+    // No devicePixelRatio arithmetic here any more, and that is worth saying
+    // because it used to be the whole point of this method: while the frame was
+    // drawn pixel for pixel the width had to be `frame.width / dpr`, or Flutter
+    // — which measures in logical pixels — would paint it magnified by the
+    // density. That formula comes back the day a 1:1 mode does.
     final dpr = MediaQuery.devicePixelRatioOf(context);
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Opacity(
-          opacity: stale ? 0.35 : 1,
-          child: SizedBox(
-            width: frame.width / dpr,
-            height: frame.height / dpr,
-            child: RawImage(image: frame, filterQuality: FilterQuality.none),
-          ),
-        ),
-        Padding(
-          padding: const EdgeInsets.only(top: 4),
-          child: Text(
-            stale
-                ? 'Кадров нет — показан последний, приглушён'
-                : '${frame.width}×${frame.height}, пиксель в пиксель',
-            style: const TextStyle(fontSize: 11),
-          ),
-        ),
-      ],
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        // What the enlargement actually is: screen pixels per frame pixel.
+        // Printed rather than assumed: the caption is the only thing standing
+        // between an enlarged picture and someone reading sharpness off it.
+        final scale = constraints.maxWidth * dpr / frame.width;
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Opacity(
+              opacity: stale ? 0.35 : 1,
+              child: AspectRatio(
+                aspectRatio: frame.width / frame.height,
+                child: RawImage(
+                  image: frame,
+                  fit: BoxFit.fill,
+                  // Nearest neighbour, deliberately. Bilinear smoothing would
+                  // blur exactly the blockiness this screen exists to show and
+                  // would flatter the encoder; blunt square pixels are the only
+                  // enlargement that invents nothing.
+                  filterQuality: FilterQuality.none,
+                ),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.only(top: 4, left: 12, right: 12),
+              child: Text(
+                stale
+                    ? 'Кадров нет — показан последний, приглушён'
+                    : '${frame.width}×${frame.height}, '
+                        '×${scale.toStringAsFixed(1)} — увеличено, '
+                        'по резкости не судить',
+                style: const TextStyle(fontSize: 11),
+              ),
+            ),
+          ],
+        );
+      },
     );
   }
 }

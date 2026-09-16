@@ -119,6 +119,11 @@ class FrameStreamerTest {
 
     // ── Helpers ──────────────────────────────────────────────────────────
 
+    /** One `name=<number>` field out of a ride-log line, by exact name. */
+    private fun field(line: String, name: String): Int =
+        Regex("(?:^|\\s)$name=(\\d+)").find(line)?.groupValues?.get(1)?.toInt()
+            ?: error("no $name= in: $line")
+
     private fun rtpTimestamp(pkt: ByteArray): Long =
         ((pkt[4].toLong() and 0xFF) shl 24) or ((pkt[5].toLong() and 0xFF) shl 16) or
             ((pkt[6].toLong() and 0xFF) shl 8) or (pkt[7].toLong() and 0xFF)
@@ -317,9 +322,16 @@ class FrameStreamerTest {
         job.join()
 
         val line = logLines.last { it.startsWith("frames=") }
-        // 122 frames a minute at 2 fps, four of which fit the outbox before it jams.
-        assertTrue(line.contains("drop=11"), "the minute line reports the drops: $line")
-        assertTrue(line.contains("dropIdr=0"), "none of them were key frames: $line")
+        // Parsed, not matched as a substring: `contains("drop=11")` was the first version
+        // of this assertion and it passed against the real `drop=118` as a prefix — so it
+        // would have passed against 110 or 1100 just as happily, and the one test guarding
+        // drop accounting could not have failed. Found by review, 2026-09-16.
+        val encoded = field(line, "frames")
+        val dropped = field(line, "drop")
+        // Everything the codec produced beyond the four that fit the outbox, and not one
+        // frame less: a drop is a whole access unit, never part of one.
+        assertEquals(encoded - 4, dropped, "every frame past the queue's depth is counted: $line")
+        assertEquals(0, field(line, "dropIdr"), "none of them were key frames: $line")
         assertTrue(rig.sent.isEmpty())
     }
 

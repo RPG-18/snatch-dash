@@ -34,6 +34,11 @@ class MapLibreLogBridgeTest {
     @AfterTest
     fun tearDown() {
         DebugLog.sink = null
+        // NOT the production default `::monotonicMs`: that calls SystemClock.elapsedRealtime,
+        // which throws "not mocked" in this module's unit tests — the same reason PositionTrust
+        // has no default clock at all. Restoring it here would leave a throwing clock on a
+        // shared singleton for whatever test runs next. A wall clock is wrong for a duration in
+        // production and perfectly safe as a test's parting value. Review, 2026-09-15.
         MapLibreLogBridge.clockMs = System::currentTimeMillis
     }
 

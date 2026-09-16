@@ -14,6 +14,7 @@ import android.os.Handler
 import android.os.Looper
 import android.os.PatternMatcher
 import com.opendash.opendash_dash_engine.util.DebugLog
+import com.opendash.opendash_dash_engine.util.monotonicMs
 import com.opendash.opendash_dash_engine.util.RideDiagnostics
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -188,13 +189,16 @@ class DashWifiManager(
             hasConnectedOnce = false
             reconnectCount   = 0
             downtimeAccumMs  = 0L
-            downSinceMs      = System.currentTimeMillis() // "down" until the first markConnected
+            // Monotonic: this is the origin of `downtime=Xms`, a duration measured across
+            // exactly the dead-zone-then-reconnect window where an NTP correction lands.
+            // Missed by the first sweep of 2026-09-14; found by review.
+            downSinceMs      = monotonicMs() // "down" until the first markConnected
         } else if (downSinceMs == 0L) {
             // Same target, and the counters stand — but a re-request means the link is
             // down from here until [markConnected], and nobody else opened this window:
             // reaching this line with downSinceMs still zero is the shortcut-CONNECTED
             // case, where the last markConnected closed it.
-            downSinceMs = System.currentTimeMillis()
+            downSinceMs = monotonicMs()
         }
         requestNetwork()
         requestCellularDefault()
@@ -220,7 +224,7 @@ class DashWifiManager(
     fun disconnect() {
         DebugLog.i(TAG) { "Disconnect requested" }
         if (downSinceMs != 0L) {
-            downtimeAccumMs += System.currentTimeMillis() - downSinceMs
+            downtimeAccumMs += monotonicMs() - downSinceMs
             downSinceMs = 0L
         }
         // See the field session this closed the loop on — spec/wifi_retry_policy.md's
@@ -403,7 +407,7 @@ class DashWifiManager(
                     // until disconnect()" contract.
                     RideDiagnostics.warn(TAG, "still unavailable after ${CONNECT_TIMEOUT}ms — reconnect #${reconnectCount + 1} in ${RECONNECT_DELAY}ms")
                     reconnectCount++
-                    if (downSinceMs == 0L) downSinceMs = System.currentTimeMillis()
+                    if (downSinceMs == 0L) downSinceMs = monotonicMs()
                     _state.value = WifiState(
                         status = WifiConnStatus.REQUESTING,
                         ssid   = pendingSsid,
@@ -426,7 +430,7 @@ class DashWifiManager(
             override fun onLost(network: Network) {
                 RideDiagnostics.warn(TAG, "link lost — reconnect #${reconnectCount + 1} in ${RECONNECT_DELAY}ms")
                 reconnectCount++
-                if (downSinceMs == 0L) downSinceMs = System.currentTimeMillis()
+                if (downSinceMs == 0L) downSinceMs = monotonicMs()
                 // Last-known signal before the Network object goes stale — shows whether
                 // this was a fading signal (see the periodic "poll" samples leading up to
                 // it) or a clean step down (dash powered off, radio toggled, etc.).
@@ -472,7 +476,7 @@ class DashWifiManager(
     private fun markConnected(ssid: String) {
         hasConnectedOnce = true
         if (downSinceMs != 0L) {
-            downtimeAccumMs += System.currentTimeMillis() - downSinceMs
+            downtimeAccumMs += monotonicMs() - downSinceMs
             downSinceMs = 0L
         }
         _state.value = WifiState(status = WifiConnStatus.CONNECTED, ssid = ssid)

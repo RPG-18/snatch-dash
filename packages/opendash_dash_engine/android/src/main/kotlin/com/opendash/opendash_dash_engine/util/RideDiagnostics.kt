@@ -75,7 +75,10 @@ object RideDiagnostics {
         synchronized(lock) { session++ }
         val d = dir ?: return
         synchronized(lock) {
-            sessionStartMs = System.currentTimeMillis()
+            // Monotonic: this is the origin of the "+NNNms" column on every line below, i.e.
+            // a duration. On the wall clock an NTP step mid-ride shifts every subsequent
+            // offset — and those offsets are what a post-mortem measures intervals with.
+            sessionStartMs = monotonicMs()
             val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
             file = File(d, "ride-$stamp.log")
             rotate(d)
@@ -109,7 +112,7 @@ object RideDiagnostics {
     private fun write(tag: String, msg: String) {
         if (file == null) return
         synchronized(lock) {
-            val rel = if (sessionStartMs > 0) "+%6dms".format(System.currentTimeMillis() - sessionStartMs) else "         "
+            val rel = if (sessionStartMs > 0) "+%6dms".format(monotonicMs() - sessionStartMs) else "         "
             raw("$rel  [$tag] $msg")
         }
     }

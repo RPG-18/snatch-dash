@@ -343,9 +343,27 @@ class DashEncoder(private val onEncodedData: (ByteArray, Boolean, Boolean) -> Un
         }
     }
 
-    /** Pull all available encoded buffers; call after every [renderFrame]. */
-    fun drain() {
-        val codec = codec ?: return
+    /**
+     * Pull all available encoded buffers; call after every [renderFrame].
+     *
+     * @return how many FRAME buffers came out this call — the measurement pipeline.md calls
+     *   gate 0. Config buffers (SPS/PPS) are excluded: they are not frames, they arrive once
+     *   at start and on a parameter change, and NalProcessor bundles them into the next IDR.
+     *
+     *   The question it answers: does the frame rendered a line earlier actually come out in
+     *   the same iteration? [DashEngineController] advances `videoPtsMs` BEFORE calling this,
+     *   so a frame that misses its [DRAIN_TIMEOUT_US] window is drained on the next iteration
+     *   and carries that iteration's timestamp — and if the next frame makes it too, two
+     *   access units go out stamped identically. That is legal RFC 6184 (the marker bit
+     *   delimits an AU, not the timestamp), but a decoder scheduling by timestamp shows the
+     *   second one immediately, and the even spacing `videoPtsMs` exists to provide is gone.
+     *
+     *   Whether any of that happens in the field is unmeasured, and the whole point of
+     *   returning a number here is to stop guessing before rebuilding this path.
+     */
+    fun drain(): Int {
+        val codec = codec ?: return 0
+        var frames = 0
         val info = MediaCodec.BufferInfo()
         while (true) {
             val idx = codec.dequeueOutputBuffer(info, DRAIN_TIMEOUT_US)
@@ -365,6 +383,7 @@ class DashEncoder(private val onEncodedData: (ByteArray, Boolean, Boolean) -> Un
                     // otherwise the dash can't initialise its decoder and times out.
                     if (info.size > 0) {
                         val data = ByteArray(info.size).also { buf.get(it) }
+                        if (!isConfig) frames++
                         onEncodedData(data, isKey, isConfig)
                     }
                     codec.releaseOutputBuffer(idx, false)
@@ -372,6 +391,7 @@ class DashEncoder(private val onEncodedData: (ByteArray, Boolean, Boolean) -> Un
                 }
             }
         }
+        return frames
     }
 
     /**

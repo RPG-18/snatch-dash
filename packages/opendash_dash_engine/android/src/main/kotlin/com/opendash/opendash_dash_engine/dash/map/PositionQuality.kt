@@ -44,7 +44,15 @@ internal data class Fix(
      * claimed to be precise.
      */
     val accuracyM: Float?,
-    /** The fix's own timestamp, not arrival time — [FixFilter] reasons about fix age. */
+    /**
+     * The fix's own timestamp, on the MONOTONIC clock — not arrival time, and not wall clock.
+     *
+     * Sourced from `Location.elapsedRealtimeNanos`, not `Location.time`. Every duration in
+     * this file is a difference of two of these, and `Location.time` is documented as "not
+     * monotonic": a NITZ/NTP correction between two fixes would show up as a jump in time
+     * with no jump in position, which is precisely what [FixFilter]'s teleport guard divides
+     * by. See util/Clock.kt. Changed 2026-09-14 after the pipeline audit.
+     */
     val atMs: Long,
     val speedMps: Float,
     val isGps: Boolean,
@@ -188,8 +196,17 @@ internal class FixFilter {
  * Separate from [FixFilter] on purpose: the filter picks between fixes, this one asks whether
  * any of them should be trusted at all. It therefore observes EVERY fix, including the ones the
  * filter threw away — a rejected fix is still evidence about the receiver.
+ *
+ * @param nowMs the monotonic clock, REQUIRED — there is deliberately no default.
+ *
+ * A default of `::monotonicMs` would drag `SystemClock` into a file whose whole point is that
+ * no Android type crosses its boundary, and the unit tests said so immediately by throwing the
+ * "not mocked" stub. A default of `System::currentTimeMillis` is what this parameter actually
+ * shipped with on 2026-09-13, and it was wrong for the reasons in util/Clock.kt. Between a
+ * default that breaks the tests and one that breaks the rides, the answer is neither: the one
+ * caller passes `::monotonicMs` explicitly and the tests pass their own.
  */
-internal class PositionTrust(private val nowMs: () -> Long = System::currentTimeMillis) {
+internal class PositionTrust(private val nowMs: () -> Long) {
 
     companion object {
         /**
@@ -268,10 +285,12 @@ internal class PositionTrust(private val nowMs: () -> Long = System::currentTime
     /**
      * Whether the position may be acted on, latched for [TRUST_HOLD_MS] past the last doubt.
      *
-     * Wall clock, not fix timestamps, and deliberately: the reader is a render tick with no fix
-     * in hand. Injectable so the hold is testable without sleeping — the mistake to avoid here
-     * is FrameRatePolicy's, where a zero-initialised `lastFlipMs` was compared against an
-     * absolute clock and blocked the first transition for the age of the epoch.
+     * Measured on [nowMs], not on fix timestamps, and deliberately: the reader is a render tick
+     * with no fix in hand. Since 2026-09-14 that clock is monotonic like everything else here,
+     * so the hold cannot be cut short or extended by an NTP step. Injectable so it is testable
+     * without sleeping — the mistake to avoid is FrameRatePolicy's, where a zero-initialised
+     * `lastFlipMs` compared against an absolute clock blocked the first transition for the age
+     * of the epoch.
      */
     val trusted: Boolean get() = nowMs() >= doubtedUntilMs
 

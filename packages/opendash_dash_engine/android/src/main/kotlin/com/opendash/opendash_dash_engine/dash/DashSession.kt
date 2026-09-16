@@ -5,6 +5,7 @@ import com.opendash.opendash_dash_engine.dash.map.Percentiles
 import com.opendash.opendash_dash_engine.dash.protocol.DashCommands
 import com.opendash.opendash_dash_engine.dash.protocol.K1GPacket
 import com.opendash.opendash_dash_engine.util.DebugLog
+import com.opendash.opendash_dash_engine.util.monotonicMs
 import com.opendash.opendash_dash_engine.util.RideDiagnostics
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -276,7 +277,58 @@ class DashSession(private val scope: CoroutineScope) {
         launchMediaInfo(sock)
     }
 
-    fun sendRtp(packet: ByteArray) { socket?.sendRtp(packet) }
+    /**
+     * Claim the live socket for one stream, and hand back the only way to write RTP to it.
+     *
+     * Replaces `fun sendRtp(packet) { socket?.sendRtp(packet) }`, which was the single path
+     * onto the wire with no identity check while every control sender had one through
+     * [sendIfCurrent]. The hole it left: on a Wi-Fi loss the frame loop ends by its own
+     * `state != STREAMING` condition rather than by cancellation, so the RTP sender's
+     * `ensureActive()` never fires, and the rest of the access unit in flight goes to
+     * whichever socket the `socket` field holds at that instant. Two comments in
+     * DashEngineController said this must not happen while the code still allowed it.
+     *
+     * Unreachable today — a reconnect takes seconds and the remaining datagrams of one frame
+     * take microseconds — which is why this is two lines rather than a redesign. Stage 4 of
+     * network-refactoring.md removes the need entirely by giving the socket to a one-shot
+     * session; until then the RTP path should not be the one exception.
+     *
+     * The returned function captures the socket, so it cannot drift to a later session's; the
+     * identity check then covers the other direction, where [disconnect] has already claimed
+     * this socket for its farewell. Same reasoning as [sendIfCurrent], same counter — an RTP
+     * packet held back from a stale socket is the same event the races line already reports,
+     * and splitting the counter before it has ever fired once would be inventing detail.
+     *
+     * @return null if there is no socket, i.e. nothing to stream over.
+     */
+    fun rtpSender(): ((ByteArray) -> Unit)? {
+        val sock = socket ?: return null
+        var reported = false
+        return { packet ->
+            if (socket === sock) {
+                sock.sendRtp(packet)
+            } else {
+                // Reported HERE, on occurrence, and not folded into the periodic races line.
+                // That line lives in [launchAckCounterLog], which is gated on STREAMING and is
+                // cancelled by disconnect() — and disconnect is the only moment an RTP packet
+                // can find a stale socket. The count would have been dropped, or printed in a
+                // later session's window as if it belonged there. Review, 2026-09-14.
+                //
+                // Once per stream: this has never fired in the field, so the first occurrence
+                // is the whole finding, and if it ever starts firing every packet the ride
+                // file should not become unreadable to say so.
+                staleSends.incrementAndGet()
+                if (!reported) {
+                    reported = true
+                    RideDiagnostics.warn(
+                        TAG,
+                        "RTP held back: the stream's socket is no longer this session's — " +
+                            "packets of an ended stream stopped at the wire",
+                    )
+                }
+            }
+        }
+    }
 
     /**
      * A periodic sender's way onto the wire: this packet, on this session's socket, and only
@@ -458,8 +510,11 @@ class DashSession(private val scope: CoroutineScope) {
             }
 
             DebugLog.i(TAG) { "Waiting up to ${AUTH_TIMEOUT}ms for auth (07 01 01)…" }
-            val deadline = System.currentTimeMillis() + AUTH_TIMEOUT
-            while (!authConfirmed && System.currentTimeMillis() < deadline) delay(100)
+            // Monotonic like every other duration here — util/Clock.kt. Stage 4 of
+            // network-refactoring.md replaces this poll with withTimeout, which is on a
+            // monotonic clock anyway; until then it should not be the one exception.
+            val deadline = monotonicMs() + AUTH_TIMEOUT
+            while (!authConfirmed && monotonicMs() < deadline) delay(100)
 
             if (!authConfirmed) {
                 fail(seq, "Auth timed out — no 07 01 01 from dash. Check SSID matches '$ssid'.")

@@ -120,6 +120,25 @@ object ExitInfoCollector {
             appendLine("when=$stamp (${info.timestamp})")
             appendLine("reason=${reasonName(info.reason)} — ${info.description ?: ""}")
             appendLine("importance=${info.importance} status=${info.status}")
+            // The two numbers a LOW_MEMORY_KILL is entirely about, and which this file did not
+            // carry until 2026-09-14: two such kills on a 3.6 GiB Xiaomi said only that we were
+            // killed for memory, not how much we were holding. Both are in kB, both API 30.
+            //
+            // PSS is the share of physical memory attributable to this process once pages
+            // shared with other processes are divided among them — it is what the low-memory
+            // killer scores. RSS is everything resident, shared pages counted in full, so it
+            // reads higher; the pair together says how much of the footprint is ours alone.
+            //
+            // **Neither is a reading taken at death, whatever it looks like.** The javadoc is
+            // explicit: these come from "the last sampling" and are "not the exact memory
+            // usage prior to the process's death" — and are ZERO when the process died before
+            // the system ever sampled it. That is not a corner case here: the ride of
+            // 2026-09-14 had nine sessions of 5-12 s, which is exactly the shape of process
+            // that dies unsampled. Printing a bare 0 would read as "we held nothing", which is
+            // the opposite of what it means, so say so instead. The `[mem]` line in the ride
+            // file is the reading that IS taken while alive. Found by review.
+            fun sampled(kb: Long) = if (kb > 0) "${kb / 1024}MiB" else "not sampled"
+            appendLine("pss=${sampled(info.pss)} rss=${sampled(info.rss)}")
             appendLine("apk=$crashedBuild")
             appendLine("collected-by=${BuildId.sha12(context)} @${BuildId.gitSha}")
             appendLine("app=${BuildId.versionLabel(context)}")

@@ -640,19 +640,20 @@ class DashEngineController(
 
     fun disconnect() {
         RideDiagnostics.log("connect", "disconnect() called")
-        // Last reading before the file closes, and worth having: on 2026-09-15 it was this
-        // sample that showed the footprint falling from 335 to 239 MiB as the snapshotter went
-        // away, which the per-minute cadence would have missed entirely.
+        // No farewell [mem] sample here, and that IS the decision — one stood here for a day
+        // and came out. It cannot be taken on this thread (memorySummary walks
+        // /proc/self/smaps: tens of milliseconds of UI stall, on the low-RAM phone the probe
+        // exists for, against its own KDoc), and off this thread it cannot be ordered against
+        // the file closing: [RideDiagnostics.stop] below is synchronous and nulls the file, so
+        // the line was dropped in the common case, never ran at all from dispose() — the plugin
+        // cancels the scope two statements after this returns — and on the give-up path could
+        // land in the NEXT ride file carrying that session's +NNNms origin. Moving stop() into
+        // the same coroutine would fix the ordering and lose the wifi session summary written
+        // between here and there.
         //
-        // On IO, not here. [disconnect] runs on the platform thread, and memorySummary walks
-        // /proc/self/smaps — tens of milliseconds of UI stall, on the low-RAM phone this probe
-        // exists for, against its own KDoc saying never to do that. Fire-and-forget: it races
-        // the ride file closing and may occasionally lose, which is the right way round —
-        // a missing last line costs a data point, a blocked main thread costs the rider.
-        // Review, 2026-09-15.
-        scope.launch(Dispatchers.IO) {
-            runCatching { RideDiagnostics.log("mem", memorySummary(context)) }
-        }
+        // Nothing is actually lost. The reading it was for — the footprint once the snapshotter
+        // is released — is the first [mem] line of the next session, logged ~100 ms into
+        // connect() before anything is allocated again. Review, 2026-09-16.
         memJob?.cancel(); memJob = null
         giveupJob?.cancel(); giveupJob = null
         // Cancelled but deliberately NOT nulled, unlike every other job here. cancel() is

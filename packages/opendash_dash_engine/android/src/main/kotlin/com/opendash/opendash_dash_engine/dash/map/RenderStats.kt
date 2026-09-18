@@ -100,7 +100,7 @@ class RenderStats {
      * an expectation in between, which is the honest answer.
      *
      * **Two different clocks share this line.** Everything computed here covers
-     * one window, reset by [reset] at the start of each stream. [timeouts],
+     * one window, bounded by the renderer's own lifetime — one MapFrameRenderer per stream, so one window per stream. [timeouts],
      * [skipped], [abandoned], [errors] and [rebuilds] pass straight through from
      * `MapSnapshotProvider` and are cumulative over the **session**, not the
      * window — they only ever go up within a ride, and the provider zeroes them

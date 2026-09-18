@@ -196,8 +196,27 @@ class DashEngineController(
      * screen could still be reading the last frame; that screen was deleted on 2026-09-18,
      * so holding a ~631 KB native bitmap through a disconnect now buys nothing, and a ride
      * that ends with a disconnect may never have a next stream at all.
+     *
+     * `@Volatile` because Main writes it ([startStream]) while the stream job's completion
+     * handler reads and clears it, normally on `dash-frame`. What actually ORDERS the two is
+     * the `cancelAndJoin()` at the top of [startStream]; the identity check in that handler
+     * only picks the right renderer, it publishes nothing. Said out loud because the field
+     * this replaced carried the same modifier with the same explanation, and losing it in a
+     * move is how a race gets introduced by nobody. Found by review, 2026-09-18.
      */
-    private var frameRenderer: MapFrameRenderer? = null
+    @Volatile private var frameRenderer: MapFrameRenderer? = null
+
+    /**
+     * True while a teardown we ASKED for is in flight — [disconnect] sets it before it
+     * cancels anything.
+     *
+     * The stream job's completion handler reports a loop that ended on its own (see it), and
+     * on the ordinary disconnect path the session has not left STREAMING yet by the time the
+     * loop unwinds — so without this flag every deliberate «Отключить» would write a warning
+     * about a stream nobody lost, and call `session.disconnect()` a beat before the caller
+     * does. @Volatile: written on Main, read on `dash-frame`.
+     */
+    @Volatile private var stoppingDeliberately = false
 
     // Which snapshotter this stream prepared, so [disconnect] releases that one
     // and not whatever a later connection has since put in its place.
@@ -432,6 +451,7 @@ class DashEngineController(
         // frozen dash with no error anywhere, since the session does reach STREAMING and the
         // give-up timer is cancelled. Keeping the reference costs nothing (joining an already
         // finished Job returns at once) and restores the invariant [startStream] documents.
+        stoppingDeliberately = true
         streamJob?.cancel()
         sessionWatchJob?.cancel(); sessionWatchJob = null
         wifiWatchJob?.cancel(); wifiWatchJob = null
@@ -668,15 +688,16 @@ class DashEngineController(
      */
     private suspend fun startStream() {
         RideDiagnostics.log("stream", "startStream — encoder up, RTP→dash beginning")
+        stoppingDeliberately = false
 
         streamJob?.cancelAndJoin()
         streamJob = null
 
-        // Belt to the completion handler's braces: by now the previous job has been joined,
-        // so its handler has already released that renderer. This covers the one case it
-        // cannot — a renderer built for a stream whose job never started.
-        frameRenderer?.release()
-        frameRenderer = null
+        // No release of the previous renderer here, deliberately: `cancelAndJoin` above
+        // means its job has completed, so its completion handler has already freed the
+        // bitmap and cleared the field. A renderer built for a stream that never launched is
+        // freed by the guard further down. One owner per path, instead of five sites each
+        // guarded differently. Found by review, 2026-09-18.
 
         // Theme and the set of packs are read HERE and nowhere else for the rest
         // of the ride. That is what makes a mid-ride style reload impossible by
@@ -727,65 +748,61 @@ class DashEngineController(
         // Two threads of this stream's own, instead of the shared pools — see
         // [StreamThreads] for what that buys and what it only ASKS for. Created here so the
         // frame loop below launches straight onto its own thread rather than migrating to it.
-        val threads = StreamThreads()
-
-        val streamer = FrameStreamer(
-            source = renderer,
-            encoderFactory = { onEncoded -> DashEncoder(onEncoded).also { it.prepare() } },
-            rtpSender = session::rtpSender,
-            streaming = { session.state.value == DashState.STREAMING },
-            thermal = ::thermalLabel,
-            clock = ::monotonicMs,
-            senderContext = threads.rtp,
-            threadsReport = threads::report,
-        )
-
-        // Built here, not inside the loop, so a codec that refuses to configure still throws
-        // on THIS path — where the session collector catches it and disconnects. Inside the
-        // launched job the same failure would be an uncaught exception in a coroutine and the
-        // dash would sit in READY behind a stream that never started.
         //
-        // Between this line and the launch below the encoder has no owner: the loop's finally
-        // is what releases it, and the loop does not exist yet. Nothing in between can throw
-        // today, but that was true of the style assembly too until it moved above this line,
-        // so the guard stays.
+        // Everything from here to `launch` is under one guard, and that is the point: the
+        // renderer (with its 631 KB bitmap) is already built, `StreamThreads()` starts a
+        // HandlerThread and an executor, `prepareEncoder()` configures a MediaCodec, and
+        // `startStreaming()` launches four senders on a socket that may be torn down under
+        // it. Any of them can throw — `HandlerThread.start()` under the memory pressure this
+        // project instruments for, `configure()` on a codec the system will not give us —
+        // and `startStream` then propagates to the session collector, which calls
+        // `disconnect()`. That path deliberately releases NONE of this, and with no job
+        // there is no completion handler either, so every failed attempt used to leak a
+        // thread pair, a configured codec, a Surface and a bitmap. The guard used to cover
+        // only `prepareEncoder()` while its own comment claimed it covered the gap.
+        // Found by review, 2026-09-18.
+        var threads: StreamThreads? = null
+        var streamer: FrameStreamer? = null
         try {
+            threads = StreamThreads()
+            streamer = FrameStreamer(
+                source = renderer,
+                encoderFactory = { onEncoded -> DashEncoder(onEncoded).also { it.prepare() } },
+                rtpSender = session::rtpSender,
+                streaming = { session.state.value == DashState.STREAMING },
+                thermal = ::thermalLabel,
+                clock = ::monotonicMs,
+                senderContext = threads.rtp,
+                threadsReport = threads::report,
+            )
+            // Built here, not inside the loop, so a codec that refuses to configure still
+            // throws on THIS path — where the session collector catches it and disconnects.
+            // Inside the launched job the same failure would be an uncaught exception in a
+            // coroutine and the dash would sit in READY behind a stream that never started.
             streamer.prepareEncoder()
+            session.startStreaming()
         } catch (e: Throwable) {
-            frameRenderer?.release()
-            frameRenderer = null
-            threads.close()
+            streamer?.releaseEncoder()
+            threads?.close()
+            renderer.release()
+            if (frameRenderer === renderer) frameRenderer = null
             throw e
         }
 
-        session.startStreaming()
-
-        streamJob = scope.launch(threads.frame) {
-            try {
-                streamer.run()
-            } finally {
-                // Not the renderer's bitmap: the NEXT stream recycles it (above), because
-                // the debug screen may still be reading the last frame of a stream that has
-                // just ended.
-                streamer.releaseEncoder()
-            }
-        }
+        val stream = streamer
+        val streamThreads = threads
+        streamJob = scope.launch(streamThreads.frame) { stream.run() }
         // From the completion handler, not from inside the job: quitting a looper from a
         // coroutine still running on it would be pulling the floor up as we walk off it.
-        // Here the job is already finished, so the outbox is cancelled before either thread
-        // is given back. A stream that never starts because the scope is already cancelled
-        // still reaches this — invokeOnCompletion fires on a cancelled job too — so the
-        // threads cannot outlive their stream.
+        // This is the ONE place a finished stream is taken apart — the job's own `finally`
+        // used to release the encoder here as well, and covered nothing this does not.
         //
-        // The encoder is released HERE and not only in the job's own finally, because
-        // `launch` on a Handler dispatcher merely POSTS: a job cancelled before its body is
-        // ever dispatched runs no code at all, so neither finally would fire — and
-        // `threads.close()` below quits the looper, guaranteeing they never will. That path
-        // leaked a configured MediaCodec and its input Surface per stream. [releaseEncoder]
-        // is idempotent, so the ordinary path — where the loop already released it — pays
-        // nothing. Found by review, 2026-09-18.
+        // It has to be here rather than in the job, because `launch` on a Handler dispatcher
+        // merely POSTS: a job cancelled before its body is ever dispatched runs no code at
+        // all, and `close()` below then quits the looper, guaranteeing it never will. That
+        // path leaked a configured MediaCodec and its input Surface per stream.
         streamJob?.invokeOnCompletion {
-            streamer.releaseEncoder()
+            stream.releaseEncoder()
             // The renderer's bitmap too, and only from here: [disconnect] cancels the loop
             // cooperatively and cannot join it (it runs on Main, and the loop may be
             // suspended inside a snapshot that needs Main), so recycling from there would
@@ -794,7 +811,24 @@ class DashEngineController(
             // stream's renderer in the field, and freeing THAT one would blank the dash.
             renderer.release()
             if (frameRenderer === renderer) frameRenderer = null
-            threads.close()
+            streamThreads.close()
+            // The loop is gone; if the session still thinks it is STREAMING, nobody will
+            // ever notice. `sessionWatchJob` arms the give-up timer on state CHANGES, and
+            // the change to STREAMING is what cancelled it — so a loop that ends by itself
+            // (a failed encoder rebuild, an Error that `catch (Exception)` does not catch)
+            // leaves a dash frozen on its last frame while Dart keeps reporting "connected",
+            // with heartbeats holding the link up and the RX watchdog quiet because the dash
+            // is still answering. Handing the session to IDLE puts it back under the
+            // collector's own retry path, which knows how to restart a dead session on a
+            // live link. Found by review, 2026-09-18.
+            if (!stoppingDeliberately && session.state.value == DashState.STREAMING) {
+                RideDiagnostics.warn(
+                    "stream",
+                    "frame loop ended while the session still reports STREAMING — " +
+                        "ending the session so it can be retried",
+                )
+                scope.launch { session.disconnect() }
+            }
         }
     }
 

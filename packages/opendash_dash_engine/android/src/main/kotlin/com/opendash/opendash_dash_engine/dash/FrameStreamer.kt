@@ -45,7 +45,11 @@ internal interface FrameSource {
     /**
      * Advance the camera, and redraw the frame if anything visible changed.
      *
-     * @param budgetMs this frame's interval — the snapshot deadline is measured against it.
+     * @param budgetMs this frame's interval. NOT the snapshot deadline: the implementation
+     *   keeps its own (500 ms steady state, 8 s for the first frame of a stream), and this
+     *   value tells it what the frame was PACED to, which is what `late=` in the `[map]`
+     *   line is measured against. An earlier version of this line said the deadline scaled
+     *   with the frame rate; it never did. Found by review, 2026-09-18.
      * @return true when a complete frame exists to encode. False on the first frames of a
      *   stream, before any snapshot has landed: a fresh bitmap is transparent, and sending it
      *   put garbage on the dash for as long as the first (most expensive) snapshot took.
@@ -136,6 +140,9 @@ internal class FrameStreamer(
         // enough to catch a stretch of the ride, rare enough that the sort behind
         // the percentiles is free.
         private const val RENDER_LOG_INTERVAL_MS = 30_000L
+
+        /** One counterfactual probe per this many sleeping iterations — see [poolLateMax]. */
+        private const val PROBE_EVERY = 16
 
         // RTP_AU_SPREAD_MS (30 ms) lived here and is GONE as of 2026-09-11 — the reasoning
         // that produced it is kept in the sender loop below, together with the measurements
@@ -284,6 +291,12 @@ internal class FrameStreamer(
      */
     private val overruns = AtomicInteger(0)
 
+    /**
+     * Set when the sender gives up, so the loop stops rather than render into a channel
+     * nobody reads. Written on [senderContext], read on the frame thread.
+     */
+    @Volatile private var senderStopped = false
+
     // Filled by the packetizer callback during one nalProc.process() call, then handed
     // to the outbox as a unit. Only ever touched from the frame-loop coroutine.
     private val auPackets = ArrayList<ByteArray>(32)
@@ -423,10 +436,22 @@ internal class FrameStreamer(
             // Claimed once, for the life of this stream. session.rtpSender() captures the
             // socket and checks it is still the current one on every packet — the identity
             // guard the control senders have had all along and this path did not, see
-            // DashSession.rtpSender. Null means there is no socket to stream over, which
-            // is not an error worth a teardown: the frame loop's own `streaming()`
-            // condition ends things a moment later.
-            val sendRtp = rtpSender() ?: return@launch
+            // DashSession.rtpSender. Null means there is no socket to stream over — and
+            // that ends the STREAM, not just this coroutine. The previous version returned
+            // quietly, on the stated grounds that "the frame loop's own streaming()
+            // condition ends things a moment later"; nothing in this file moves the session
+            // out of STREAMING, so it depended entirely on DashSession's RX watchdog
+            // noticing by itself. Until it did, every frame still cost a snapshot, an
+            // overlay pass and an H.264 encode, into an outbox nobody drains — a counted
+            // drop apiece. Found by review, 2026-09-18.
+            val sendRtp = rtpSender() ?: run {
+                RideDiagnostics.warn(
+                    "stream",
+                    "no socket to stream over — ending the stream before the first frame",
+                )
+                senderStopped = true
+                return@launch
+            }
             for (au in rtpOutbox) {
                 // Back to back, on purpose. This loop used to pace the packets of one
                 // access unit across `min(30 ms, frameInterval / 4)`; the pacing was
@@ -476,8 +501,11 @@ internal class FrameStreamer(
         // scope, and without cancelling the last one the stream's teardown would wait out a
         // sleep whose answer nobody will read.
         var probeJob: Job? = null
+        var probeTick = 0
         try {
             var failures = 0
+            var sinceFailureLog = 0
+            var lastFailureLogAt = clock()
             var lastEncoderLogAt = clock()
             var lastRenderLogAt = lastEncoderLogAt
             var lastFrameSentAt = 0L
@@ -489,7 +517,7 @@ internal class FrameStreamer(
             // interval; only matters for a hypothetical exception inside [FrameSource.advance]
             // itself, before the real value below gets assigned.
             var frameIntervalMs = 1000L / FPS_IDLE
-            while (isActive && streaming()) {
+            while (isActive && streaming() && !senderStopped) {
                 // Top of the iteration, so the trailing delay() can pace to a DEADLINE
                 // rather than sleep a whole interval on top of the work: the body waits
                 // for a snapshot (up to the interval itself), and adding the full
@@ -499,11 +527,15 @@ internal class FrameStreamer(
                 // `max(interval, latency)` (drawing_from_local_tiles.md, «Цикл ждёт
                 // снапшот»), which is what the deadline gives.
                 val iterationStartMs = clock()
+                // Which half of the body is running, so the catch below can tell a codec
+                // fault from a snapshotter fault. Found by review, 2026-09-18.
+                var inEncodeSection = false
                 try {
                     frameIntervalMs = 1000L / (if (source.moving) FPS_MOVING else FPS_IDLE)
                     val haveFrame = source.advance(frameIntervalMs)
                     val enc = encoder
                     if (haveFrame && enc != null) {
+                        inEncodeSection = true
                         // Match the encoder's target to the dash's own two profiles,
                         // on the transition only. [FrameSource.moving] is already what picks
                         // the frame rate, so reusing it keeps one notion of "the map
@@ -536,100 +568,33 @@ internal class FrameStreamer(
                         lastFrameSentAt = sentAt
                     }
                     failures = 0
-                    val now = clock()
-                    if (now - lastRenderLogAt > RENDER_LOG_INTERVAL_MS) {
-                        val elapsed = now - lastRenderLogAt
-                        lastRenderLogAt = now
-                        RideDiagnostics.log("map", source.drainWindowLog(elapsed))
-                    }
-                    if (now - lastEncoderLogAt > ENCODER_LOG_INTERVAL_MS) {
-                        val nowRtp = rtpPacketsSent.get()
-                        val nowBytes = rtpBytesSent.get()
-                        val dFrames = framesEncoded - loggedFrames
-                        val dIdr = idrFramesEncoded - loggedIdr
-                        val dRtp = nowRtp - loggedRtp
-                        val dBytes = nowBytes - loggedBytes
-                        val dFlips = source.drainFpsFlips()
-                        loggedFrames = framesEncoded; loggedIdr = idrFramesEncoded; loggedRtp = nowRtp
-                        loggedBytes = nowBytes
-                        lastEncoderLogAt = now
-                        val intervalS = ENCODER_LOG_INTERVAL_MS / 1_000
-                        val thermalLabel = thermal()
-                        // Into the ride file, not just app_log.txt. This is the
-                        // only number that says whether anything reached the
-                        // socket, and a frozen-map report is exactly when it is
-                        // wanted — but app_log.txt is a ring buffer that a long
-                        // ride overwrites, so on 2026-09-06 the question "did the
-                        // stream keep flowing" had no answer left by the time the
-                        // phone was back on the cable.
-                        if (dFrames == 0) {
-                            // Both files, one call: the ride file is where a post-mortem
-                            // starts, and app_log/`/more/logs` need this at W or their
-                            // level filters stop surfacing it. That pair used to be
-                            // written by hand here — see RideDiagnostics.warn.
-                            RideDiagnostics.warn(
-                                "stream",
-                                "encoder output: 0 frames in the last ${intervalS}s while STREAMING " +
-                                    "— render/encode loop itself stalled (nothing to even send) — " +
-                                    // fpsFlips, and only it: [dFlips] is drained above the
-                                    // branch, so a stalled window that does not print it
-                                    // loses the count rather than saving it for the next
-                                    // one — and a window where the loop runs without
-                                    // encoding is exactly when an oscillating rate policy
-                                    // is worth seeing. The drop counters are NOT here on
-                                    // purpose: no encoded frame means no trySend, so they
-                                    // are structurally zero, and printing zeroes would
-                                    // imply the queue was examined when it was not.
-                                    //
-                                    // The drain counters ARE here, and unlike the drop
-                                    // counters they say something this branch cannot say
-                                    // otherwise: drainMiss > 0 means the loop kept
-                                    // iterating and the encoder gave back nothing.
-                                    //
-                                    // The converse does NOT hold, and the first draft of
-                                    // this comment claimed it did: drain() is reached only
-                                    // when the source has a frame, so a loop spinning
-                                    // without a snapshot — the commonest stall — also
-                                    // prints drainMiss=0. Read it with `[map]`'s
-                                    // blank=/timeouts= from the same minute, which say
-                                    // whether frames were being produced at all. Review
-                                    // caught the overclaim.
-                                    //
-                                    // They also have to be reset here either way, or the
-                                    // stalled window's count leaks into the next one.
-                                    "drainMiss=${drainMiss.getAndSet(0)} " +
-                                    "drainDouble=${drainDouble.getAndSet(0)} " +
-                                    "wakeLate=${wakeLate.drain()}ms " +
-                                    "overrun=${overruns.getAndSet(0)} " +
-                                    "poolLate=${drainPoolLate()} " +
-                                    "fpsFlips=$dFlips thermal=$thermalLabel",
-                            )
-                        } else {
-                            RideDiagnostics.log(
-                                "stream",
-                                "frames=$dFrames (idr=$dIdr) rtp=$dRtp ${dBytes / 1024}KiB " +
-                                    "${dBytes * 8 / 1000 / intervalS}kbps " +
-                                    "frame=${frameBytes.drain()}B " +
-                                    "idrPkts=${idrDatagrams.drain()} " +
-                                    "idrShape=${nalProc.drainIdrShapes()} " +
-                                    "drop=${rtpDropped.getAndSet(0)} " +
-                                    "dropIdr=${rtpDroppedIdr.getAndSet(0)} " +
-                                    "drainMiss=${drainMiss.getAndSet(0)} " +
-                                    "drainDouble=${drainDouble.getAndSet(0)} " +
-                                    "wakeLate=${wakeLate.drain()}ms " +
-                                    "overrun=${overruns.getAndSet(0)} " +
-                                    "poolLate=${drainPoolLate()} " +
-                                    "fpsFlips=$dFlips " +
-                                    "bitrate=${if (idleBitrate) "idle" else "moving"} " +
-                                    "thermal=$thermalLabel in the last ${intervalS}s",
-                            )
-                        }
-                    }
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
-                    failures++
-                    DebugLog.e(TAG, { "Frame loop error #$failures" }, e)
+                    DebugLog.e(TAG, { "Frame loop error" }, e)
+                    // Into the ride file as well, rate-limited to one line a minute with a
+                    // count. DebugLog writes nowhere in a release build, so until now the
+                    // loudest failure this loop has — a body that throws every iteration —
+                    // left no trace at all on the build that matters. Found by review.
+                    sinceFailureLog++
+                    val failedAt = clock()
+                    if (failedAt - lastFailureLogAt > ENCODER_LOG_INTERVAL_MS) {
+                        lastFailureLogAt = failedAt
+                        RideDiagnostics.warn(
+                            "stream",
+                            "frame loop threw ${sinceFailureLog}x in the last minute, latest " +
+                                "in ${if (inEncodeSection) "encode" else "render"}: " +
+                                "${e.javaClass.simpleName}: ${e.message}",
+                        )
+                        sinceFailureLog = 0
+                    }
+                    // Only a fault from the ENCODE half counts towards a rebuild. The try
+                    // above also spans the snapshot, the overlays and the Canvas, and a new
+                    // MediaCodec fixes none of those — it just costs a configure/start/
+                    // release cycle every three frames while the real fault repeats. The
+                    // test that pinned this branch down triggered it by breaking the source,
+                    // which is how the confusion stayed invisible. Found by review.
+                    if (inEncodeSection) failures++ else source.invalidate()
                     if (failures >= 3) {
                         runCatching { encoder?.release() }
                         encoder = runCatching { encoderFactory(onEncoded) }
@@ -669,6 +634,99 @@ internal class FrameStreamer(
                         failures = 0
                     }
                 }
+                // OUTSIDE the try, deliberately. These are the only report a ride file gets
+                // from this loop, and keeping them inside it meant a body that threw never
+                // wrote them: no `[map]` window and no `encoder output: 0 frames` warn,
+                // exactly when both are the thing worth having. Found by review, 2026-09-18.
+                val now = clock()
+                if (now - lastRenderLogAt > RENDER_LOG_INTERVAL_MS) {
+                    val elapsed = now - lastRenderLogAt
+                    lastRenderLogAt = now
+                    RideDiagnostics.log("map", source.drainWindowLog(elapsed))
+                }
+                if (now - lastEncoderLogAt > ENCODER_LOG_INTERVAL_MS) {
+                    val nowRtp = rtpPacketsSent.get()
+                    val nowBytes = rtpBytesSent.get()
+                    val dFrames = framesEncoded - loggedFrames
+                    val dIdr = idrFramesEncoded - loggedIdr
+                    val dRtp = nowRtp - loggedRtp
+                    val dBytes = nowBytes - loggedBytes
+                    val dFlips = source.drainFpsFlips()
+                    loggedFrames = framesEncoded; loggedIdr = idrFramesEncoded; loggedRtp = nowRtp
+                    loggedBytes = nowBytes
+                    lastEncoderLogAt = now
+                    val intervalS = ENCODER_LOG_INTERVAL_MS / 1_000
+                    val thermalLabel = thermal()
+                    // Into the ride file, not just app_log.txt. This is the
+                    // only number that says whether anything reached the
+                    // socket, and a frozen-map report is exactly when it is
+                    // wanted — but app_log.txt is a ring buffer that a long
+                    // ride overwrites, so on 2026-09-06 the question "did the
+                    // stream keep flowing" had no answer left by the time the
+                    // phone was back on the cable.
+                    if (dFrames == 0) {
+                        // Both files, one call: the ride file is where a post-mortem
+                        // starts, and app_log/`/more/logs` need this at W or their
+                        // level filters stop surfacing it. That pair used to be
+                        // written by hand here — see RideDiagnostics.warn.
+                        RideDiagnostics.warn(
+                            "stream",
+                            "encoder output: 0 frames in the last ${intervalS}s while STREAMING " +
+                                "— render/encode loop itself stalled (nothing to even send) — " +
+                                // fpsFlips, and only it: [dFlips] is drained above the
+                                // branch, so a stalled window that does not print it
+                                // loses the count rather than saving it for the next
+                                // one — and a window where the loop runs without
+                                // encoding is exactly when an oscillating rate policy
+                                // is worth seeing. The drop counters are NOT here on
+                                // purpose: no encoded frame means no trySend, so they
+                                // are structurally zero, and printing zeroes would
+                                // imply the queue was examined when it was not.
+                                //
+                                // The drain counters ARE here, and unlike the drop
+                                // counters they say something this branch cannot say
+                                // otherwise: drainMiss > 0 means the loop kept
+                                // iterating and the encoder gave back nothing.
+                                //
+                                // The converse does NOT hold, and the first draft of
+                                // this comment claimed it did: drain() is reached only
+                                // when the source has a frame, so a loop spinning
+                                // without a snapshot — the commonest stall — also
+                                // prints drainMiss=0. Read it with `[map]`'s
+                                // blank=/timeouts= from the same minute, which say
+                                // whether frames were being produced at all. Review
+                                // caught the overclaim.
+                                //
+                                // They also have to be reset here either way, or the
+                                // stalled window's count leaks into the next one.
+                                "drainMiss=${drainMiss.getAndSet(0)} " +
+                                "drainDouble=${drainDouble.getAndSet(0)} " +
+                                "wakeLate=${wakeLate.drain()}ms " +
+                                "overrun=${overruns.getAndSet(0)} " +
+                                "poolLate=${drainPoolLate()} " +
+                                "fpsFlips=$dFlips thermal=$thermalLabel",
+                        )
+                    } else {
+                        RideDiagnostics.log(
+                            "stream",
+                            "frames=$dFrames (idr=$dIdr) rtp=$dRtp ${dBytes / 1024}KiB " +
+                                "${dBytes * 8 / 1000 / intervalS}kbps " +
+                                "frame=${frameBytes.drain()}B " +
+                                "idrPkts=${idrDatagrams.drain()} " +
+                                "idrShape=${nalProc.drainIdrShapes()} " +
+                                "drop=${rtpDropped.getAndSet(0)} " +
+                                "dropIdr=${rtpDroppedIdr.getAndSet(0)} " +
+                                "drainMiss=${drainMiss.getAndSet(0)} " +
+                                "drainDouble=${drainDouble.getAndSet(0)} " +
+                                "wakeLate=${wakeLate.drain()}ms " +
+                                "overrun=${overruns.getAndSet(0)} " +
+                                "poolLate=${drainPoolLate()} " +
+                                "fpsFlips=$dFlips " +
+                                "bitrate=${if (idleBitrate) "idle" else "moving"} " +
+                                "thermal=$thermalLabel in the last ${intervalS}s",
+                        )
+                    }
+                }
                 // Whatever is left of this frame's budget. Overrunning it is not made up
                 // for by shortening the next frame: the loop falls behind by the overrun
                 // and shows up as `frames=X/expected` plus `late=` in the render log,
@@ -680,6 +738,16 @@ internal class FrameStreamer(
                     // the same stretch of wall time under the same system load — see
                     // [poolLateMax]. It is a child of this scope, so it dies with the stream.
                     //
+                    // SAMPLED, not every frame. Launching a throwaway coroutine on the shared
+                    // pool 2-4 times a second for a whole ride is real work on a phone whose
+                    // premise is riding with the screen off — and worse, it is work on the
+                    // very pool being judged, so a measurement taken every frame partly
+                    // reports load the probe itself created. One in sixteen still leaves
+                    // hundreds of samples an hour. The previous probe is cancelled rather
+                    // than left outstanding: they are children of this scope, and a pool slow
+                    // enough to matter would otherwise hold the stream's teardown waiting out
+                    // sleeps nobody will read. Found by review, 2026-09-18.
+                    //
                     // The deadline is computed HERE, at the launch site, not inside the
                     // coroutine. Inside, it would start counting only once the pool had
                     // already found a thread for it — so a saturated pool, the single
@@ -687,14 +755,17 @@ internal class FrameStreamer(
                     // its own measurement. Found by review, 2026-09-18; the numbers of the
                     // 18.09 rides were taken with the narrower definition and read low by
                     // exactly the dispatch time (pipeline.md §0.8).
-                    val probeTarget = clock() + remainingMs
-                    probeJob = launch(probeContext) {
-                        val target = probeTarget
-                        delay(remainingMs)
-                        val late = (clock() - target).coerceAtLeast(0L)
-                        poolProbes.incrementAndGet()
-                        if (late > 50) poolLateOver50.incrementAndGet()
-                        poolLateMax.updateAndGet { maxOf(it, late) }
+                    probeTick++
+                    if (probeTick % PROBE_EVERY == 0) {
+                        val probeTarget = clock() + remainingMs
+                        probeJob?.cancel()
+                        probeJob = launch(probeContext) {
+                            delay(remainingMs)
+                            val late = (clock() - probeTarget).coerceAtLeast(0L)
+                            poolProbes.incrementAndGet()
+                            if (late > 50) poolLateOver50.incrementAndGet()
+                            poolLateMax.updateAndGet { maxOf(it, late) }
+                        }
                     }
                     delay(remainingMs)
                     wakeLate.add((clock() - (iterationStartMs + frameIntervalMs)).coerceAtLeast(0L))

@@ -167,21 +167,20 @@ internal class DashCameraState(
     // ── Controls, from the platform thread ──
 
     fun setFollowMode(enabled: Boolean) {
+        // Turning follow OFF starts the manual window, exactly as a pan does, and the stamp
+        // goes first for the same reason it does there. Without the stamp the timer still
+        // held whatever the last pan left — usually zero — so [releasePanIfIdle] found
+        // `now - 0 > MANUAL_IDLE_MS` on the very next frame and turned follow straight back
+        // on: the method was a no-op unless the rider also panned. That half predates the
+        // move out of DashEngineController and survived because nothing in the Dart app
+        // calls it — only the plugin API exposes it. Found by review, 2026-09-16 and -18.
+        if (!enabled) lastManualPanAt = clock()
         followMode = enabled
         if (enabled) {
             // Cleared with the pan itself, here and in the other two places pan resets:
             // a stale flag would swallow the log line for the next genuine bound-hit,
             // which is the one thing this flag exists to report.
             panX = 0f; panY = 0f; panAtBound = false
-        } else {
-            // Turning follow OFF starts the manual window, exactly as a pan does. Without
-            // this the timer still held whatever the last pan left — usually zero — so
-            // [releasePanIfIdle] found `now - 0 > MANUAL_IDLE_MS` on the very next frame and
-            // turned follow straight back on: the method was a no-op unless the rider also
-            // panned. Predates the move out of DashEngineController (the old code had the
-            // same shape) and survived because nothing in the Dart app calls it yet — only
-            // the plugin API exposes it. Found by review, 2026-09-16.
-            lastManualPanAt = clock()
         }
     }
 
@@ -192,8 +191,11 @@ internal class DashCameraState(
      * taken out of the viewport it shifts within — see [DashCamera.MAX_PAN_FRACTION].
      */
     fun panBy(dx: Float, dy: Float) {
-        followMode = false
+        // Stamp BEFORE clearing the flag, not after: the frame loop reads the two separately,
+        // and in the old order it could see "manual mode, last pan at 0" and release the pan
+        // in the same breath it was taken. Found by review, 2026-09-18.
         lastManualPanAt = clock()
+        followMode = false
         val maxX = frameWidth * DashCamera.MAX_PAN_FRACTION
         val maxY = frameHeight * DashCamera.MAX_PAN_FRACTION
         val beforeX = panX
@@ -308,8 +310,12 @@ internal class DashCameraState(
      *
      * @return true when this call ended the pan, i.e. the frame after it is a follow frame.
      */
-    fun releasePanIfIdle(nowMs: Long): Boolean {
-        if (followMode || nowMs - lastManualPanAt <= MANUAL_IDLE_MS) return false
+    fun releasePanIfIdle(): Boolean {
+        // Reads [clock], rather than taking the time as a parameter. The parameter compared a
+        // caller's clock against a stamp written from this one — two bases, and the KDoc
+        // presents the injectable clock as the whole reason this class can be tested at all.
+        // Found by review, 2026-09-18.
+        if (followMode || clock() - lastManualPanAt <= MANUAL_IDLE_MS) return false
         panX = 0f; panY = 0f; followMode = true; panAtBound = false
         return true
     }

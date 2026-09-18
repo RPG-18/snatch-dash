@@ -204,10 +204,12 @@ Java-OOM** — 631 КБ на кадр при 4 fps это ~2.5 МБ/с и пор
 скопировано в `frameBitmap`.
 
 Кадровый цикл живёт в
-[`DashEngineController.startStream()`](../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt)
-и остаётся прежним: 4 fps в движении, 2 fps на стоянке (`FPS_MOVING`/`FPS_IDLE`),
-кадр перерисовывается только при смене сигнатуры или раз в `FORCE_REDRAW_MS`
-(2 с). **Эту экономию надо сохранить явно**: снапшот у MapLibre запрашивается
+[`FrameStreamer.run()`](../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/FrameStreamer.kt)
+(до 16.09.2026 — в `DashEngineController.startStream()`), а решение «перерисовывать
+или нет» — в [`MapFrameRenderer`](../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/map/MapFrameRenderer.kt).
+Поведение прежнее: 4 fps в движении, 2 fps на стоянке (`FPS_MOVING`/`FPS_IDLE` в
+`FrameStreamer`), кадр перерисовывается только при смене сигнатуры или раз в
+`FORCE_REDRAW_MS` (2 с, в `MapFrameRenderer`). **Эту экономию надо сохранить явно**: снапшот у MapLibre запрашивается
 только тогда, когда перерисовывается кадр, а не каждую итерацию цикла. Легко
 потерять незаметно — картинка будет правильной, а расход вырастет вдвое-втрое.
 

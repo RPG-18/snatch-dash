@@ -16,11 +16,7 @@ import java.util.Locale
 import kotlinx.coroutines.flow.StateFlow
 import org.maplibre.android.camera.CameraPosition
 import org.maplibre.android.geometry.LatLng
-import kotlin.math.atan2
-import kotlin.math.cos
 import kotlin.math.exp
-import kotlin.math.sin
-import kotlin.math.sqrt
 
 /**
  * The map half of one stream: camera smoothing, the redraw decision, MapLibre, the overlays.
@@ -123,8 +119,14 @@ internal class MapFrameRenderer(
      * ~631 KB in the native heap (API 26+), where the Java GC feels no pressure from it and
      * would leave the free to a finalizer. Dropping it per stream ([release]) added up across
      * a ride of reconnects without ever raising a Java OOM.
+     *
+     * `@Volatile` because [release] runs on whichever thread completed the stream job while
+     * every frame reads this from `dash-frame`. It carried the modifier as a field of
+     * `DashEngineController` and lost it in the move; correctness rests on the job-completion
+     * edge either way, but an unannotated plain field invites the next reader to assume
+     * single-threaded access and free it from somewhere else. Found by review, 2026-09-18.
      */
-    private var frameBitmap: Bitmap? =
+    @Volatile private var frameBitmap: Bitmap? =
         Bitmap.createBitmap(frameWidth, frameHeight, Bitmap.Config.ARGB_8888)
 
     /** Destination rect for the snapshot upscale; reused, this runs 4 times a second. */
@@ -224,7 +226,7 @@ internal class MapFrameRenderer(
         // entire point of DashInputs; see its doc for the two defects it retires.
         val inp = inputs.value
 
-        camera.releasePanIfIdle(monotonicMs())
+        camera.releasePanIfIdle()
 
         val loc = location.value
         val riderLat = loc?.latitude
@@ -278,7 +280,7 @@ internal class MapFrameRenderer(
                 )
             }
         }
-        val movedM = if (wasInit) distMeters(prevLat, prevLng, camera.lat, camera.lng) else 0.0
+        val movedM = if (wasInit) Geo.distanceM(prevLat, prevLng, camera.lat, camera.lng) else 0.0
         windowMovedM += movedM
         // Ground speed, not distance-per-tick — see [CAM_MOVING_ENTER_MPS] for why the
         // difference is the whole point. The camera's own speed and the fix's agree while
@@ -545,12 +547,4 @@ internal class MapFrameRenderer(
         )
     }
 
-    private fun distMeters(lat1: Double, lng1: Double, lat2: Double, lng2: Double): Double {
-        val r = 6371000.0
-        val dLat = Math.toRadians(lat2 - lat1)
-        val dLng = Math.toRadians(lng2 - lng1)
-        val s = sin(dLat / 2) * sin(dLat / 2) +
-            cos(Math.toRadians(lat1)) * cos(Math.toRadians(lat2)) * sin(dLng / 2) * sin(dLng / 2)
-        return 2 * r * atan2(sqrt(s), sqrt(1 - s))
-    }
 }

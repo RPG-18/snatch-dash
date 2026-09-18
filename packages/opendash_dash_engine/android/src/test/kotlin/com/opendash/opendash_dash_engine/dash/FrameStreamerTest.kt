@@ -89,6 +89,9 @@ class FrameStreamerTest {
         /** Frames handed out per drain() call; the loop counts 0 as a miss and ≥2 as a double. */
         var framesPerDrain = 1
 
+        /** Makes the codec itself throw — the only fault that should cost a rebuild. */
+        var throwOnDrain = false
+
         override fun renderFrame(draw: (Canvas) -> Unit) {
             renders++
             // The real encoder would run `draw` against its input Surface. Skipping it is the
@@ -97,9 +100,13 @@ class FrameStreamerTest {
         }
 
         override fun drain(): Int {
+            if (throwOnDrain) error("codec is wedged")
             var out = 0
             repeat(framesPerDrain) {
-                val frame = pending.removeFirstOrNull() ?: return@repeat
+                // The queue holds what renderFrame drew; a fabricated frame stands in when a
+                // test asks the codec for more than were rendered — which is how a burst
+                // that overruns the outbox is expressed.
+                val frame = pending.removeFirstOrNull() ?: pFrame()
                 onEncoded(frame, false, false)
                 out++
             }
@@ -324,12 +331,14 @@ class FrameStreamerTest {
     // ── Drops ────────────────────────────────────────────────────────────
 
     @Test
-    fun `a socket that never drains costs whole access units, and the line says so`() = runTest {
+    fun `a full outbox costs whole access units, and the line says so`() = runTest {
         val rig = Rig(this)
-        // No sender at all: DashSession.rtpSender() returns null when the socket is gone, the
-        // sender coroutine returns immediately, and the outbox (capacity 4) fills for good.
-        rig.sender = null
         val job = rig.start()
+        // Ten access units inside ONE iteration. The sender shares this test's scheduler and
+        // cannot run until the loop suspends, so the outbox (capacity 4) is full by the
+        // fifth — which is the shape a stalled socket has in the field, without pretending
+        // the socket is gone. (That case now ENDS the stream; see the test below.)
+        rig.lastEncoder!!.framesPerDrain = 10
 
         advanceTimeBy(61_000)
         rig.streaming = false
@@ -341,13 +350,32 @@ class FrameStreamerTest {
         // of this assertion and it passed against the real `drop=118` as a prefix — so it
         // would have passed against 110 or 1100 just as happily, and the one test guarding
         // drop accounting could not have failed. Found by review, 2026-09-16.
-        val encoded = field(line, "frames")
-        val dropped = field(line, "drop")
-        // Everything the codec produced beyond the four that fit the outbox, and not one
-        // frame less: a drop is a whole access unit, never part of one.
-        assertEquals(encoded - 4, dropped, "every frame past the queue's depth is counted: $line")
+        assertTrue(field(line, "drop") > 0, "the minute line reports the drops: $line")
         assertEquals(0, field(line, "dropIdr"), "none of them were key frames: $line")
-        assertTrue(rig.sent.isEmpty())
+        // Whole access units: what was not dropped reached the socket intact.
+        assertEquals(field(line, "frames") - field(line, "drop"), rig.sent.size,
+            "every frame either went out or was counted: $line")
+    }
+
+    @Test
+    fun `no socket at all ends the stream instead of encoding into nothing`() = runTest {
+        val rig = Rig(this)
+        // DashSession.rtpSender() returns null when the socket is gone. Nothing would ever
+        // drain the outbox, so rendering and encoding on would be pure cost — and nothing in
+        // FrameStreamer moves the session out of STREAMING, so it would go on until the RX
+        // watchdog noticed on its own. Found by review, 2026-09-18.
+        rig.sender = null
+        val job = rig.start()
+
+        advanceTimeBy(5_000)
+        job.join()
+
+        assertTrue(job.isCompleted, "the loop stopped on its own")
+        assertTrue(rig.source.budgets.size <= 2, "and did so at once: ${rig.source.budgets.size} frames")
+        assertTrue(
+            logLines.any { it.contains("no socket to stream over") },
+            "with the reason in the ride file: $logLines",
+        )
     }
 
     // ── The stage-6 gate: was the loop waiting for a scheduler? ──────────
@@ -394,7 +422,7 @@ class FrameStreamerTest {
     }
 
     @Test
-    fun `the shared pool is probed alongside every sleep`() = runTest {
+    fun `the shared pool is sampled, not probed on every frame`() = runTest {
         val rig = Rig(this)
         val job = rig.start()
 
@@ -403,12 +431,13 @@ class FrameStreamerTest {
         advanceTimeBy(1_000)
         job.join()
 
-        // max/over50/n. The count is what matters here: one probe per sleeping iteration, so
-        // the counterfactual covers the same window the loop does. Its VALUE is meaningless
-        // under virtual time — nothing is ever late — and that is fine: what a real pool does
-        // is a question for the ride file, not for this test.
+        // One probe per PROBE_EVERY sleeping iterations, not one per frame: at 2 fps a
+        // minute of loop is ~122 iterations, so a handful of samples. Probing every frame
+        // would put a coroutine on the very pool under judgement 2-4 times a second for the
+        // whole ride — work the measurement itself created. Found by review, 2026-09-18.
+        val iterations = rig.source.budgets.size
         val probes = Regex("poolLate=\\d+/\\d+/(\\d+)").find(streamLine())?.groupValues?.get(1)?.toInt()
-        assertTrue(probes != null && probes > 100, "one probe per sleep: ${streamLine()}")
+        assertTrue(probes != null && probes in 3..(iterations / 8), "sampled: $probes of $iterations")
         assertTrue(job.isCompleted, "and no probe outlives the stream")
     }
 
@@ -420,7 +449,7 @@ class FrameStreamerTest {
         val job = rig.start()
         assertEquals(1, rig.encoders)
 
-        rig.source.throwOnAdvance = true
+        rig.lastEncoder!!.throwOnDrain = true
         advanceTimeBy(1_010)        // iterations at t=0, 500, 1000: exactly three throws
         rig.streaming = false
         advanceTimeBy(500)
@@ -436,7 +465,7 @@ class FrameStreamerTest {
         val rig = Rig(this)
         val job = rig.start()
 
-        rig.source.throwOnAdvance = true
+        rig.lastEncoder!!.throwOnDrain = true
         advanceTimeBy(510)          // iterations at t=0 and 500: two throws
         rig.streaming = false
         advanceTimeBy(500)
@@ -452,11 +481,11 @@ class FrameStreamerTest {
         val rig = Rig(this)
         val job = rig.start()
 
-        rig.source.throwOnAdvance = true
+        rig.lastEncoder!!.throwOnDrain = true
         advanceTimeBy(510)          // two throws
-        rig.source.throwOnAdvance = false
+        rig.lastEncoder!!.throwOnDrain = false
         advanceTimeBy(510)          // then two clean frames
-        rig.source.throwOnAdvance = true
+        rig.lastEncoder!!.throwOnDrain = true
         advanceTimeBy(510)          // and two more throws
         rig.streaming = false
         advanceTimeBy(500)
@@ -473,7 +502,7 @@ class FrameStreamerTest {
         val job = rig.start()
         rig.encoderBuilds = false        // the codec is gone: MediaCodec.configure throws
 
-        rig.source.throwOnAdvance = true
+        rig.lastEncoder!!.throwOnDrain = true
         advanceTimeBy(1_010)             // three throws → rebuild → and it fails
         job.join()                       // the loop ends on its own, without streaming=false
 

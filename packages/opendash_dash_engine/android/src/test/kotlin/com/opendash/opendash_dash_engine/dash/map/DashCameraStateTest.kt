@@ -25,12 +25,12 @@ class DashCameraStateTest {
         val cam = camera()
         cam.setFollowMode(false)
 
-        assertFalse(cam.releasePanIfIdle(now), "the frame right after the press changes nothing")
+        assertFalse(cam.releasePanIfIdle(), "the frame right after the press changes nothing")
         assertFalse(cam.followMode)
         now += DashCameraState.MANUAL_IDLE_MS
-        assertFalse(cam.releasePanIfIdle(now), "and not on the boundary either")
+        assertFalse(cam.releasePanIfIdle(), "and not on the boundary either")
         now += 1
-        assertTrue(cam.releasePanIfIdle(now), "only once the window has really passed")
+        assertTrue(cam.releasePanIfIdle(), "only once the window has really passed")
         assertTrue(cam.followMode)
     }
 
@@ -42,7 +42,7 @@ class DashCameraStateTest {
         assertFalse(cam.followMode)
         assertEquals(20f, cam.panX)
         now += DashCameraState.MANUAL_IDLE_MS + 1
-        assertTrue(cam.releasePanIfIdle(now))
+        assertTrue(cam.releasePanIfIdle())
         // Follow means following: the pan goes with it, or the map would keep the rider's
         // offset while claiming to be centred on them.
         assertEquals(0f, cam.panX)
@@ -57,7 +57,8 @@ class DashCameraStateTest {
 
         assertEquals(0f, cam.panX)
         assertEquals(0f, cam.panY)
-        assertFalse(cam.releasePanIfIdle(now + DashCameraState.MANUAL_IDLE_MS + 1), "nothing left to release")
+        now += DashCameraState.MANUAL_IDLE_MS + 1
+        assertFalse(cam.releasePanIfIdle(), "nothing left to release")
     }
 
     // ── Bounds ───────────────────────────────────────────────────────────

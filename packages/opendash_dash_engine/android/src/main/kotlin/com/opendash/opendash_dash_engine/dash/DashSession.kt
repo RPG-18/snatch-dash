@@ -163,7 +163,7 @@ class DashSession(private val scope: CoroutineScope) {
     private var lastLoggedIdrAcks = 0
     private var lastLoggedPFrameAcks = 0
     @Volatile private var ackCounterJob: Job? = null
-    // One-shot per session — pairs with DashEngineController's own "first video frame sent"
+    // One-shot per session — pairs with FrameStreamer's own "first video frame sent"
     // line; the gap between the two is this session's dash-side decode latency.
     @Volatile private var loggedFirstIdrAck = false
 

@@ -88,6 +88,30 @@ class DashEngineController(
          * loop that moved out to [FrameStreamer].
          */
         private const val MEM_SAMPLE_INTERVAL_MS = 60_000L
+
+        /**
+         * How often the FRAME TICK is allowed to publish engine state to Dart.
+         *
+         * Everything else — session transitions, WiFi status, media and call updates,
+         * setDestination, errors — publishes the moment it happens and does not consult
+         * this: a banner about a lost link that arrives a second late is a regress, and
+         * those calls are rare by nature.
+         *
+         * The tick is the opposite: it fired at the frame rate, 4 Hz while moving, and each
+         * call builds a ~25-key map and hands it to the platform channel on MAIN — the same
+         * thread the loop then waits on for its MapLibre snapshot. So the loop was queueing
+         * work in front of the thing it was about to block on, four times a second, for a
+         * screen that is off for the whole ride (pipeline.md §4.6).
+         *
+         * 1 Hz is enough for what actually reads those fields. `NavLoop` caches rider
+         * position and speed from the stream and runs its own `Timer.periodic(1s)`, so it
+         * discarded three publishes out of four already; the Dash screen's marker and
+         * compass are only looked at with the phone in hand. The cost is staleness: NavLoop's
+         * tick can now work from a position up to a second old instead of 250 ms — about
+         * 19 m at 90 km/h, against a 60 m off-route threshold (`NavEngine._offRouteM`) and a
+         * 15 s reroute cooldown. Named here so the next reader does not have to re-derive it.
+         */
+        private const val TICK_PUBLISH_INTERVAL_MS = 1_000L
     }
 
     private val dashConfig = DashConfig.get(context)
@@ -616,16 +640,45 @@ class DashEngineController(
         }
     }
 
-    fun setFollowMode(enabled: Boolean) = cameraState.setFollowMode(enabled)
-
-    // The joystick, one line each: the state, the clamping and the lines they log all live
-    // in [DashCameraState] now, because the frame loop mutates the same fields from the other
+    // The joystick: the state, the clamping and the lines they log all live in
+    // [DashCameraState] now, because the frame loop mutates the same fields from the other
     // side (pipeline.md §4.8 — "the camera needs a home anyway").
+    //
+    // Each publishes straight after, and that is not decoration: `zoom`, `headingUp` and
+    // `followMode` reach Dart ONLY through [publishState], and until 2026-09-19 they rode
+    // out on the frame tick — which is now throttled to 1 Hz. Without these calls the
+    // compass button on the Dash screen would sit on its old icon for up to a second after a
+    // tap, because it renders from engine state with no optimistic update. Found by review.
+    //
+    // [panBy] is the exception, and deliberately: pan reaches MapLibre as padding and is not
+    // a published field at all, while a drag gesture can call it at frame rate — publishing
+    // there would hand back the cost this throttle just removed.
+    fun setFollowMode(enabled: Boolean) {
+        cameraState.setFollowMode(enabled)
+        publishState()
+    }
+
     fun panBy(dx: Float, dy: Float) = cameraState.panBy(dx, dy)
-    fun zoomIn() = cameraState.zoomIn()
-    fun zoomOut() = cameraState.zoomOut()
-    fun toggleHeadingUp() = cameraState.toggleHeadingUp()
-    fun recenter() = cameraState.recenter()
+
+    fun zoomIn() {
+        cameraState.zoomIn()
+        publishState()
+    }
+
+    fun zoomOut() {
+        cameraState.zoomOut()
+        publishState()
+    }
+
+    fun toggleHeadingUp() {
+        cameraState.toggleHeadingUp()
+        publishState()
+    }
+
+    fun recenter() {
+        cameraState.recenter()
+        publishState()
+    }
 
     fun forgetDash() { dashConfig.forgetDash() }
     fun setSsid(ssid: String) { dashConfig.ssid = ssid.trim() }
@@ -741,7 +794,7 @@ class DashEngineController(
             overlays = overlays,
             frameWidth = DashEncoder.WIDTH,
             frameHeight = DashEncoder.HEIGHT,
-            onTick = ::publishState,
+            onTick = ::publishStateFromTick,
         )
         frameRenderer = renderer
 
@@ -835,6 +888,27 @@ class DashEngineController(
     private fun toDashDistance(meters: Double): Pair<Int, Int> =
         if (meters >= 1000) (((meters / 100).toInt())) to DashCommands.NAV_UNIT_KM_TENTHS
         else meters.toInt() to DashCommands.NAV_UNIT_METERS
+
+    /**
+     * When the frame tick last published — see [TICK_PUBLISH_INTERVAL_MS].
+     *
+     * Touched only from the frame thread (the tick is the sole caller), and deliberately NOT
+     * reset per stream: between two streams the session goes through CONNECTING, READY and
+     * STREAMING, and each of those publishes on its own, so the first tick of a new stream
+     * has nothing fresh to say.
+     */
+    private var lastTickPublishAt = 0L
+
+    /**
+     * [publishState] on the frame's cadence, throttled — the tick's entry point, and only
+     * the tick's.
+     */
+    private fun publishStateFromTick() {
+        val now = monotonicMs()
+        if (now - lastTickPublishAt < TICK_PUBLISH_INTERVAL_MS) return
+        lastTickPublishAt = now
+        publishState()
+    }
 
     /**
      * Publishes one snapshot of engine state to Dart.

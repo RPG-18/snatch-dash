@@ -788,11 +788,22 @@ class DashEngineController(
         }
         // From the completion handler, not from inside the job: quitting a looper from a
         // coroutine still running on it would be pulling the floor up as we walk off it.
-        // Here the job is already finished, so the encoder is released and the outbox is
-        // cancelled before either thread is given back. A stream that never starts because
-        // the scope is already cancelled still reaches this — invokeOnCompletion fires on a
-        // cancelled job too — so the threads cannot outlive their stream.
-        streamJob?.invokeOnCompletion { threads.close() }
+        // Here the job is already finished, so the outbox is cancelled before either thread
+        // is given back. A stream that never starts because the scope is already cancelled
+        // still reaches this — invokeOnCompletion fires on a cancelled job too — so the
+        // threads cannot outlive their stream.
+        //
+        // The encoder is released HERE and not only in the job's own finally, because
+        // `launch` on a Handler dispatcher merely POSTS: a job cancelled before its body is
+        // ever dispatched runs no code at all, so neither finally would fire — and
+        // `threads.close()` below quits the looper, guaranteeing they never will. That path
+        // leaked a configured MediaCodec and its input Surface per stream. [releaseEncoder]
+        // is idempotent, so the ordinary path — where the loop already released it — pays
+        // nothing. Found by review, 2026-09-18.
+        streamJob?.invokeOnCompletion {
+            streamer.releaseEncoder()
+            threads.close()
+        }
     }
 
     private fun toDashDistance(meters: Double): Pair<Int, Int> =

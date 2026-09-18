@@ -687,8 +687,17 @@ internal class FrameStreamer(
                     // The counterfactual, started before our own sleep so both wait through
                     // the same stretch of wall time under the same system load — see
                     // [poolLateMax]. It is a child of this scope, so it dies with the stream.
+                    //
+                    // The deadline is computed HERE, at the launch site, not inside the
+                    // coroutine. Inside, it would start counting only once the pool had
+                    // already found a thread for it — so a saturated pool, the single
+                    // condition this probe exists to catch, would have been excluded from
+                    // its own measurement. Found by review, 2026-09-18; the numbers of the
+                    // 18.09 rides were taken with the narrower definition and read low by
+                    // exactly the dispatch time (pipeline.md §0.8).
+                    val probeTarget = clock() + remainingMs
                     probeJob = launch(probeContext) {
-                        val target = clock() + remainingMs
+                        val target = probeTarget
                         delay(remainingMs)
                         val late = (clock() - target).coerceAtLeast(0L)
                         poolProbes.incrementAndGet()

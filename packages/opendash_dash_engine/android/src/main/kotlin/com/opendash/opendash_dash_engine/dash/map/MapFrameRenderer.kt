@@ -10,10 +10,8 @@ import android.os.SystemClock
 import com.opendash.opendash_dash_engine.DashInputs
 import com.opendash.opendash_dash_engine.RouteGeometry
 import com.opendash.opendash_dash_engine.dash.FrameSource
-import com.opendash.opendash_dash_engine.util.DebugLog
 import com.opendash.opendash_dash_engine.util.RideDiagnostics
 import com.opendash.opendash_dash_engine.util.monotonicMs
-import java.io.ByteArrayOutputStream
 import java.util.Locale
 import kotlinx.coroutines.flow.StateFlow
 import org.maplibre.android.camera.CameraPosition
@@ -54,7 +52,6 @@ internal class MapFrameRenderer(
     private val onTick: () -> Unit,
 ) : FrameSource {
     companion object {
-        private const val TAG = "MapFrameRenderer"
         private const val FORCE_REDRAW_MS = 2_000L
         private const val SMOOTH_TAU = 0.35
 
@@ -203,41 +200,6 @@ internal class MapFrameRenderer(
             " moved=${windowMovedM.toInt()}m"
         windowMovedM = 0.0
         return line
-    }
-
-    /**
-     * One frame plus its numbers for the debug screen.
-     *
-     * Compression happens here rather than in Dart because the bitmap never crosses the
-     * boundary otherwise — and it is only ever called when someone is listening: the loop
-     * checks its preview sink first, which is what keeps a ride from paying for a screen
-     * nobody opened. A failure is swallowed: a debug preview that cannot compress must not
-     * take the ride down with it.
-     */
-    override fun previewFrame(
-        encodedBytes: Int,
-        framesSent: Int,
-        decoderOpens: Int,
-        fps: Int,
-    ): Map<String, Any?>? {
-        val bmp = frameBitmap ?: return null
-        return runCatching {
-            val out = ByteArrayOutputStream(64 * 1024)
-            bmp.compress(Bitmap.CompressFormat.PNG, 100, out)
-            mapOf<String, Any?>(
-                "png" to out.toByteArray(),
-                "zoom" to camera.zoom / DashCameraState.ZOOM_SCALE,
-                "encodedBytes" to encodedBytes,
-                "framesSent" to framesSent,
-                // NOT "frames confirmed" — this is a one-shot "decoder opened"
-                // signal, 1-3 per session. See spec/video.md.
-                "decoderOpens" to decoderOpens,
-                "fps" to fps,
-                "renderScale" to MapSnapshotProvider.PIXEL_RATIO,
-            )
-        }.onFailure {
-            DebugLog.w(TAG) { "frame preview failed: ${it.message}" }
-        }.getOrNull()
     }
 
     /** Frees this stream's bitmap. The next stream gets a new renderer and a new one. */

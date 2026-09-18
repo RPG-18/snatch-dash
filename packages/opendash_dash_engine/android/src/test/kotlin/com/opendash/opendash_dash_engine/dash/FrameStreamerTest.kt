@@ -71,13 +71,6 @@ class FrameStreamerTest {
         override fun drainFpsFlips(): Int = flips.also { flips = 0 }
         override fun drainWindowLog(periodMs: Long): String = "frames=0/0 window=${periodMs}ms"
         override fun invalidate() { invalidations++ }
-        var preview: Map<String, Any?>? = null
-        override fun previewFrame(
-            encodedBytes: Int,
-            framesSent: Int,
-            decoderOpens: Int,
-            fps: Int,
-        ): Map<String, Any?>? = preview
     }
 
     /**
@@ -169,7 +162,6 @@ class FrameStreamerTest {
         var clockPenaltyMs = 0L
         var penaltyFromMs = Long.MAX_VALUE
         var sender: ((ByteArray) -> Unit)? = { sent += it }
-        var previewSink: ((Map<String, Any?>) -> Unit)? = null
 
         var encoderBuilds = true
 
@@ -182,8 +174,6 @@ class FrameStreamerTest {
             },
             rtpSender = { sender },
             streaming = { streaming },
-            previewSink = { previewSink },
-            decoderOpens = { 0 },
             thermal = { "OK" },
             clock = {
                 val t = scope.testScheduler.currentTime
@@ -493,24 +483,6 @@ class FrameStreamerTest {
         val after = rig.source.budgets.size
         advanceTimeBy(5_000)
         assertEquals(after, rig.source.budgets.size, "and no more snapshots are paid for")
-    }
-
-    @Test
-    fun `a debug screen that throws does not cost the encoder`() = runTest {
-        val rig = Rig(this)
-        rig.source.preview = mapOf("png" to ByteArray(0))
-        rig.previewSink = { error("the debug screen went away mid-frame") }
-        val job = rig.start()
-
-        advanceTimeBy(2_010)
-        rig.streaming = false
-        advanceTimeBy(500)
-        job.join()
-
-        // The sink is Dart's, reached through the plugin. Before this was wrapped, three
-        // throwing frames in a row rebuilt the encoder — a ride paying for a debug screen.
-        assertEquals(1, rig.encoders)
-        assertEquals(0, rig.source.invalidations)
     }
 
     @Test

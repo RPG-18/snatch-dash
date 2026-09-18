@@ -20,6 +20,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.yield
 
 /**
  * Where a frame comes from, as the loop needs it: advance, draw, describe.
@@ -76,8 +77,6 @@ internal interface FrameSource {
      */
     fun invalidate()
 
-    /** The debug screen's frame plus its numbers, or null if there is nothing to send. */
-    fun previewFrame(encodedBytes: Int, framesSent: Int, decoderOpens: Int, fps: Int): Map<String, Any?>?
 }
 
 /**
@@ -105,8 +104,6 @@ internal class FrameStreamer(
     private val encoderFactory: (onEncoded: (ByteArray, Boolean, Boolean) -> Unit) -> FrameEncoder,
     private val rtpSender: () -> ((ByteArray) -> Unit)?,
     private val streaming: () -> Boolean,
-    private val previewSink: () -> ((Map<String, Any?>) -> Unit)?,
-    private val decoderOpens: () -> Int,
     private val thermal: () -> String,
     private val clock: () -> Long,
     private val senderContext: CoroutineContext = Dispatchers.IO,
@@ -291,9 +288,6 @@ internal class FrameStreamer(
     // to the outbox as a unit. Only ever touched from the frame-loop coroutine.
     private val auPackets = ArrayList<ByteArray>(32)
 
-    /** Size the encoder produced for the most recent frame — one of the debug screen's numbers. */
-    private var lastEncodedBytes = 0
-
     // Which profile the encoder is currently on, so it is poked only on a
     // transition rather than every frame.
     private var idleBitrate = false
@@ -372,7 +366,6 @@ internal class FrameStreamer(
             // over, only that distinct frames carry distinct instants.
             videoPtsMs += ptsStepMs
             framesEncoded++
-            lastEncodedBytes = annexB.size
             frameBytes.add(annexB.size.toLong())
             if (isKey) idrFramesEncoded++
         }
@@ -541,7 +534,6 @@ internal class FrameStreamer(
                             intendedIntervalMs = frameIntervalMs,
                         )
                         lastFrameSentAt = sentAt
-                        emitFramePreview(frameIntervalMs)
                     }
                     failures = 0
                     val now = clock()
@@ -708,9 +700,14 @@ internal class FrameStreamer(
                     wakeLate.add((clock() - (iterationStartMs + frameIntervalMs)).coerceAtLeast(0L))
                 } else {
                     overruns.incrementAndGet()
-                    // Still a suspension point: without one, a loop that never fits its budget
-                    // would never give the dispatcher a chance to deliver cancellation.
-                    delay(0L)
+                    // `yield()`, not `delay(0)`: kotlinx returns from `delay` immediately for
+                    // a non-positive duration, without dispatching and without checking
+                    // cancellation, so the guarantee this line exists for would not have
+                    // held. It matters on the one path that has no other suspension — a
+                    // parked bike whose redraw signature is stable, where `advance()` skips
+                    // the snapshot entirely and the body never touches Main. Found by
+                    // review, 2026-09-18.
+                    yield()
                 }
             }
         } finally {
@@ -742,24 +739,4 @@ internal class FrameStreamer(
     private fun drainPoolLate(): String =
         "${poolLateMax.getAndSet(0)}/${poolLateOver50.getAndSet(0)}/${poolProbes.getAndSet(0)}"
 
-    /**
-     * One frame plus its numbers to the debug screen, or nothing at all — see [previewSink].
-     *
-     * Wrapped, and that is not decoration: the sink is a Dart EventSink reached through the
-     * plugin, so a throw from it would land in the frame loop's own catch, count towards
-     * [failures] and — three frames later — rebuild a perfectly good encoder because a debug
-     * screen misbehaved. The old shape had the whole body inside one `runCatching` for the
-     * same reason; splitting it across two objects is what nearly lost the guard.
-     */
-    private fun emitFramePreview(frameIntervalMs: Long) {
-        val sink = previewSink() ?: return
-        val frame = source.previewFrame(
-            encodedBytes = lastEncodedBytes,
-            framesSent = framesEncoded,
-            decoderOpens = decoderOpens(),
-            fps = (1000L / frameIntervalMs).toInt(),
-        ) ?: return
-        runCatching { sink(frame) }
-            .onFailure { DebugLog.w(TAG) { "frame preview sink failed: ${it.message}" } }
-    }
 }

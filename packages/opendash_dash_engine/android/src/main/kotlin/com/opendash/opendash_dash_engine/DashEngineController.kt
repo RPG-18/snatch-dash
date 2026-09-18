@@ -191,9 +191,11 @@ class DashEngineController(
     /**
      * The map side of the CURRENT stream, or null between streams.
      *
-     * Held only so the next [startStream] can recycle the previous stream's frame bitmap:
-     * the loop that used it is already gone by then, and the debug screen may have been
-     * reading that frame until a moment ago.
+     * Freed when the stream's job completes, not at the next [startStream] — see the
+     * completion handler there. It used to be held until the next stream because the debug
+     * screen could still be reading the last frame; that screen was deleted on 2026-09-18,
+     * so holding a ~631 KB native bitmap through a disconnect now buys nothing, and a ride
+     * that ends with a disconnect may never have a next stream at all.
      */
     private var frameRenderer: MapFrameRenderer? = null
 
@@ -202,21 +204,6 @@ class DashEngineController(
     private var snapshotGeneration = 0L
 
     var onButton: ((Int) -> Unit)? = null
-
-    /**
-     * Set while the debug screen is on screen; null the rest of the time.
-     *
-     * **The null check is the feature.** Handing the composed frame to Dart means
-     * compressing 526×300 to PNG on the frame thread, four times a second, and
-     * a ride pays nothing for a screen nobody is looking at — the whole premise
-     * of this app is that the phone rides with its display off. So the cost is
-     * bought only by an attached listener, and detaching stops it dead.
-     *
-     * PNG, not JPEG: the screen exists to look at frame sharpness (see
-     * spec/dash_screen_debug.md), and a lossy codec in the path would be
-     * answering the question with its own artefacts.
-     */
-    @Volatile var onFramePreview: ((Map<String, Any?>) -> Unit)? = null
 
 
     // ── Public API (invoked by the plugin's MethodChannel handler) ────────
@@ -685,10 +672,9 @@ class DashEngineController(
         streamJob?.cancelAndJoin()
         streamJob = null
 
-        // The joined loop released its own encoder on the way out (see FrameStreamer's
-        // finally), and the renderer it drew through goes with it — recycling the previous
-        // frame bitmap here rather than there keeps "one bitmap per stream" true without
-        // making the loop's teardown depend on what happens next.
+        // Belt to the completion handler's braces: by now the previous job has been joined,
+        // so its handler has already released that renderer. This covers the one case it
+        // cannot — a renderer built for a stream whose job never started.
         frameRenderer?.release()
         frameRenderer = null
 
@@ -748,8 +734,6 @@ class DashEngineController(
             encoderFactory = { onEncoded -> DashEncoder(onEncoded).also { it.prepare() } },
             rtpSender = session::rtpSender,
             streaming = { session.state.value == DashState.STREAMING },
-            previewSink = { onFramePreview },
-            decoderOpens = { session.decoderOpenCount },
             thermal = ::thermalLabel,
             clock = ::monotonicMs,
             senderContext = threads.rtp,
@@ -802,6 +786,14 @@ class DashEngineController(
         // nothing. Found by review, 2026-09-18.
         streamJob?.invokeOnCompletion {
             streamer.releaseEncoder()
+            // The renderer's bitmap too, and only from here: [disconnect] cancels the loop
+            // cooperatively and cannot join it (it runs on Main, and the loop may be
+            // suspended inside a snapshot that needs Main), so recycling from there would
+            // race a live `Canvas(bmp)`. Here the loop is finished by definition.
+            // Guarded by identity: a fast reconnect may already have installed the next
+            // stream's renderer in the field, and freeing THAT one would blank the dash.
+            renderer.release()
+            if (frameRenderer === renderer) frameRenderer = null
             threads.close()
         }
     }

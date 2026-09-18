@@ -260,7 +260,9 @@ MethodChannel-поток», и это была неправда.
 ## 0.5 Где план сейчас
 
 Сделано: гейт 0 и этапы 1, 2, 4, 5, 6a; этап 6b снят по замеру (§0.8). Осталась
-одна работа — этап 3 (троттлинг `publishState()`, PNG в превью) — и отложенный
+одна работа — этап 3, и в ней осталась одна правка вместо двух: троттлинг
+`publishState()`. PNG в превью отпал вместе с отладочным экраном, удалённым
+18.09 (замирание карты закрыто, наблюдать нечего). Плюс отложенный
 `requestSyncFrame` из 4.7, который ждёт первого ненулевого `dropIdr=` в поле.
 На 18.09 `dropIdr` по-прежнему ноль во всех 93 окнах двух заездов.
 
@@ -283,7 +285,7 @@ MethodChannel-поток», и это была неправда.
   снаружи, — параметры конструктора: часы, энкодер, источник кадров, сокет и
   предикат «сессия ещё стримит».
 - [`dash/map/MapFrameRenderer.kt`](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/map/MapFrameRenderer.kt) (581)
-  — камера, сигнатура перерисовки, MapLibre, оверлеи, PNG превью. Всё, чему
+  — камера, сигнатура перерисовки, MapLibre, оверлеи. Всё, чему
   нужно устройство, по одну сторону шва `FrameSource`; всё, чему не нужно, — по
   другую.
 - [`dash/map/DashCameraState.kt`](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/map/DashCameraState.kt) (300)
@@ -309,7 +311,7 @@ MethodChannel-поток», и это была неправда.
 | дедлайн итерации, а не сон поверх работы | `max(interval, latency)` из спеки |
 | переполненная очередь стоит целого AU и ГОВОРИТ об этом | `drop=`/`dropIdr=` проверяются по тексту строки `[stream]` |
 | три отказа ПОДРЯД пересобирают энкодер, два — нет | |
-| отказ sink'а отладочного экрана не стоит энкодера | |
+| ~~отказ sink'а отладочного экрана не стоит энкодера~~ — тест снят 18.09 вместе с экраном | |
 
 **Тесты прогнаны мутантами, а не приняты зелёными.** Девять мутантов
 production-кода — метка за итерацию (регрессия, которую чинил `95fec35`), `delay`
@@ -583,7 +585,7 @@ flowchart LR
   subgraph main["Dispatchers.Main (platform thread Flutter)"]
     MC["method channel<br/>setDestination, setNavState…"]
     SNAP["MapSnapshotProvider.capture()<br/>MapLibre snapshotter"]
-    SINK["eventSink.success<br/>publishState 4 Гц, preview"]
+    SINK["eventSink.success<br/>publishState 4 Гц"]
   end
   subgraph def["Dispatchers.Default (общий пул)"]
     LOOP["цикл кадра<br/>tick → redrawFrame → renderFrame → drain → packetize"]
@@ -1146,11 +1148,12 @@ frame "soon". Provide an Integer with the value 0» — больше парам�
 
 ### 4.9 Мелочи
 
-- **`emitFramePreview`**
-  ([:1895](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L1895))
-  — `Bitmap.compress(PNG, 100)` внутри бюджета кадра, на том же потоке.
-  Только при открытом debug-экране, но именно там и смотрят на числа.
-  Копию битмапа отдать в sink, сжимать на его стороне.
+- ~~**`emitFramePreview`**~~ — `Bitmap.compress(PNG, 100)` внутри бюджета кадра.
+  **Снято 18.09**: отладочный экран удалён целиком (замирание карты, ради
+  которого он заводился, закрыто правкой RTP-метки), а с ним ушли и PNG, и канал
+  `opendash_dash_engine/frames`, и `DashSession.decoderOpenCount`. Находка
+  закрыта удалением кода, а не оптимизацией — лучший из возможных исходов для
+  пункта, чья цена оплачивалась наблюдателем.
 - **`SNAPSHOT_DEADLINE_MS = 500`** больше интервала в движении (250 мс):
   медленный снапшот удваивает период при 4 fps. Это осознанное
   `max(interval, latency)` из спеки, не ошибка. Рядом появился
@@ -1266,7 +1269,7 @@ data class DashInputs(
 | **гейт 0** | ✅ (2026-09-14, `ac7e6d1`) Счётчик исходов `drain()` (`0/1/≥2`) в `[stream]` | нет | ответил: двойные штампы едут в поле, `drainMiss` медиана ~22/мин на Huawei против 0 на Xiaomi (§0.4) |
 | 1 | ✅ (2026-09-14, `ac7e6d1`) Общий `monotonicMs()` в `util/`; на него — дедлайн цикла, `MANUAL_IDLE_MS`, `RenderStats`, `WEDGED_MS`/`REBUILD_COOLDOWN_MS`, окно `PositionTrust`, длительности `LocationTracker`, шесть мест в `DashWifiManager`; возраст фикса — `elapsedRealtimeNanos` (4.1) | нет | `grep currentTimeMillis` — остались `DebugLog`, `CrashGuard` и имя ride-файла, все три штампы |
 | 2 | ✅ (2026-09-14, `ac7e6d1`) `rtpSender()` с захваченным сокетом и проверкой `socket === sock` (4.5) | нет | оба комментария стали правдой; `[stream]` без изменений |
-| 3 | Троттлинг `publishState()` из `tick()` до 1 Гц (4.6); PNG-сжатие `emitFramePreview` на стороне sink | низкий | `[map]`: `late=`, `timeouts`, `skipped` до и после |
+| 3 | Троттлинг `publishState()` из `tick()` до 1 Гц (4.6). ~~PNG-сжатие `emitFramePreview`~~ — отпало 18.09 вместе с отладочным экраном | низкий | `[map]`: `late=`, `timeouts`, `skipped` до и после |
 | 4 | ✅ (2026-09-14, `38fefa9`) `DashInputs` + `StateFlow`, `tick()` читает один раз (4.4) | низкий | `flutter analyze` + поездка; исчезновение мигания маршрута субъективно |
 | 5 | ✅ (2026-09-16) `FrameStreamer` вынесен, контроллер — фасад (4.8); тесты цикла на фейках с `runTest` | средний — перенос кода | 12 новых тестов, 9 мутантов убиты; `[map]`/`[stream]` без изменения формата; контроллер 1997 → 845 строк (§0.6) |
 | 6a | ✅ (2026-09-16, измерено 18.09) `dash-frame` / `dash-rtp` выделенные потоки с проверкой приоритета (4.3), плюс гейты `wakeLate=`/`poolLate=` | низкий — API кодека не тронут | `threads: … (granted)` на обоих телефонах; числа — §0.8 |
@@ -1300,7 +1303,7 @@ data class DashInputs(
   чтобы понять, нужно ли это. Сначала данные, потом переделка.
 - **Два блита на кадр** (апскейл снапшота в `frameBitmap` + `drawBitmap` в
   Surface). На 526×300 копейки, а `frameBitmap` держит «последний целый
-  кадр» при провале снапшота и кормит debug-превью.
+  кадр» при провале снапшота.
 - **`Channel(capacity = 4)` с дропом.** Отлаженный компромисс с историей
   в `CLAUDE.md` и в комментарии на [`:1019`](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L1019).
 - **Дедлайн 500 мс на снапшот при интервале 250.** Осознанно.
@@ -1321,9 +1324,8 @@ data class DashInputs(
 4. `publishState()` из `tick()` — раз в секунду, а не каждый кадр. **Не
    сделано**; вызов по-прежнему на каждой итерации
    ([:1581](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L1581)).
-5. PNG-сжатие в `emitFramePreview` — на стороне sink. **Не сделано**;
-   `compress(PNG, 100)` всё ещё внутри бюджета кадра
-   ([:1899](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L1899)).
+5. ~~PNG-сжатие в `emitFramePreview`~~ — **отпало 18.09**: отладочный экран
+   удалён, сжимать нечего (§4.9).
 6. ~~Комментарий у плоских счётчиков `MapSnapshotProvider`~~ — **отпало**:
    они и так `@Volatile`, отчёт ошибался (§4.9).
 

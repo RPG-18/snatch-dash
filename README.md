@@ -76,23 +76,28 @@ overlay — at 526×300 under a round bezel it costs a visible share of the fram
 
 - No cloud sync / no sign-in — the original's optional Firebase sync was
   dropped; everything is local-only here.
-- Route maneuver glyphs: only `CONTINUE` is ever sent to the dash (unchanged
-  from the original — the Yandex driving router used here doesn't expose
-  per-step maneuvers either, and the original's OSRM-derived glyph codes were
-  never verified against the dash beyond `CONTINUE`).
+- Route maneuver glyphs are sent per step (turns, forks, U-turns, roundabouts
+  with rotation direction and exit number, ferries — see `_dashCodeByType` and
+  `Maneuver.dashCode` in `lib/nav/route.dart`), but only `0x09` ("straight
+  ahead") is **verified against a physical dash**. Anything unmapped falls back
+  to it. The rest are read off the firmware's own glyph table and still want a
+  ride to confirm.
 - Offline is only half-done: the **map** on the dash renders without a
   network, but **routing and destination search still go to Yandex over the
   network**. A ride along an already-built route survives losing connectivity;
   building a new route — or recalculating after going off-route — does not.
   Options for closing that gap are surveyed in
   [`docs/offline_mode_ru.md`](docs/offline_mode_ru.md).
-- Offline packs cover zoom 11–14, so a whole-trip overview (a 300 km route on
-  one screen) is not available offline — at the lowest step the 526×300 frame
-  shows a city agglomeration.
-- No adaptive fps/bitrate switching for the dash video stream — the original
-  drops from 4 fps/200 kbps to 2 fps/100 kbps on long straights far from a
-  maneuver; this port always encodes at the "High" preset (see
-  [`spec/video.md`](spec/video.md)).
+- Offline packs cover zoom 10–15 (rebuilt 2026-09-09; the ladder in the app
+  runs 10.00–15.00). A whole-trip overview is still not available offline — the
+  widest step puts roughly 20 km across the 526×300 frame, so a 300 km route
+  does not fit on one screen.
+- Adaptive fps/bitrate switching exists but keys off a different signal than
+  the original's. The port drops 4 fps/200 kbps → 2 fps/100 kbps when the map
+  stops moving (ground speed with hysteresis, `FrameRatePolicy`), where the
+  original keyed off distance to the next maneuver — so a long straight at
+  speed still streams at the higher rate here. See
+  [`spec/video.md`](spec/video.md).
 
 ## 🛠️ Build From Source
 

@@ -34,8 +34,9 @@ class RtpPacketizer(private val onPacket: (ByteArray) -> Unit) {
      * @param nal    raw NAL bytes (no start code)
      * @param endOfAU true if this is the last NAL in the access unit (triggers marker bit)
      * @param ptsMs  presentation timestamp in milliseconds. Deliberately NOT
-     *   `System.currentTimeMillis()` at the call site — see [DashEngineController.startStream]'s
-     *   `videoPtsMs`, a clock advanced by the INTENDED frame interval rather than real elapsed
+     *   `System.currentTimeMillis()` at the call site — see
+     *   [com.opendash.opendash_dash_engine.dash.FrameStreamer]'s `videoPtsMs`, a clock advanced
+     *   by the INTENDED frame interval once per frame OUT OF THE CODEC rather than real elapsed
      *   time, so the RTP timeline stays evenly spaced regardless of render/encode jitter. Ported
      *   from OpenMotoDash/NorthStar's `videoPtsMs` (see spec/wifi_retry_policy.md's "Из живого
      *   форка") after the 2026-08-29 field session found the dash decoding almost nothing past

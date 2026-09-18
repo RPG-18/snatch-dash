@@ -41,7 +41,7 @@ found a regression (note it under **Findings** at the bottom).
 - [ ] IDR bundling (SPS+PPS+IDR with Annex-B start codes) still satisfies the
       dash decoder — no periodic decoder resets/black frames.
 - [ ] Frame rate holds ~4 fps while moving, drops to ~2 fps when
-      stationary/idle (`DashEngineController.FPS_MOVING`/`FPS_IDLE`) — no
+      stationary/idle (`FrameStreamer.FPS_MOVING`/`FPS_IDLE`) — no
       visible stutter vs. the original app's feel.
 - [ ] Encoder auto-recovers after a forced failure (kill/reconnect Wi-Fi
       mid-stream 3×) without requiring app restart (`startStream`'s

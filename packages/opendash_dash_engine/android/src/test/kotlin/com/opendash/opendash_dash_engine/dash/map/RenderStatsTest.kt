@@ -125,16 +125,15 @@ class RenderStatsTest {
     }
 
     @Test
-    fun `a new stream does not inherit the previous session's frames`() {
+    fun `a drained window starts the next one from zero`() {
         val stats = RenderStats()
-        // A session that ended before its window closed: 40 frames counted, never
-        // drained. Without reset() they landed in the next session's first window,
-        // which is measured from zero — that is how frames=195/120 was logged on a
-        // loop that was pacing exactly to 250 ms.
+        // The other half of what `reset()` used to guard, and the half that still has a
+        // caller: a window that WAS drained must not leak into the next one. Inheriting
+        // between STREAMS is now impossible by construction — MapFrameRenderer is built per
+        // stream and brings its own RenderStats — which is why reset() is gone.
         repeat(40) { stats.frameSent(intervalMs = 250, encodeMs = 6, intendedIntervalMs = 250) }
         stats.mapDrawn(snapshotMs = 40, overlayMs = 10, budgetMs = 250, blank = true)
-
-        stats.reset()
+        stats.drain(periodMs = 30_000, timeouts = 0, skipped = 0, abandoned = 0, errors = 0, rebuilds = 0)
 
         repeat(120) { stats.frameSent(intervalMs = 250, encodeMs = 6, intendedIntervalMs = 250) }
         val line = stats.drain(periodMs = 30_000, timeouts = 0, skipped = 0, abandoned = 0, errors = 0, rebuilds = 0)

@@ -42,5 +42,22 @@ adb shell wm size; adb shell wm density
 adb pull /sdcard/Android/data/ru.snatchdash.app/files/diag
 ```
 
+Приоритеты потоков — на ЗАПУЩЕННОМ приложении (`pipeline.md` §4.3 объясняет,
+зачем):
+
+```sh
+pid=$(adb shell pidof ru.snatchdash.app)
+adb shell cat /proc/$pid/limits | grep -i nice        # можно ли просить вообще
+adb shell 'for t in /proc/'$pid'/task/*; do \
+  n=$(sed "s/.*) //" $t/stat | awk "{print \$17}"); echo "$n $(cat $t/comm)"; \
+done' | sort -n                                        # nice каждого потока
+```
+
+`Max nice priority 40` означает, что ядро пускает процесс до nice −20, то есть
+`THREAD_PRIORITY_DISPLAY` (−4) будет выдан. **Число главного потока при этом
+описывает состояние процесса, а не телефон**: на переднем плане с включённым
+экраном оно одно, под foreground-сервисом с погашенным — другое. В файл
+устройства идёт лимит и раскладка рабочих потоков, а не приоритет Main.
+
 Имя кодека и его объявленный диапазон битрейта берутся не из `adb`, а из
 ride-файла — строка `[stream] encoder …` пишется на каждом старте стрима.

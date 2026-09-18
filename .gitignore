@@ -53,3 +53,11 @@ app.*.map.json
 
 # Decompiled reference app (not part of this project's source)
 /re_app/
+
+# Local notes: checked-but-not-done ideas, kept next to the code rather than in
+# the repo — they are a working surface, not documentation.
+/todo-check.md
+
+# Стендовая инструкция под конкретную правку — живёт рядом с кодом, но не в
+# истории: она устаревает в тот день, когда проверка пройдена.
+/bench-check.md

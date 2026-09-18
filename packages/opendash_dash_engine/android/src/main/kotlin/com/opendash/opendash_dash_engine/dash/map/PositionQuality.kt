@@ -62,11 +62,20 @@ internal object Geo {
     private const val EARTH_RADIUS_M = 6_371_000.0
 
     /** Haversine. Metres. */
-    fun distanceM(a: Fix, b: Fix): Double {
-        val p1 = Math.toRadians(a.lat)
-        val p2 = Math.toRadians(b.lat)
+    fun distanceM(a: Fix, b: Fix): Double = distanceM(a.lat, a.lon, b.lat, b.lon)
+
+    /**
+     * The same, for callers that hold plain coordinates rather than a [Fix].
+     *
+     * Added 2026-09-18 when the frame loop moved into this package and brought a second
+     * haversine with it — same formula, same radius, different shape, so a correction to one
+     * would silently have left the other behind. Found by review.
+     */
+    fun distanceM(lat1: Double, lng1: Double, lat2: Double, lng2: Double): Double {
+        val p1 = Math.toRadians(lat1)
+        val p2 = Math.toRadians(lat2)
         val dp = p2 - p1
-        val dl = Math.toRadians(b.lon - a.lon)
+        val dl = Math.toRadians(lng2 - lng1)
         val h = sin(dp / 2) * sin(dp / 2) + cos(p1) * cos(p2) * sin(dl / 2) * sin(dl / 2)
         return 2 * EARTH_RADIUS_M * asin(min(1.0, sqrt(h)))
     }

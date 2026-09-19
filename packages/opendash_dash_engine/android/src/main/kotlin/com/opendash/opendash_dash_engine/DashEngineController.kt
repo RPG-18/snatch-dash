@@ -44,7 +44,6 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
@@ -56,9 +55,9 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlinx.coroutines.withContext
 import kotlin.coroutines.EmptyCoroutineContext
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * Top-level orchestrator for the native dash engine — the Flutter-side
@@ -130,6 +129,15 @@ class DashEngineController(
          * 15 s reroute cooldown. Named here so the next reader does not have to re-derive it.
          */
         private const val TICK_PUBLISH_INTERVAL_MS = 1_000L
+
+        /**
+         * How long [dispose] blocks the main thread for a clean teardown before giving up.
+         *
+         * Generous against the parts that are themselves bounded — the farewell waits at
+         * most `DashSession.FAREWELL_TIMEOUT_MS` (1 s) for two datagrams — and short enough
+         * that a detach never looks like a hang to the platform.
+         */
+        private const val DISPOSE_TIMEOUT_MS = 2_500L
     }
 
     private val dashConfig = DashConfig.get(context)
@@ -438,9 +446,17 @@ class DashEngineController(
         // ran [startStream] N times over.
         sessionWatchJob?.cancel()
         sessionWatchJob = scope.launch {
+            // No distinctUntilChanged. It was here to suppress repeats, and a StateFlow
+            // already does that within one session — so the only thing the operator added
+            // was comparing ACROSS sessions, which is exactly wrong: a fresh session that
+            // fails in open() (a BindException, now that SO_REUSEADDR is gone) publishes
+            // ERROR while the collector's last value is the PREVIOUS session's ERROR, and
+            // the transition is dropped. No retry fires, nothing is published to Dart, and
+            // the connection dies silently at the 120 s give-up timer. The intermediate
+            // `current.value = null` does not save it: closing an already-dead session
+            // never suspends, so flatMapLatest is never given the chance to collect it.
             current
                 .flatMapLatest { it?.state ?: flowOf(DashState.IDLE) }
-                .distinctUntilChanged()
                 .collect { st ->
                 RideDiagnostics.log("session", "→ $st")
                 publishState()
@@ -527,19 +543,27 @@ class DashEngineController(
      * failed, so the two farewell packets could only be written into a socket nobody reads.
      */
     private suspend fun openSession(ssid: String) = sessionLock.withLock {
-        closeCurrent(farewell = false)
-        current.value = DashSession.open(
-            ssid = ssid,
-            chrome = chrome,
-            clock = ::monotonicMs,
-            parent = scope.coroutineContext.job,
-            // The plugin's handler, carried over deliberately: the session's SupervisorJob
-            // keeps one dying child from taking its siblings, but an unhandled throw still
-            // reaches Android's default handler — which is a crash mid-ride — unless the
-            // handler travels with the context.
-            context = Dispatchers.IO +
-                (scope.coroutineContext[CoroutineExceptionHandler] ?: EmptyCoroutineContext),
-        ) { DashSocket(wifiManager.network) }
+        // On IO, not on the caller's thread. Every caller here is a collector on
+        // Dispatchers.Main, and [DashSession.open] runs the transport factory inline —
+        // three socket binds, three `Network.bindSocket` binder calls and the synchronous
+        // ride-file append in DashSocket.reportSocketOptions. Before stage 4 all of that
+        // happened inside a coroutine already on IO; putting it back is not a precaution,
+        // it is restoring where it used to run.
+        withContext(Dispatchers.IO) {
+            closeCurrent(farewell = false)
+            current.value = DashSession.open(
+                ssid = ssid,
+                chrome = chrome,
+                clock = ::monotonicMs,
+                parent = scope.coroutineContext.job,
+                // The plugin's handler, carried over deliberately: the session's
+                // SupervisorJob keeps one dying child from taking its siblings, but an
+                // unhandled throw still reaches Android's default handler — a crash
+                // mid-ride — unless the handler travels with the context.
+                context = Dispatchers.IO +
+                    (scope.coroutineContext[CoroutineExceptionHandler] ?: EmptyCoroutineContext),
+            ) { DashSocket(wifiManager.network) }
+        }
     }
 
     /** Ends the current session, if any, and waits for it. Safe to call with none. */
@@ -879,13 +903,23 @@ class DashEngineController(
      * place `runBlocking` is the right tool: there is no coroutine left to hand the farewell
      * to.
      *
-     * It blocks the main thread, so what it waits on matters. The farewell itself is bounded
-     * (`FAREWELL_TIMEOUT_MS`); the join after it is not, and is only safe because the session
-     * closes its transport as it cancels rather than after — see the closer child in
-     * [DashSession]. Before that fix this line was an ANR waiting for a quiet dash.
+     * It blocks the main thread, and that is why the wait is bounded rather than trusted.
+     * `runBlocking` here parks the Android Looper while running its own event loop, so any
+     * coroutine dispatched to [Dispatchers.Main] is frozen for the duration — including one
+     * already holding [sessionLock] inside [openSession]. Waiting on that lock from here
+     * would be a deadlock, not a delay: the holder cannot resume to release it. The timeout
+     * belongs to `runBlocking`'s own event loop, so it fires even with Main parked.
+     *
+     * What the timeout costs in that race is the farewell — the dash then sits on its last
+     * frame until its own timeout. What it buys is that detaching the engine always
+     * finishes. Losing two packets beats an ANR, and the plugin cancels the scope on the
+     * next line either way.
      */
     fun dispose() {
-        runBlocking { disconnect() }
+        val finished = runBlocking { withTimeoutOrNull(DISPOSE_TIMEOUT_MS) { disconnect() } }
+        if (finished == null) {
+            RideDiagnostics.warn(TAG, "dispose: teardown did not finish in ${DISPOSE_TIMEOUT_MS}ms — detaching anyway")
+        }
         runCatching { toneGenerator?.release() }
     }
 

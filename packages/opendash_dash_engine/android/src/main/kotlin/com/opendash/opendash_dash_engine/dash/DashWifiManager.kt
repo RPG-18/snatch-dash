@@ -58,6 +58,23 @@ class DashWifiManager(
         private const val TAG              = "DashWifiManager"
         private const val CONNECT_TIMEOUT  = 30_000  // ms — Android shows system dialog within this
         private const val RECONNECT_DELAY  = 8_000L
+        /**
+         * How long a prefix-discovery connection may sit with an unreadable SSID before it
+         * is called a failure.
+         *
+         * The wait exists because we must not authenticate with a prefix: the dash checks
+         * the SSID inside the encrypted handshake (see [DashAuth]), so `RE_` would be
+         * rejected. But an unbounded wait is worse than a failure — on Huawei/Android 12,
+         * 2026-09-19, the phone really was on the dash's Wi-Fi while this class sat in
+         * REQUESTING for as long as the rider was willing to watch it, with no error
+         * anywhere and no stream.
+         *
+         * 15 s because resolution, when it comes, is fast: `onCapabilitiesChanged` follows
+         * `onAvailable` within a second or two, and the pre-S poller's own budget is 17 s
+         * (5 s + 6 × 2 s). It is also half of [CONNECT_TIMEOUT], so a link that never
+         * arrives still fails by its own route first.
+         */
+        private const val SSID_RESOLVE_TIMEOUT = 15_000L
         // Android returns this sentinel from WifiInfo.getSsid() when it can't read the SSID.
         private const val WifiManagerUnknownSsid = "<unknown ssid>"
         // Frequent enough to see a signal degrading before it actually drops, without
@@ -86,6 +103,7 @@ class DashWifiManager(
     private var cellularCallback: ConnectivityManager.NetworkCallback? = null
     private var reconnectJob: Job? = null
     private var ssidPollJob: Job? = null
+    private var ssidResolveJob: Job? = null
     private var rssiPollJob: Job? = null
     private var wantConnected = false
     private var pendingSsid = ""
@@ -370,8 +388,15 @@ class DashWifiManager(
                         markConnected(pendingSsid)
                     }
                     else -> {
-                        RideDiagnostics.warn(TAG, "callback available but the SSID is redacted; waiting for fallback resolution")
+                        RideDiagnostics.warn(
+                            TAG,
+                            "callback available but the SSID is redacted; waiting up to " +
+                                "${SSID_RESOLVE_TIMEOUT}ms — " +
+                                if (ssidFallbackActive) "fallback polling is running"
+                                else "only a capabilities update can still name it on this API level",
+                        )
                         _state.value = WifiState(status = WifiConnStatus.REQUESTING, ssid = pendingSsid)
+                        armSsidResolveTimeout()
                     }
                 }
             }
@@ -381,12 +406,12 @@ class DashWifiManager(
                 // dash validates the SSID inside the encrypted handshake (DashAuth). Without
                 // the real SSID (prefix-discovery), every auth is rejected.
                 val info = caps.transportInfo as? WifiInfo ?: run {
-                    DebugLog.w(TAG) { "Capabilities changed without readable WiFi info; fallback polling remains active" }
+                    DebugLog.w(TAG) { "Capabilities changed without readable WiFi info${fallbackNote()}" }
                     return
                 }
                 val ssid = info.ssid.orEmpty().trim('"')
                 if (ssid.isBlank() || ssid == WifiManagerUnknownSsid) {
-                    DebugLog.w(TAG) { "Capabilities changed with redacted WiFi SSID; fallback polling remains active" }
+                    DebugLog.w(TAG) { "Capabilities changed with redacted WiFi SSID${fallbackNote()}" }
                     return
                 }
                 if (ssid == resolvedSsid) return
@@ -474,6 +499,9 @@ class DashWifiManager(
 
     /** Publish CONNECTED and record that this dash has answered at least once this session. */
     private fun markConnected(ssid: String) {
+        // The name arrived, whichever of the five routes brought it — stand the timeout down.
+        ssidResolveJob?.cancel()
+        ssidResolveJob = null
         hasConnectedOnce = true
         if (downSinceMs != 0L) {
             downtimeAccumMs += monotonicMs() - downSinceMs
@@ -541,6 +569,65 @@ class DashWifiManager(
         rssiPollJob = null
     }
 
+    /**
+     * Whether anything is actually working on a redacted SSID in the background.
+     *
+     * [startAndroid11SsidPolling] returns immediately from API 31 up, so on those levels
+     * the only thing that can still name the network is `onCapabilitiesChanged`. Two log
+     * lines used to say "fallback polling remains active" regardless — false on exactly
+     * the devices where the wait never ended, and the first thing that misled the reading
+     * of the 2026-09-19 Huawei logs.
+     */
+    private val ssidFallbackActive: Boolean
+        get() = Build.VERSION.SDK_INT < Build.VERSION_CODES.S
+
+    /**
+     * Give up on naming this network after [SSID_RESOLVE_TIMEOUT] and say so.
+     *
+     * Reports ERROR rather than retrying, and the message names the fix: entering the exact
+     * SSID by hand turns this case into the [pendingPrefix] == false path, which works —
+     * verified on the same phone the same day (17:39, `ssid='RE_9CP9_250218'`, auth in
+     * 253 ms). A retry would change nothing, because nothing about the next attempt makes
+     * the platform any more willing to hand over the name.
+     */
+    private fun armSsidResolveTimeout() {
+        if (ssidResolveJob?.isActive == true) return
+        ssidResolveJob = scope.launch {
+            delay(SSID_RESOLVE_TIMEOUT)
+            // Status only. [resolvedSsid] is NOT a safe second condition: it is cleared
+            // in [connect] alone, so it survives [release] and every [scheduleReconnect]
+            // — a reconnect after one successful prefix resolve would find it set and
+            // skip the timeout entirely, restoring the hang this exists to end. Worse,
+            // `onCapabilitiesChanged` returns early on `ssid == resolvedSsid`, so that
+            // reconnect never reaches [markConnected] either. The status is the honest
+            // question: did this attempt get anywhere?
+            if (_state.value.status == WifiConnStatus.CONNECTED) return@launch
+            RideDiagnostics.warn(
+                TAG,
+                "joined a '${maskSsid(pendingSsid)}*' network but its SSID stayed unreadable for " +
+                    "${SSID_RESOLVE_TIMEOUT}ms (fallback polling ${if (ssidFallbackActive) "ran" else "not available above API 30"}) — " +
+                    "cannot authenticate with a prefix, giving up",
+            )
+            _state.value = WifiState(
+                status = WifiConnStatus.ERROR,
+                ssid   = pendingSsid,
+                error  = "Joined a '$pendingSsid' network but Android hid its name — " +
+                    "enter the exact dash SSID in Settings",
+            )
+            // No reconnect: the next attempt would hit the same platform refusal, and a
+            // loop of them is what hid this for a day.
+            wantConnected = false
+            reconnectJob?.cancel()
+            // And drop the request itself. Leaving it registered keeps the phone on the
+            // dash's no-internet Wi-Fi with nothing using it, and the `onLost` that
+            // eventually follows would replace the message above — the one that tells the
+            // rider what to do — with "Link lost — reconnecting…" from a reconnect that
+            // [wantConnected] has just forbidden. The state is deliberately left at ERROR;
+            // [release] does not touch it.
+            release()
+        }
+    }
+
     /** Read the connected network's SSID (strips the surrounding quotes Android adds). */
     private fun resolveSsid(network: Network): String {
         val caps = cm.getNetworkCapabilities(network) ?: return ""
@@ -602,6 +689,11 @@ class DashWifiManager(
             .takeIf { it.isNotBlank() && it != WifiManagerUnknownSsid }
     }.getOrNull()
 
+    /** What, if anything, is still expected to resolve the name — see [ssidFallbackActive]. */
+    private fun fallbackNote(): String =
+        if (ssidFallbackActive) "; fallback polling remains active"
+        else "; no fallback polling above API 30 — waiting on a later capabilities update"
+
     private fun matchesPendingSsid(ssid: String): Boolean =
         if (pendingPrefix) ssid.startsWith(pendingSsid) else ssid == pendingSsid
 
@@ -616,6 +708,8 @@ class DashWifiManager(
         // never reaches [startAndroid11SsidPolling]'s own cancel.
         ssidPollJob?.cancel()
         ssidPollJob = null
+        ssidResolveJob?.cancel()
+        ssidResolveJob = null
         stopRssiPolling()
         networkCallback?.let { runCatching { cm.unregisterNetworkCallback(it) } }
         networkCallback = null

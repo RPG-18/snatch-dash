@@ -1,5 +1,6 @@
 package com.opendash.opendash_dash_engine.dash
 
+import com.opendash.opendash_dash_engine.dash.protocol.DashMessage
 import com.opendash.opendash_dash_engine.dash.protocol.Tlv
 import java.security.KeyPair
 import java.security.KeyPairGenerator
@@ -39,16 +40,16 @@ class DashAuthTest {
     private val keyPair: KeyPair =
         KeyPairGenerator.getInstance("RSA").apply { initialize(1024) }.generateKeyPair()
 
-    private val modulusTlv: Tlv
-    private val exponentTlv: Tlv
+    private val modulusTlv: DashMessage
+    private val exponentTlv: DashMessage
 
     init {
         val spec = java.security.KeyFactory.getInstance("RSA")
             .getKeySpec(keyPair.public, java.security.spec.RSAPublicKeySpec::class.java)
         // BigInteger.toByteArray() may prepend a sign byte; DashAuth reads with
         // BigInteger(1, value), which ignores it, so feeding it raw is faithful to the wire.
-        modulusTlv = Tlv(0x07, 0x00, spec.modulus.toByteArray())
-        exponentTlv = Tlv(0x07, 0x03, spec.publicExponent.toByteArray())
+        modulusTlv = DashMessage.AuthModulus(spec.modulus.toByteArray())
+        exponentTlv = DashMessage.AuthExponent(spec.publicExponent.toByteArray())
     }
 
     /** The plaintext the dash will see once it decrypts the packet [DashAuth] emitted. */
@@ -122,20 +123,17 @@ class DashAuthTest {
     fun `07 01 01 is a confirmation and any other value is a rejection`() {
         val auth = DashAuth(SSID)
 
-        assertIs<AuthEvent.Confirmed>(auth.ingest(Tlv(0x07, 0x01, byteArrayOf(0x01))))
-        assertIs<AuthEvent.Rejected>(auth.ingest(Tlv(0x07, 0x01, byteArrayOf(0x00))))
-        assertIs<AuthEvent.Rejected>(auth.ingest(Tlv(0x07, 0x01, byteArrayOf(0x02))))
-        assertIs<AuthEvent.Rejected>(
-            auth.ingest(Tlv(0x07, 0x01, ByteArray(0))),
-            "an empty result field must not read as success",
-        )
+        assertIs<AuthEvent.Confirmed>(auth.ingest(DashMessage.AuthResult(accepted = true)))
+        assertIs<AuthEvent.Rejected>(auth.ingest(DashMessage.AuthResult(accepted = false)))
+        // Which byte counts as acceptance is now the codec's call, and K1GCodecTest pins it
+        // — including the empty field, which must never read as success.
     }
 
     @Test
     fun `after a rejection, reset re-arms the machine for a second attempt`() {
         val auth = DashAuth(SSID)
         val firstKey = decrypt(sendKeyAfterBothHalves(auth))
-        assertIs<AuthEvent.Rejected>(auth.ingest(Tlv(0x07, 0x01, byteArrayOf(0x00))))
+        assertIs<AuthEvent.Rejected>(auth.ingest(DashMessage.AuthResult(accepted = false)))
 
         auth.reset()
         val secondKey = decrypt(sendKeyAfterBothHalves(auth))
@@ -156,7 +154,7 @@ class DashAuthTest {
         // the state machine will not emit a second key on its own.
         val auth = DashAuth(SSID)
         sendKeyAfterBothHalves(auth)
-        auth.ingest(Tlv(0x07, 0x01, byteArrayOf(0x00)))
+        auth.ingest(DashMessage.AuthResult(accepted = false))
 
         assertIs<AuthEvent.None>(auth.ingest(modulusTlv))
         assertIs<AuthEvent.None>(auth.ingest(exponentTlv))
@@ -165,12 +163,16 @@ class DashAuthTest {
     // ── Everything else on the wire ───────────────────────────────────────
 
     @Test
-    fun `TLVs outside type 07 are ignored`() {
+    fun `messages that are not auth are ignored`() {
         val auth = DashAuth(SSID)
 
-        assertIs<AuthEvent.None>(auth.ingest(Tlv(0x09, 0x06, byteArrayOf(0x55))))
-        assertIs<AuthEvent.None>(auth.ingest(Tlv(0x0C, 0x01, byteArrayOf(0x01))))
-        assertIs<AuthEvent.None>(auth.ingest(Tlv(0x07, 0x42, byteArrayOf(0x01))), "unknown 07 sub")
+        assertIs<AuthEvent.None>(auth.ingest(DashMessage.DecoderOpened(keyFrame = true)))
+        assertIs<AuthEvent.None>(auth.ingest(DashMessage.Telemetry(0x01, byteArrayOf(0x01))))
+        // A 07 with a sub nobody has mapped decodes as Unknown, and stays not-ours here.
+        assertIs<AuthEvent.None>(
+            auth.ingest(DashMessage.Unknown(Tlv(0x07, 0x42, byteArrayOf(0x01)))),
+            "unknown 07 sub",
+        )
     }
 
     // ── SSID length ───────────────────────────────────────────────────────

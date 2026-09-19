@@ -2,8 +2,12 @@ package com.opendash.opendash_dash_engine.dash
 
 import android.os.SystemClock
 import com.opendash.opendash_dash_engine.dash.map.Percentiles
+import com.opendash.opendash_dash_engine.dash.protocol.DashCommand
 import com.opendash.opendash_dash_engine.dash.protocol.DashCommands
-import com.opendash.opendash_dash_engine.dash.protocol.K1GPacket
+import com.opendash.opendash_dash_engine.dash.protocol.DashMessage
+import com.opendash.opendash_dash_engine.dash.protocol.K1GCodec
+import com.opendash.opendash_dash_engine.dash.protocol.MalformedCounter
+import com.opendash.opendash_dash_engine.dash.protocol.Scripts
 import com.opendash.opendash_dash_engine.util.DebugLog
 import com.opendash.opendash_dash_engine.util.monotonicMs
 import com.opendash.opendash_dash_engine.util.RideDiagnostics
@@ -37,7 +41,6 @@ class DashSession(private val scope: CoroutineScope) {
         // the map updating fine on a physical dash despite those acks going silent for most of
         // the ride, so whatever "silence" means for 09 06/04 55 isn't the same as "dash is gone".
         private const val RX_IDLE_TIMEOUT_MS = 10_000L
-        private const val BURST_PAUSE   = 20L
         private const val PROJ_HB_MS     = 250L   // 4 Hz
         private const val ROUTE_CARD_MS  = 1_000L // 1 Hz keep-alive
         private const val HOSTNAME       = "OpenDash"
@@ -166,6 +169,14 @@ class DashSession(private val scope: CoroutineScope) {
     // One-shot per session — pairs with FrameStreamer's own "first video frame sent"
     // line; the gap between the two is this session's dash-side decode latency.
     @Volatile private var loggedFirstIdrAck = false
+
+    /**
+     * Datagrams that did not parse cleanly, reported with the ack counters.
+     *
+     * Both numbers were zero across 7692 packets of the 2026-09-13 log — the parser's
+     * leniency has never actually been needed — but leniency nobody counts is silence.
+     */
+    private val malformed = MalformedCounter()
 
     @Volatile private var mediaTitle: String? = null
     @Volatile private var mediaAlbum = ""
@@ -493,9 +504,17 @@ class DashSession(private val scope: CoroutineScope) {
             setState(DashState.AUTHENTICATING)
             DebugLog.i(TAG) { "Sending initial burst…" }
             RideDiagnostics.log("auth", "initial burst sent — waiting up to ${AUTH_TIMEOUT}ms for 07 01 01")
-            for (pkt in DashCommands.initialBurst(HOSTNAME)) {
-                sock.send(pkt)
-                delay(BURST_PAUSE)
+            val now = java.util.Calendar.getInstance()
+            for (step in Scripts.initialBurst(
+                hostname = HOSTNAME,
+                timeSync = DashCommand.TimeSync(
+                    hour = now.get(java.util.Calendar.HOUR_OF_DAY),
+                    minute = now.get(java.util.Calendar.MINUTE),
+                    second = now.get(java.util.Calendar.SECOND),
+                ),
+            )) {
+                sock.send(K1GCodec.encode(step.cmd))
+                delay(step.pauseAfterMs)
             }
 
             DebugLog.i(TAG) { "Waiting up to ${AUTH_TIMEOUT}ms for auth (07 01 01)…" }
@@ -558,17 +577,12 @@ class DashSession(private val scope: CoroutineScope) {
      *   → z2 once → route-card confirmation.
      */
     private suspend fun enterNavMode(sock: DashSocket) {
-        sock.send(DashCommands.navContext()); delay(40)
-        sock.send(DashCommands.emptyLists()); delay(40)
-
-        repeat(4) {
-            sock.send(DashCommands.routeCard(destinationName, projectionOn = false))
-            delay(if (it < 1) 100 else 500)
+        // The sequence and its pauses are invariant 5, and they live in Scripts as data —
+        // not as eight statements that the next refactor can reorder without noticing.
+        for (step in Scripts.enterNavMode(destinationName)) {
+            sock.send(K1GCodec.encode(step.cmd))
+            if (step.pauseAfterMs > 0) delay(step.pauseAfterMs)
         }
-        sock.send(DashCommands.projectionFrame()); delay(60)
-        sock.send(DashCommands.navPlaceholder()); delay(10)
-        sock.send(DashCommands.navStart()); delay(40)                 // z2, ONCE
-        sock.send(DashCommands.routeCard(destinationName, projectionOn = true))
         DebugLog.i(TAG) { "Nav mode kick sent" }
     }
 
@@ -761,20 +775,16 @@ class DashSession(private val scope: CoroutineScope) {
     }
 
     private fun dispatchIncoming(pkt: ByteArray, sock: DashSocket) {
-        val tlvs = K1GPacket.parseIncoming(pkt)
-        // Dump the full raw packet for anything that ISN'T just the per-frame decode
-        // acks (09 06 55 / 09 04 55) — those fire ~8×/s and would drown the log. This
+        val msgs = K1GCodec.decode(pkt, malformed)
+        // Dump the full raw packet for anything that ISN'T just the decoder-opened
+        // notifies — those can fire several times a second and would drown the log. This
         // captures joystick events, telemetry, and any unknown TLV in full hex so a
         // single `adb logcat -s DashSession` session is enough to reverse the protocol.
-        val onlyAcks = tlvs.isNotEmpty() && tlvs.all {
-            it.type == 0x09 && (it.sub == 0x06 || it.sub == 0x04) &&
-                it.value.firstOrNull()?.toInt() == 0x55
-        }
+        val onlyAcks = msgs.isNotEmpty() && msgs.all { it is DashMessage.DecoderOpened }
         if (!onlyAcks) DebugLog.i(TAG) { "RX RAW (${pkt.size}B): ${pkt.toHexFull()}" }
-        for (tlv in tlvs) {
-            // ── Auth (07 xx) ──
-            if (tlv.type == 0x07) {
-                when (val ev = auth?.ingest(tlv)) {
+        for (msg in msgs) when (msg) {
+            is DashMessage.AuthModulus, is DashMessage.AuthExponent, is DashMessage.AuthResult ->
+                when (val ev = auth?.ingest(msg)) {
                     is AuthEvent.SendKey -> {
                         DebugLog.i(TAG) { "Got RSA pubkey — sending q3c.d" }
                         sock.send(ev.packet)
@@ -789,49 +799,39 @@ class DashSession(private val scope: CoroutineScope) {
                     }
                     else -> {}
                 }
-                continue
-            }
-            // ── 09 06 55: per-IDR frame-decoded notify → mandatory q3c.L2 ──
-            if (tlv.type == 0x09 && tlv.sub == 0x06 &&
-                tlv.value.firstOrNull()?.toInt() == 0x55
-            ) {
+
+            // The dash opened its decoder and waits for the matching reply. NOT a per-frame
+            // ack, whatever better-dash called it — see DashMessage.DecoderOpened.
+            is DashMessage.DecoderOpened -> if (msg.keyFrame) {
                 sock.send(DashCommands.frameDecodedIdr())
                 idrAckCount.incrementAndGet()
                 if (!loggedFirstIdrAck) {
                     loggedFirstIdrAck = true
                     RideDiagnostics.log("dash", "dash DECODED first IDR (09 06 55) — video accepted ✓")
                 }
-                continue
-            }
-            // ── 09 04 55: P-frame decoded → q3c.K2 ──
-            if (tlv.type == 0x09 && tlv.sub == 0x04 &&
-                tlv.value.firstOrNull()?.toInt() == 0x55
-            ) {
+            } else {
                 sock.send(DashCommands.frameDecodedP())
                 pFrameAckCount.incrementAndGet()
-                continue
             }
-            // ── 09 00: button / joystick event → echo ack + notify UI ──
-            if (tlv.type == 0x09 && tlv.sub == 0x00 && tlv.value.isNotEmpty()) {
-                val btn = tlv.value.last()  // 0900 0001 <code>
+
+            is DashMessage.Button -> {
                 // Into the ride file, not just app_log.txt: what the rider pressed
                 // is the first half of every "the control did nothing" report, and
                 // the second half ([camera] in DashEngineController) is already
                 // there. Split across two files they could not be lined up — and
                 // app_log.txt is a ring buffer that a long ride overwrites.
                 // Cheap at this rate: 188 presses across the whole 2026-09-05 log.
-                // Ack first, log second. This runs on the socket RX loop and the dash
-                // is waiting on the echo; the line it replaced was a DebugLog lambda
-                // that cost nothing, while this one appends to external storage. A
-                // press should not wait on a file write to be acknowledged.
-                sock.send(DashCommands.buttonAck(btn))
+                // Ack first, log second (invariant 7). This runs on the socket RX loop and
+                // the dash is waiting on the echo, while the line below appends to external
+                // storage; a press should not wait on a file write to be acknowledged.
+                sock.send(DashCommands.buttonAck(msg.code.toByte()))
                 RideDiagnostics.log(
                     "joystick",
-                    "09 00 code=0x${(btn.toInt() and 0xFF).toString(16).uppercase()} full=${tlv.value.toHexFull()}",
+                    "09 00 code=0x${msg.code.toString(16).uppercase()} full=${msg.raw.toHexFull()}",
                 )
-                scope.launch(Dispatchers.Main) { onButton?.invoke(btn) }
-                continue
+                scope.launch(Dispatchers.Main) { onButton?.invoke(msg.code.toByte()) }
             }
+
             // ── 0F: vehicle-secure telemetry (AES-256-CBC under the session key,
             //    IV = first 16 bytes). The better-dash reference only logs these as
             //    ciphertext — we actually DECRYPT with our session key and log the
@@ -854,27 +854,31 @@ class DashSession(private val scope: CoroutineScope) {
             //      — treat as a lead to verify against our decrypted plaintext
             //      (chassis/serial should look ASCII-ish, 0F05 should be 6 raw
             //      bytes matching the dash's own BSSID), not as ground truth.
-            if (tlv.type == 0x0F) {
+            is DashMessage.Identity -> {
                 val key = auth?.sessionKey
-                val plain = key?.let { aesDecryptCbc(tlv.value, it) }
+                val plain = key?.let { aesDecryptCbc(msg.cipher, it) }
                 DebugLog.i(TAG) { "DASH TELEMETRY 0F sub=0x%02X enc(%dB)=%s  dec=%s".format(
-                    tlv.sub, tlv.value.size, tlv.value.toHexFull(),
+                    msg.sub, msg.cipher.size, msg.cipher.toHexFull(),
                     plain?.toHexFull() ?: "<key=${key != null}; decrypt failed>") }
-                continue
             }
+
             // ── 0C xx: dash → app telemetry (trip/odo/fuel/temp — P1b). Still
             //    unmapped even by the independent RE above (0x0B/0x0C listed there
             //    as "present but not fully mapped" too) — no external lead here,
             //    this needs our own sweep. ──
-            if (tlv.type == 0x0C) {
-                DebugLog.i(TAG) { "DASH TELEMETRY 0C sub=0x%02X (%dB) val=%s"
-                    .format(tlv.sub, tlv.value.size, tlv.value.toHexFull()) }
-                continue
+            is DashMessage.Telemetry -> DebugLog.i(TAG) {
+                "DASH TELEMETRY 0C sub=0x%02X (%dB) val=%s"
+                    .format(msg.sub, msg.value.size, msg.value.toHexFull())
             }
-            // Log every OTHER incoming event (e.g. joystick in nav view, or the dash's
-            // 'exit navigation' selection) in FULL so its TLV can be identified + mapped.
-            DebugLog.i(TAG) { "DASH EVENT type=0x%02X sub=0x%02X (%dB) val=%s"
-                .format(tlv.type, tlv.sub, tlv.value.size, tlv.value.toHexFull()) }
+
+            // Everything else in FULL so its TLV can be identified and mapped — the dash's
+            // 'exit navigation' selection, the 0x0B blob it sends when it restarts mid-ride
+            // (network-refactoring.md §0.1), and the 26 subtypes nobody has swept.
+            is DashMessage.Unknown -> DebugLog.i(TAG) {
+                "DASH EVENT type=0x%02X sub=0x%02X (%dB) val=%s".format(
+                    msg.tlv.type, msg.tlv.sub, msg.tlv.value.size, msg.tlv.value.toHexFull(),
+                )
+            }
         }
     }
 
@@ -927,6 +931,17 @@ class DashSession(private val scope: CoroutineScope) {
                         "races fired in the last ${intervalS}s: $stale packet(s) held back from a " +
                             "socket that is no longer current, $superseded teardown(s) from a " +
                             "superseded session ignored",
+                    )
+                }
+                // Same rule for the parser's leniency: silent tolerance of a malformed
+                // datagram is indistinguishable from never having seen one.
+                val bad = malformed.drain()
+                if (!bad.isEmpty) {
+                    RideDiagnostics.warn(
+                        TAG,
+                        "malformed RX in the last ${intervalS}s: ${bad.lengthMismatch} " +
+                            "datagram(s) whose declared length disagreed with their size, " +
+                            "${bad.truncatedTlv} TLV(s) cut off by the end of the datagram",
                     )
                 }
             }

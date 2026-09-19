@@ -32,15 +32,28 @@ object K1GPacket {
     )
 
     /** Build an outgoing packet. Seq byte is left 0x00 — [patchSeq] sets it at send time. */
-    fun build(vararg tlvs: Tlv): ByteArray {
-        val segCount = 1 + tlvs.size
+    fun build(vararg tlvs: Tlv): ByteArray = build(tlvs.toList())
 
+    /**
+     * The same, with the two fields a CAPTURE can disagree with us about.
+     *
+     * @param segCount defaults to `1 + tlvs.size`, which is what every packet this project
+     *   generates uses — and what the captured nav template declares (17 for 16 TLVs). The
+     *   captured heartbeat does NOT: `HB_0049` declares 11 for 11 TLVs. Both were accepted by
+     *   a physical dash, so the field is evidently not validated; we reproduce each capture
+     *   as it was taken rather than "fixing" one to match the other, because the only thing
+     *   we know for certain is that these exact bytes worked (invariant 1).
+     * @param seq the rolling byte, normally left 0 and patched by [patchSeq] at send time.
+     *   Carried here so the initial-burst captures — which came off the wire mid-stream and
+     *   still hold seq 3..9 — can be expressed as TLVs instead of opaque hex.
+     */
+    fun build(tlvs: List<Tlv>, segCount: Int = 1 + tlvs.size, seq: Int = 0): ByteArray {
         val out = ByteArrayOutputStream()
         out.write(0); out.write(0)                     // outer_len placeholder
         out.write((segCount shr 8) and 0xFF)
         out.write(segCount and 0xFF)
         out.write(FIXED)
-        out.write(0)                                    // seq placeholder
+        out.write(seq and 0xFF)                         // patched again at send time
         for (tlv in tlvs) {
             out.write(tlv.type and 0xFF)
             out.write(tlv.sub and 0xFF)
@@ -71,7 +84,18 @@ object K1GPacket {
     fun tlv(type: Int, sub: Int, value: ByteArray): Tlv = Tlv(type, sub, value)
 
     /** Parse a dash → app packet. Segments start at offset 8. */
-    fun parseIncoming(data: ByteArray): List<Tlv> {
+    /**
+     * @param onTruncatedTlv called once per TLV whose declared length ran past the end of the
+     *   datagram. The TLV is still returned, cut short — that leniency is deliberate and
+     *   predates this callback, which exists only so the leniency stops being silent. Only
+     *   this loop can tell: by the time a [Tlv] exists, declared length and actual length are
+     *   the same number. Running out of datagram before `seg_count` TLVs have been read is
+     *   NOT reported: the two directions do not agree on that count — what we send declares
+     *   `1 + N` (see [build]), the dash's own packets declare `N` — so the loop takes
+     *   whatever the datagram actually holds, and a mirror of our own convention must not
+     *   read as an error.
+     */
+    fun parseIncoming(data: ByteArray, onTruncatedTlv: (() -> Unit)? = null): List<Tlv> {
         val tlvs = mutableListOf<Tlv>()
         if (data.size < 8) return tlvs
         val segCount = ((data[2].toInt() and 0xFF) shl 8) or (data[3].toInt() and 0xFF)
@@ -82,6 +106,7 @@ object K1GPacket {
             val sub  = data[i + 1].toInt() and 0xFF
             val len  = ((data[i + 2].toInt() and 0xFF) shl 8) or (data[i + 3].toInt() and 0xFF)
             i += 4
+            if (i + len > data.size) onTruncatedTlv?.invoke()
             val end = (i + len).coerceAtMost(data.size)
             tlvs += Tlv(type, sub, data.copyOfRange(i, end))
             i = end

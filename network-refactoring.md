@@ -470,6 +470,41 @@ Huawei мы отправили запрос авторизации в 9:40:42, �
 Единственный путь дальше — захват со стороны дэша (задача 7.4) либо корреляция
 с внешними условиями: канал точки доступа, температура, питание.
 
+**2026-09-19. Сделан этап 3 целиком — задачи 1–4 и 6, задача 5 отклонена.**
+209 тестов зелёные, `lintDebug` чистый, и главное — **golden-тесты этапа 1
+прошли без единой правки ожиданий**. Это и было условие: hex-шаблоны
+(`NAV_TEMPLATE`, `HB_0049`, девять литералов начального всплеска) заменены на
+типизированные TLV, а байты на проводе остались те же — сравнение с захватом
+подтверждает это, а не «мы аккуратно переписали».
+
+Что появилось: `DashMessage`/`K1GCodec.decode` с `MalformedCounter`,
+`DashCommand`/`K1GCodec.encode`, `Scripts` с обоими сценариями как данными, и
+`dispatchIncoming` на `when (msg)` вместо девяти `if` по номерам TLV.
+`DashCommands` стал двадцатью однострочными обёртками над `encode`.
+
+**Захват не сошёлся сам с собой, и победил захват.** `seg_count` в заголовке
+объявляет `1 + N` TLV везде, кроме двух пакетов — heartbeat `0049` и девятого
+шага всплеска, — где объявлено ровно `N`. Соблазн был «починить» при
+переписывании; вместо этого `K1GPacket.build` получил параметр `segCount`, оба
+пакета объявляют то же, что объявляли, и рядом лежит комментарий с числами. То
+же с `seq`: шаги 3..9 всплеска несут байты захвата, которые `TxSequencer`
+затирает при отправке, — они сохранены, чтобы читающий код не решил, что
+всплеск нумерует себя сам.
+
+**Задача 5 (`@Deprecated` на `DashCommands`) отклонена — `❌`.** Смысл пометки
+был в том, чтобы этап 3 коммитился без правки `DashSession`. Но `DashSession` в
+этом же этапе переписан задачей 6, и обёртки остались нужны ещё в девяти местах
+(`DashEngineController`, keep-alive'ы, ack'и кнопок). `@Deprecated` дал бы 70+
+предупреждений, по которым до этапа 4 нельзя ничего сделать, — шум, из-за
+которого перестают читать и настоящие предупреждения. Обёртки удаляются на
+этапе 4, как и планировалось; пометка не приближает этот момент.
+
+**Сверх плана: у сценариев появились тесты на порядок и паузы**
+(`ScriptsTest`). До этапа 3 последовательность входа в навигацию была восемью
+операторами внутри `suspend fun`, и утверждать про неё было нечего. Теперь
+пиннится и то, что `navStart` уходит ровно один раз, и что карточка маршрута
+уходит четыре раза ДО него — обе вещи стоили по заезду.
+
 ## 1. Контекст за пять минут
 
 **Что это.** Flutter-приложение, нативный Android-плагин
@@ -824,7 +859,7 @@ flutter build apk --debug --dart-define-from-file=android/dart_defines.local.pro
 
 Задачи:
 
-1. `dash/protocol/DashMessage.kt` — `sealed interface DashMessage` для
+1. ✅ (2026-09-19) `dash/protocol/DashMessage.kt` — `sealed interface DashMessage` для
    входящих: `AuthModulus`, `AuthExponent`, `AuthResult(accepted)`,
    `DecoderOpenedIdr`, `DecoderOpenedP`, `Button(code, raw)`,
    `Identity(sub, cipher)` (0F), `Telemetry(sub, value)` (0C),
@@ -832,23 +867,26 @@ flutter build apk --debug --dart-define-from-file=android/dart_defines.local.pro
    поверх `K1GPacket.parseIncoming`. Плюс `MalformedCounter`: расхождение
    `outer_len` с размером датаграммы и обрезанный TLV считаются, пакет
    всё равно разбирается (лояльность сохранить).
-2. `dash/protocol/DashCommand.kt` — `sealed interface DashCommand` для
+2. ✅ (2026-09-19) `dash/protocol/DashCommand.kt` — `sealed interface DashCommand` для
    исходящих, по одному классу на функцию `DashCommands`. Для команд с
    фиксированным телом — `data object`. `K1GCodec.encode(cmd): ByteArray`.
-3. `RouteCard` собирать из типизированных полей через `K1GPacket.build`,
+3. ✅ (2026-09-19) `RouteCard` собирать из типизированных полей через `K1GPacket.build`,
    **не** патчем шаблона. Список TLV и их значения по умолчанию взять из
    `NAV_TEMPLATE` (разобрать его один раз в тесте и переписать как
    константы). Golden-тест на `NAV_TEMPLATE` обязан проходить побайтно.
    То же для `heartbeat` (HB_0049) и `activeNavPacket`.
-4. Скрипты как данные: `dash/protocol/Scripts.kt` с
+4. ✅ (2026-09-19) Скрипты как данные: `dash/protocol/Scripts.kt` с
    `data class Step(val cmd: DashCommand, val pauseAfterMs: Long)` и двумя
    списками — `initialBurst(hostname)` и `enterNavMode(title)`. Паузы из
    инварианта 5. Тест: последовательность команд и паузы совпадают с
    сегодняшним кодом.
-5. `DashCommands` оставить как тонкие обёртки `= K1GCodec.encode(X)` с
+5. ❌ (2026-09-19) `DashCommands` оставить как тонкие обёртки `= K1GCodec.encode(X)` с
    `@Deprecated`, чтобы этап можно было закоммитить без правки
-   `DashSession`. Удаляются на этапе 4.
-6. Диспетчер в `DashSession.dispatchIncoming` перевести на `when (msg)` по
+   `DashSession`. Удаляются на этапе 4. **Обёртками стали, `@Deprecated` — нет:**
+   `DashSession` переписан здесь же задачей 6, а оставшиеся девять вызовов из
+   `DashEngineController` до этапа 4 не убрать, так что пометка дала бы 70+
+   неустранимых предупреждений. Разбор — в журнале за 19.09.
+6. ✅ (2026-09-19) Диспетчер в `DashSession.dispatchIncoming` перевести на `when (msg)` по
    `DashMessage`. Поведение по инварианту 7 сохранить; логика auth
    (`DashAuth.ingest`) принимает `DashMessage`, а не `Tlv`.
 
@@ -856,6 +894,11 @@ flutter build apk --debug --dart-define-from-file=android/dart_defines.local.pro
 на `decode` (по одному на каждый вариант `DashMessage` из реальных hex в
 комментариях `DashSession`), `lintDebug` зелёный. Коммит:
 `refactor: типизированный кодек K1G вместо hex-шаблонов`.
+
+✅ **Этап закрыт 2026-09-19.** Golden-тесты прошли без правок ожиданий, 209
+тестов зелёные, `lintDebug` чистый. `K1GCodecTest` разбирает датаграммы из
+дампов заездов 18.09, а не придуманные; сверх плана появился `ScriptsTest` на
+порядок и паузы.
 
 ### Этап 4 — Одноразовая сессия `[auto]` + `[ride]`
 

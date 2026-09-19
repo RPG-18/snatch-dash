@@ -1,7 +1,7 @@
 package com.opendash.opendash_dash_engine.dash
 
 import com.opendash.opendash_dash_engine.dash.protocol.DashCommands
-import com.opendash.opendash_dash_engine.dash.protocol.Tlv
+import com.opendash.opendash_dash_engine.dash.protocol.DashMessage
 import com.opendash.opendash_dash_engine.util.DebugLog
 import java.math.BigInteger
 import java.security.KeyFactory
@@ -27,7 +27,7 @@ sealed class AuthEvent {
  * packets — so state accumulates across calls. The session-key packet is
  * emitted exactly once per attempt; [reset] re-arms it after a rejection.
  */
-class DashAuth(private val ssid: String) {
+internal class DashAuth(private val ssid: String) {
     private companion object {
         const val TAG = "DashAuth"
         /** RSA-1024 PKCS#1 v1.5 plaintext limit (117 B) minus the 32-byte AES key. */
@@ -41,13 +41,13 @@ class DashAuth(private val ssid: String) {
     var sessionKey: ByteArray? = null
         private set
 
-    fun ingest(tlv: Tlv): AuthEvent {
-        if (tlv.type != 0x07) return AuthEvent.None
-        when (tlv.sub) {
-            0x00 -> modulus  = BigInteger(1, tlv.value)
-            0x03 -> exponent = BigInteger(1, tlv.value)
-            0x01 -> return if (tlv.value.firstOrNull() == 0x01.toByte())
-                AuthEvent.Confirmed else AuthEvent.Rejected
+    fun ingest(msg: DashMessage): AuthEvent {
+        when (msg) {
+            is DashMessage.AuthModulus -> modulus = BigInteger(1, msg.value)
+            is DashMessage.AuthExponent -> exponent = BigInteger(1, msg.value)
+            is DashMessage.AuthResult ->
+                return if (msg.accepted) AuthEvent.Confirmed else AuthEvent.Rejected
+            // Everything else, including a 07 with a sub nobody has mapped: not ours.
             else -> return AuthEvent.None
         }
 

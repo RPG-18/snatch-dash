@@ -275,9 +275,18 @@ class DashCommandsGoldenTest {
 
     // ── Initial burst ─────────────────────────────────────────────────────
 
+    /**
+     * The burst as it goes on the wire. The time step takes a fixed clock rather than the
+     * real one: a script is data, and data that reads the clock cannot be compared with a
+     * capture. The two tests below still cover the packet built from it.
+     */
+    private fun burstBytes(): List<ByteArray> =
+        Scripts.initialBurst("OpenDash", DashCommand.TimeSync(hour = 1, minute = 2, second = 3))
+            .map { K1GCodec.encode(it.cmd) }
+
     @Test
     fun `the initial burst is nine packets in a fixed order`() {
-        val burst = DashCommands.initialBurst("OpenDash")
+        val burst = burstBytes()
 
         assertEquals(9, burst.size)
         assertEquals(DashCommands.authRequest().toHex(), burst[0].toHex(), "#0 auth request")
@@ -313,7 +322,7 @@ class DashCommandsGoldenTest {
         // Packets #3..#8 were captured mid-session, so byte 16 holds 03, 04, 05, 06, 08, 09.
         // Every one is patched at send time (инвариант 2), so these values never reach the
         // wire. Pinned because a reader who trusts them concludes the burst numbers itself.
-        val burst = DashCommands.initialBurst("OpenDash")
+        val burst = burstBytes()
 
         assertEquals(
             listOf(0x03, 0x04, 0x05, 0x06, 0x08, 0x09),

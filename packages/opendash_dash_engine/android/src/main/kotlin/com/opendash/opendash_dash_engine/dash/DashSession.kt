@@ -425,6 +425,12 @@ internal class DashSession private constructor(
             sendScript(Scripts.enterNavMode(chrome.value.destinationName))
             DebugLog.i(TAG) { "Nav mode kick sent" }
 
+            // Cancellation is cooperative and the script's last step has no pause after it,
+            // so without this a close() landing between the final packet and the line below
+            // still publishes READY — and the controller answers READY by building an
+            // encoder, a snapshotter and two threads for a session that is already going
+            // away. The guard predates stage 4 and was dropped in the rewrite by accident.
+            currentCoroutineContext().ensureActive()
             setState(DashState.READY)
             eventChannel.trySend(SessionEvent.Ready)
         } catch (e: TimeoutCancellationException) {

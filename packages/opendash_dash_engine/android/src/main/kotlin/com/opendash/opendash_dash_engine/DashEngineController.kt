@@ -414,6 +414,10 @@ class DashEngineController(
                     // restarts and would disable discovery for good.
                     SessionEvent.Ready -> {
                         sessionReachedReady = true
+                        // The handshake completed, so a name taken from a scan has just
+                        // stopped being a hypothesis — see DashWifiManager.confirmScanGuess
+                        // for what leaving it open costs later in the same connection.
+                        wifiManager.confirmScanGuess()
                         val live = wifiManager.state.value.ssid
                         if (dashConfig.needsDiscovery && live.isNotBlank() &&
                             live != dashConfig.ssidPrefix

@@ -434,9 +434,12 @@ internal class FrameStreamer(
         // teardown path, which is the property the rest of this file keeps paying for.
         launch(senderContext) {
             // Claimed once, for the life of this stream. session.rtpSender() captures the
-            // socket and checks it is still the current one on every packet — the identity
-            // guard the control senders have had all along and this path did not, see
-            // DashSession.rtpSender. Null means there is no socket to stream over — and
+            // transport this session owns; since stage 4 there is nothing to check it
+            // against, because a session owns its transport for its whole life and closes
+            // it on the way out — a write to a closed socket throws IOException and dies
+            // inside sendRtp. The identity guard that stood here until then existed only
+            // because the socket was a mutable field a reconnect could replace underneath
+            // this loop. Null means there is no socket to stream over — and
             // that ends the STREAM, not just this coroutine. The previous version returned
             // quietly, on the stated grounds that "the frame loop's own streaming()
             // condition ends things a moment later"; nothing in this file moves the session
@@ -487,9 +490,10 @@ internal class FrameStreamer(
                     // than `close()` exists to prevent, and dropping the pacing must not
                     // quietly hand it back.
                     //
-                    // It is now belt and braces rather than the only guard: [sendRtp] is
-                    // bound to this stream's socket and refuses a stale one. Both stay —
-                    // this one stops the work, that one stops the packet.
+                    // And it is the only guard again. [sendRtp] is bound to this session's
+                    // transport, which cannot become another session's — but a packet
+                    // written to it after the session closed is simply swallowed as an
+                    // IOException, silently. This line is what stops the WORK.
                     ensureActive()
                     sendRtp(pkt)
                     rtpPacketsSent.incrementAndGet()
@@ -792,11 +796,10 @@ internal class FrameStreamer(
             // cancel(), NOT close(). close() lets the sender drain what is queued.
             // That used to be the only thing standing between a dead stream and the next
             // session's socket, because `DashSession.sendRtp` wrote to whatever `socket`
-            // was live at that moment; since 2026-09-14 the sender is bound to this
-            // stream's socket and refuses a stale one (DashSession.rtpSender), so this is
-            // now the outer of two guards rather than the sole one. It still earns its
-            // place: refusing the packet at the socket still leaves the sender doing the
-            // work of an ended stream.
+            // was live at that moment. Stage 4 removed the problem rather than guarding it:
+            // a session owns one transport for its whole life, so there is no next
+            // session's socket to reach. This line still earns its place — it stops the
+            // sender doing the work of an ended stream, which closing the socket does not.
             // On the Wi-Fi-loss path this loop exits on its own rather than
             // being cancelled, so a drained queue could put the dead stream's packets,
             // carrying the old packetizer's SSRC and sequence numbers, onto the NEXT

@@ -134,9 +134,10 @@ class DashWifiManager(
      * once the dash has accepted the name inside the handshake — and it has exactly one
      * lifecycle, kept in this one place:
      *
-     *   born in [resolvePrefixFromScan], withdrawn by [revertScanGuess] when the attempt
-     *   fails at the Wi-Fi layer, withdrawn by [rejectScanGuess] when the link came up but
-     *   the dash never authenticated, and forgotten in [connect] and [disconnect].
+     *   born in [resolvePrefixFromScan], **confirmed** by [confirmScanGuess] when the dash
+     *   completes a handshake on it, withdrawn by [revertScanGuess] when the attempt fails
+     *   at the Wi-Fi layer, withdrawn by [rejectScanGuess] when the link came up but the
+     *   dash never authenticated, and forgotten in [connect] and [disconnect].
      *
      * Both halves live together because both are needed: the ssid is what we request, the
      * prefix is what we go back to, and what the caller of [connect] still asks for.
@@ -357,6 +358,21 @@ class DashWifiManager(
 
     /** Whether the name currently being requested came from a scan rather than the rider. */
     val usingScanGuess: Boolean get() = scanGuess != null
+
+    /**
+     * The dash completed a handshake on the guessed name — it is not a guess any more.
+     *
+     * Without this the hypothesis outlived its own confirmation: a later auth timeout in
+     * the same connection would find `usingScanGuess` still true and blacklist the name the
+     * dash had already accepted, dropping back to prefix discovery and ending the ride at
+     * "Android hid its name". Called from the same branch that writes the name to the
+     * config, because that branch is the confirmation.
+     */
+    fun confirmScanGuess() {
+        val guess = scanGuess ?: return
+        scanGuess = null
+        DebugLog.i(TAG) { "'${maskSsid(guess.ssid)}' confirmed by the dash — no longer a guess" }
+    }
 
     /**
      * The link came up on a guessed name and the dash never authenticated on it — so that

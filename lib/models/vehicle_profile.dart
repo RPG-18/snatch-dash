@@ -21,33 +21,32 @@ class VehicleProfile {
     String? puc,
     String? insurance,
     String? service,
-  }) =>
-      VehicleProfile(
-        id: id,
-        title: title ?? this.title,
-        nickname: nickname ?? this.nickname,
-        puc: puc ?? this.puc,
-        insurance: insurance ?? this.insurance,
-        service: service ?? this.service,
-      );
+  }) => VehicleProfile(
+    id: id,
+    title: title ?? this.title,
+    nickname: nickname ?? this.nickname,
+    puc: puc ?? this.puc,
+    insurance: insurance ?? this.insurance,
+    service: service ?? this.service,
+  );
 
   Map<String, dynamic> toJson() => {
-        'id': id,
-        'title': title,
-        'nickname': nickname,
-        'puc': puc,
-        'insurance': insurance,
-        'service': service,
-      };
+    'id': id,
+    'title': title,
+    'nickname': nickname,
+    'puc': puc,
+    'insurance': insurance,
+    'service': service,
+  };
 
   factory VehicleProfile.fromJson(Map<String, dynamic> json) => VehicleProfile(
-        id: json['id'] as String,
-        title: json['title'] as String? ?? 'Motorcycle',
-        nickname: json['nickname'] as String? ?? '',
-        puc: json['puc'] as String? ?? 'Not set',
-        insurance: json['insurance'] as String? ?? 'Not set',
-        service: json['service'] as String? ?? 'Not set',
-      );
+    id: json['id'] as String,
+    title: json['title'] as String? ?? 'Motorcycle',
+    nickname: json['nickname'] as String? ?? '',
+    puc: json['puc'] as String? ?? 'Not set',
+    insurance: json['insurance'] as String? ?? 'Not set',
+    service: json['service'] as String? ?? 'Not set',
+  );
 }
 
 /// Namespaced constant, mirroring the original `VehicleStore.DEFAULT_VEHICLE_ID`

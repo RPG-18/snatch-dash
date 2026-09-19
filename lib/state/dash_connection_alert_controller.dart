@@ -69,4 +69,6 @@ class DashConnectionAlertController extends Notifier<void> {
 }
 
 final dashConnectionAlertControllerProvider =
-    NotifierProvider<DashConnectionAlertController, void>(DashConnectionAlertController.new);
+    NotifierProvider<DashConnectionAlertController, void>(
+      DashConnectionAlertController.new,
+    );

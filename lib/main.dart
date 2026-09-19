@@ -39,13 +39,20 @@ void main() async {
   MapkitLifecycle.start();
   WidgetsBinding.instance.addObserver(_MapkitLifecycleObserver());
   attachNativeLogBridge();
-  runApp(ProviderScope(
-    // TODO: riverpod logging is off for now — it was flooding app_log.txt
-    // with one entry per state change (e.g. every RouteSearchController
-    // keystroke). Flip back to true once that's trimmed down.
-    observers: [TalkerRiverpodObserver(talker: talker, settings: const TalkerRiverpodLoggerSettings(enabled: false))],
-    child: const OpenDashApp(),
-  ));
+  runApp(
+    ProviderScope(
+      // TODO: riverpod logging is off for now — it was flooding app_log.txt
+      // with one entry per state change (e.g. every RouteSearchController
+      // keystroke). Flip back to true once that's trimmed down.
+      observers: [
+        TalkerRiverpodObserver(
+          talker: talker,
+          settings: const TalkerRiverpodLoggerSettings(enabled: false),
+        ),
+      ],
+      child: const OpenDashApp(),
+    ),
+  );
 }
 
 class _MapkitLifecycleObserver extends WidgetsBindingObserver {

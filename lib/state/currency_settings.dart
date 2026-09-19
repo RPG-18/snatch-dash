@@ -19,7 +19,8 @@ enum OpenDashCurrency {
   final String symbol;
 }
 
-String currencyDisplayName(AppLocalizations l10n, OpenDashCurrency currency) => switch (currency) {
+String currencyDisplayName(AppLocalizations l10n, OpenDashCurrency currency) =>
+    switch (currency) {
       OpenDashCurrency.inr => l10n.currencyNameInr,
       OpenDashCurrency.usd => l10n.currencyNameUsd,
       OpenDashCurrency.eur => l10n.currencyNameEur,
@@ -31,10 +32,16 @@ String currencyDisplayName(AppLocalizations l10n, OpenDashCurrency currency) => 
       OpenDashCurrency.rub => l10n.currencyNameRub,
     };
 
-String formatCurrencyAmount(double amount, OpenDashCurrency currency, {int decimals = 0}) {
+String formatCurrencyAmount(
+  double amount,
+  OpenDashCurrency currency, {
+  int decimals = 0,
+}) {
   final formatted = amount.toStringAsFixed(decimals);
   final withThousands = _addThousandsSeparators(formatted);
-  return currency.symbol.length > 1 ? '${currency.symbol} $withThousands' : '${currency.symbol}$withThousands';
+  return currency.symbol.length > 1
+      ? '${currency.symbol} $withThousands'
+      : '${currency.symbol}$withThousands';
 }
 
 String _addThousandsSeparators(String number) {
@@ -45,7 +52,9 @@ String _addThousandsSeparators(String number) {
     if (i > 0 && (intPart.length - i) % 3 == 0) buffer.write(',');
     buffer.write(intPart[i]);
   }
-  return parts.length > 1 ? '${buffer.toString()}.${parts[1]}' : buffer.toString();
+  return parts.length > 1
+      ? '${buffer.toString()}.${parts[1]}'
+      : buffer.toString();
 }
 
 const _prefsKeyCurrency = 'currency_code';
@@ -70,7 +79,9 @@ class CurrencySettingsController extends Notifier<OpenDashCurrency> {
     // The provider can be disposed while the await above is pending —
     // writing `state` after that throws `UnmountedRefException`.
     if (!ref.mounted) return;
-    if (generation != _generation) return; // the rider already picked a currency
+    if (generation != _generation) {
+      return; // the rider already picked a currency
+    }
     state = OpenDashCurrency.values.firstWhere(
       (c) => c.code == saved,
       orElse: () => OpenDashCurrency.rub,
@@ -86,4 +97,6 @@ class CurrencySettingsController extends Notifier<OpenDashCurrency> {
 }
 
 final currencySettingsProvider =
-    NotifierProvider<CurrencySettingsController, OpenDashCurrency>(CurrencySettingsController.new);
+    NotifierProvider<CurrencySettingsController, OpenDashCurrency>(
+      CurrencySettingsController.new,
+    );

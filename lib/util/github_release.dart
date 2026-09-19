@@ -30,9 +30,17 @@ class AppRelease {
   final DateTime? publishedAt;
 
   static AppRelease? fromJson(Map<String, dynamic> json) {
-    final assets = (json['assets'] as List?)?.cast<Map<String, dynamic>>() ?? const [];
-    final apkAssets = assets.where((a) => (a['name'] as String?)?.toLowerCase().endsWith('.apk') ?? false).toList();
-    if (apkAssets.isEmpty) return null; // release with no APK asset attached — nothing to offer
+    final assets =
+        (json['assets'] as List?)?.cast<Map<String, dynamic>>() ?? const [];
+    final apkAssets = assets
+        .where(
+          (a) =>
+              (a['name'] as String?)?.toLowerCase().endsWith('.apk') ?? false,
+        )
+        .toList();
+    if (apkAssets.isEmpty) {
+      return null; // release with no APK asset attached — nothing to offer
+    }
     // CI publishes one split APK per ABI (`flutter build apk --split-per-abi
     // --target-platform android-arm,android-arm64` in .github/workflows/
     // release.yml — there is no `splits {}` block in Gradle, the Flutter tool
@@ -66,10 +74,10 @@ class AppRelease {
 /// (CI's `--target-platform android-arm,android-arm64`), or null for ABIs CI
 /// doesn't publish an APK for (x86/x86_64 — emulators only).
 String? _currentAbiTag() => switch (Abi.current()) {
-      Abi.androidArm64 => 'arm64-v8a',
-      Abi.androidArm => 'armeabi-v7a',
-      _ => null,
-    };
+  Abi.androidArm64 => 'arm64-v8a',
+  Abi.androidArm => 'armeabi-v7a',
+  _ => null,
+};
 
 /// Reads the update-relevant bits of GitHub's Releases API for
 /// `RPG-18/snatch-dash`. Unauthenticated (public repo) — GitHub's
@@ -107,9 +115,9 @@ class GitHubReleases {
   }
 
   static Future<AppRelease?> latest(UpdateChannel channel) => switch (channel) {
-        UpdateChannel.stable => latestStable(),
-        UpdateChannel.nightly => latestNightly(),
-      };
+    UpdateChannel.stable => latestStable(),
+    UpdateChannel.nightly => latestNightly(),
+  };
 }
 
 class GitHubReleasesException implements Exception {
@@ -126,9 +134,7 @@ List<int> _parseSemver(String tag) {
   final stripped = tag.startsWith('v') ? tag.substring(1) : tag;
   final parts = stripped.split('.');
   if (parts.length < 3) return const [0, 0, 0];
-  return [
-    for (final p in parts.take(3)) int.tryParse(p) ?? 0,
-  ];
+  return [for (final p in parts.take(3)) int.tryParse(p) ?? 0];
 }
 
 /// True if stable release [remote] is newer than the running app's

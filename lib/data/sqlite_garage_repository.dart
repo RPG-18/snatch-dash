@@ -39,7 +39,12 @@ class SqliteGarageRepository implements GarageRepository {
 
   @override
   Future<FuelFillup> addFuel(
-      double litres, double cost, int odometerKm, String location, String vehicleId) async {
+    double litres,
+    double cost,
+    int odometerKm,
+    String location,
+    String vehicleId,
+  ) async {
     final db = await _db.database;
     final fill = FuelFillup(
       dateMs: DateTime.now().millisecondsSinceEpoch,
@@ -64,7 +69,11 @@ class SqliteGarageRepository implements GarageRepository {
   @override
   Future<int> odometer(String vehicleId) async {
     final db = await _db.database;
-    final rows = await db.query('vehicle_state', where: 'vehicle_id = ?', whereArgs: [vehicleId]);
+    final rows = await db.query(
+      'vehicle_state',
+      where: 'vehicle_id = ?',
+      whereArgs: [vehicleId],
+    );
     if (rows.isEmpty) return _defaultOdometer;
     return rows.first['odometer_km'] as int;
   }
@@ -72,11 +81,10 @@ class SqliteGarageRepository implements GarageRepository {
   @override
   Future<void> setOdometer(int km, String vehicleId) async {
     final db = await _db.database;
-    await db.insert(
-      'vehicle_state',
-      {'vehicle_id': vehicleId, 'odometer_km': km},
-      conflictAlgorithm: ConflictAlgorithm.replace,
-    );
+    await db.insert('vehicle_state', {
+      'vehicle_id': vehicleId,
+      'odometer_km': km,
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
   }
 
   @override
@@ -93,7 +101,12 @@ class SqliteGarageRepository implements GarageRepository {
 
   @override
   Future<Expense> addExpense(
-      String category, double amount, String note, int dateMs, String vehicleId) async {
+    String category,
+    double amount,
+    String note,
+    int dateMs,
+    String vehicleId,
+  ) async {
     final db = await _db.database;
     final expense = Expense(
       dateMs: dateMs,
@@ -115,7 +128,11 @@ class SqliteGarageRepository implements GarageRepository {
   @override
   Future<List<MaintenanceItem>> maintenanceItems(String vehicleId) async {
     final db = await _db.database;
-    final rows = await db.query('maintenance_item', where: 'vehicle_id = ?', whereArgs: [vehicleId]);
+    final rows = await db.query(
+      'maintenance_item',
+      where: 'vehicle_id = ?',
+      whereArgs: [vehicleId],
+    );
     return rows.map(_maintenanceFromRow).toList();
   }
 
@@ -131,7 +148,10 @@ class SqliteGarageRepository implements GarageRepository {
     final db = await _db.database;
     await db.transaction((txn) async {
       final existing = Sqflite.firstIntValue(
-        await txn.rawQuery('SELECT COUNT(*) FROM maintenance_item WHERE vehicle_id = ?', [vehicleId]),
+        await txn.rawQuery(
+          'SELECT COUNT(*) FROM maintenance_item WHERE vehicle_id = ?',
+          [vehicleId],
+        ),
       );
       if ((existing ?? 0) > 0) return;
       final now = DateTime.now().millisecondsSinceEpoch;
@@ -155,14 +175,21 @@ class SqliteGarageRepository implements GarageRepository {
     final db = await _db.database;
     await db.update(
       'maintenance_item',
-      {'last_done_odo_km': odoKm, 'last_done_date_ms': DateTime.now().millisecondsSinceEpoch},
+      {
+        'last_done_odo_km': odoKm,
+        'last_done_date_ms': DateTime.now().millisecondsSinceEpoch,
+      },
       where: 'id = ?',
       whereArgs: [item.id],
     );
   }
 
   @override
-  Future<void> logService(MaintenanceItem item, int odoKm, int intervalKm) async {
+  Future<void> logService(
+    MaintenanceItem item,
+    int odoKm,
+    int intervalKm,
+  ) async {
     final db = await _db.database;
     await db.update(
       'maintenance_item',
@@ -178,7 +205,12 @@ class SqliteGarageRepository implements GarageRepository {
 
   @override
   Future<MaintenanceItem> addService(
-      String name, String iconKey, int intervalKm, String vehicleId, int currentOdo) async {
+    String name,
+    String iconKey,
+    int intervalKm,
+    String vehicleId,
+    int currentOdo,
+  ) async {
     final db = await _db.database;
     final item = MaintenanceItem(
       name: name,
@@ -233,42 +265,43 @@ class SqliteGarageRepository implements GarageRepository {
   // ── Row mapping ──────────────────────────────────────────────────────
 
   FuelFillup _fuelFromRow(Map<String, Object?> row) => FuelFillup(
-        id: row['id'] as int,
-        dateMs: row['date_ms'] as int,
-        litres: (row['litres'] as num).toDouble(),
-        cost: (row['cost'] as num).toDouble(),
-        odometerKm: row['odometer_km'] as int,
-        location: row['location'] as String,
-        vehicleId: row['vehicle_id'] as String,
-      );
+    id: row['id'] as int,
+    dateMs: row['date_ms'] as int,
+    litres: (row['litres'] as num).toDouble(),
+    cost: (row['cost'] as num).toDouble(),
+    odometerKm: row['odometer_km'] as int,
+    location: row['location'] as String,
+    vehicleId: row['vehicle_id'] as String,
+  );
 
   Map<String, Object?> _fuelToRow(FuelFillup f) => {
-        'date_ms': f.dateMs,
-        'litres': f.litres,
-        'cost': f.cost,
-        'odometer_km': f.odometerKm,
-        'location': f.location,
-        'vehicle_id': f.vehicleId,
-      };
+    'date_ms': f.dateMs,
+    'litres': f.litres,
+    'cost': f.cost,
+    'odometer_km': f.odometerKm,
+    'location': f.location,
+    'vehicle_id': f.vehicleId,
+  };
 
   Expense _expenseFromRow(Map<String, Object?> row) => Expense(
-        id: row['id'] as int,
-        dateMs: row['date_ms'] as int,
-        category: row['category'] as String,
-        amount: (row['amount'] as num).toDouble(),
-        note: row['note'] as String,
-        vehicleId: row['vehicle_id'] as String,
-      );
+    id: row['id'] as int,
+    dateMs: row['date_ms'] as int,
+    category: row['category'] as String,
+    amount: (row['amount'] as num).toDouble(),
+    note: row['note'] as String,
+    vehicleId: row['vehicle_id'] as String,
+  );
 
   Map<String, Object?> _expenseToRow(Expense e) => {
-        'date_ms': e.dateMs,
-        'category': e.category,
-        'amount': e.amount,
-        'note': e.note,
-        'vehicle_id': e.vehicleId,
-      };
+    'date_ms': e.dateMs,
+    'category': e.category,
+    'amount': e.amount,
+    'note': e.note,
+    'vehicle_id': e.vehicleId,
+  };
 
-  MaintenanceItem _maintenanceFromRow(Map<String, Object?> row) => MaintenanceItem(
+  MaintenanceItem _maintenanceFromRow(Map<String, Object?> row) =>
+      MaintenanceItem(
         id: row['id'] as int,
         name: row['name'] as String,
         iconKey: row['icon_key'] as String,
@@ -279,40 +312,40 @@ class SqliteGarageRepository implements GarageRepository {
       );
 
   Map<String, Object?> _maintenanceToRow(MaintenanceItem m) => {
-        'name': m.name,
-        'icon_key': m.iconKey,
-        'interval_km': m.intervalKm,
-        'last_done_odo_km': m.lastDoneOdoKm,
-        'last_done_date_ms': m.lastDoneDateMs,
-        'vehicle_id': m.vehicleId,
-      };
+    'name': m.name,
+    'icon_key': m.iconKey,
+    'interval_km': m.intervalKm,
+    'last_done_odo_km': m.lastDoneOdoKm,
+    'last_done_date_ms': m.lastDoneDateMs,
+    'vehicle_id': m.vehicleId,
+  };
 
   Ride _rideFromRow(Map<String, Object?> row) => Ride(
-        id: row['id'] as int,
-        startMs: row['start_ms'] as int,
-        endMs: row['end_ms'] as int,
-        distanceMeters: (row['distance_meters'] as num).toDouble(),
-        durationSec: row['duration_sec'] as int,
-        avgSpeedMps: (row['avg_speed_mps'] as num).toDouble(),
-        maxSpeedMps: (row['max_speed_mps'] as num).toDouble(),
-        trackPolyline: row['track_polyline'] as String,
-        startLat: (row['start_lat'] as num).toDouble(),
-        startLng: (row['start_lng'] as num).toDouble(),
-        endLat: (row['end_lat'] as num).toDouble(),
-        endLng: (row['end_lng'] as num).toDouble(),
-      );
+    id: row['id'] as int,
+    startMs: row['start_ms'] as int,
+    endMs: row['end_ms'] as int,
+    distanceMeters: (row['distance_meters'] as num).toDouble(),
+    durationSec: row['duration_sec'] as int,
+    avgSpeedMps: (row['avg_speed_mps'] as num).toDouble(),
+    maxSpeedMps: (row['max_speed_mps'] as num).toDouble(),
+    trackPolyline: row['track_polyline'] as String,
+    startLat: (row['start_lat'] as num).toDouble(),
+    startLng: (row['start_lng'] as num).toDouble(),
+    endLat: (row['end_lat'] as num).toDouble(),
+    endLng: (row['end_lng'] as num).toDouble(),
+  );
 
   Map<String, Object?> _rideToRow(Ride r) => {
-        'start_ms': r.startMs,
-        'end_ms': r.endMs,
-        'distance_meters': r.distanceMeters,
-        'duration_sec': r.durationSec,
-        'avg_speed_mps': r.avgSpeedMps,
-        'max_speed_mps': r.maxSpeedMps,
-        'track_polyline': r.trackPolyline,
-        'start_lat': r.startLat,
-        'start_lng': r.startLng,
-        'end_lat': r.endLat,
-        'end_lng': r.endLng,
-      };
+    'start_ms': r.startMs,
+    'end_ms': r.endMs,
+    'distance_meters': r.distanceMeters,
+    'duration_sec': r.durationSec,
+    'avg_speed_mps': r.avgSpeedMps,
+    'max_speed_mps': r.maxSpeedMps,
+    'track_polyline': r.trackPolyline,
+    'start_lat': r.startLat,
+    'start_lng': r.startLng,
+    'end_lat': r.endLat,
+    'end_lng': r.endLng,
+  };
 }

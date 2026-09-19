@@ -127,7 +127,11 @@ class RouteSearchController extends Notifier<RouteSearchState> {
     try {
       return await PlaceSearch.search(item.resolveQuery, near: state.origin);
     } catch (e, st) {
-      talker.error('[RouteSearchController] resolve "${item.resolveQuery}" threw', e, st);
+      talker.error(
+        '[RouteSearchController] resolve "${item.resolveQuery}" threw',
+        e,
+        st,
+      );
       return const [];
     } finally {
       // Only the newest resolve owns the flag. `ref.mounted` for the usual
@@ -142,4 +146,6 @@ class RouteSearchController extends Notifier<RouteSearchState> {
 }
 
 final routeSearchControllerProvider =
-    NotifierProvider<RouteSearchController, RouteSearchState>(RouteSearchController.new);
+    NotifierProvider<RouteSearchController, RouteSearchState>(
+      RouteSearchController.new,
+    );

@@ -51,9 +51,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     if (!await ensureLocationPermission()) {
       if (context.mounted) {
         final l10n = AppLocalizations.of(context)!;
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(l10n.dashGpsPermissionRequired)),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(l10n.dashGpsPermissionRequired)));
       }
       return;
     }
@@ -74,12 +74,22 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     final l10n = AppLocalizations.of(context)!;
 
     final connected = engine.stage == DashStage.streaming;
-    final searching = engine.stage == DashStage.connecting || engine.stage == DashStage.authenticating;
+    final searching =
+        engine.stage == DashStage.connecting ||
+        engine.stage == DashStage.authenticating;
     final (statusLabel, statusSub, statusColor) = connected
-        ? (l10n.homeStatusConnected, l10n.homeStatusConnectedSub, theme.colorScheme.primary)
+        ? (
+            l10n.homeStatusConnected,
+            l10n.homeStatusConnectedSub,
+            theme.colorScheme.primary,
+          )
         : searching
-            ? (l10n.homeStatusSearching, l10n.homeStatusSearchingSub, Colors.amber)
-            : (l10n.homeStatusOffline, l10n.homeStatusOfflineSub, theme.colorScheme.onSurfaceVariant);
+        ? (l10n.homeStatusSearching, l10n.homeStatusSearchingSub, Colors.amber)
+        : (
+            l10n.homeStatusOffline,
+            l10n.homeStatusOfflineSub,
+            theme.colorScheme.onSurfaceVariant,
+          );
 
     return Scaffold(
       appBar: AppBar(title: const Text('SnatchDash')),
@@ -94,20 +104,32 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                 padding: const EdgeInsets.all(16),
                 child: Row(
                   children: [
-                    CircleAvatar(radius: 28, backgroundColor: statusColor.withValues(alpha: 0.15), child: Icon(Icons.two_wheeler, color: statusColor)),
+                    CircleAvatar(
+                      radius: 28,
+                      backgroundColor: statusColor.withValues(alpha: 0.15),
+                      child: Icon(Icons.two_wheeler, color: statusColor),
+                    ),
                     const SizedBox(width: 16),
                     Expanded(
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Row(children: [
-                            Icon(Icons.circle, size: 10, color: statusColor),
-                            const SizedBox(width: 6),
-                            Text(statusLabel, style: theme.textTheme.titleMedium),
-                          ]),
+                          Row(
+                            children: [
+                              Icon(Icons.circle, size: 10, color: statusColor),
+                              const SizedBox(width: 6),
+                              Text(
+                                statusLabel,
+                                style: theme.textTheme.titleMedium,
+                              ),
+                            ],
+                          ),
                           Text(statusSub, style: theme.textTheme.bodySmall),
                           const SizedBox(height: 6),
-                          Chip(label: Text(vehicle.title), avatar: const Icon(Icons.two_wheeler, size: 16)),
+                          Chip(
+                            label: Text(vehicle.title),
+                            avatar: const Icon(Icons.two_wheeler, size: 16),
+                          ),
                         ],
                       ),
                     ),
@@ -133,27 +155,41 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             const SizedBox(height: 16),
           ],
           Card(
-            child: Column(children: [
-              ListTile(
-                enabled: hasMaps,
-                leading: const Icon(Icons.navigation_outlined),
-                title: Text(l10n.homeStartNavigation),
-                // Without a pack the dash frame is an empty style background
-                // with the route floating on it — indistinguishable from a
-                // broken renderer, and discovered mid-ride. See spec/fsm.md.
-                subtitle: Text(hasMaps ? l10n.homeStartNavigationSub : l10n.homeNeedMapsForNavigation),
-                trailing: const Icon(Icons.chevron_right),
-                onTap: hasMaps ? () => context.push('/home/route') : null,
-              ),
-              const Divider(height: 1),
-              ListTile(
-                leading: Icon(connected ? Icons.dashboard_outlined : Icons.wifi),
-                title: Text(connected ? l10n.homeDashView : l10n.homeConnectToDash),
-                subtitle: Text(connected ? l10n.homeDashViewSub : l10n.homeConnectToDashSub),
-                trailing: const Icon(Icons.chevron_right),
-                onTap: () => context.push('/home/dash'),
-              ),
-            ]),
+            child: Column(
+              children: [
+                ListTile(
+                  enabled: hasMaps,
+                  leading: const Icon(Icons.navigation_outlined),
+                  title: Text(l10n.homeStartNavigation),
+                  // Without a pack the dash frame is an empty style background
+                  // with the route floating on it — indistinguishable from a
+                  // broken renderer, and discovered mid-ride. See spec/fsm.md.
+                  subtitle: Text(
+                    hasMaps
+                        ? l10n.homeStartNavigationSub
+                        : l10n.homeNeedMapsForNavigation,
+                  ),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: hasMaps ? () => context.push('/home/route') : null,
+                ),
+                const Divider(height: 1),
+                ListTile(
+                  leading: Icon(
+                    connected ? Icons.dashboard_outlined : Icons.wifi,
+                  ),
+                  title: Text(
+                    connected ? l10n.homeDashView : l10n.homeConnectToDash,
+                  ),
+                  subtitle: Text(
+                    connected
+                        ? l10n.homeDashViewSub
+                        : l10n.homeConnectToDashSub,
+                  ),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () => context.push('/home/dash'),
+                ),
+              ],
+            ),
           ),
           const SizedBox(height: 16),
           Text(l10n.homeSavedDestinations, style: theme.textTheme.labelLarge),
@@ -176,20 +212,31 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                       location: saved[i],
                       distanceLabel: _origin == null
                           ? null
-                          : formatDistance(l10n, GeoPoint.distMeters(_origin!, GeoPoint(saved[i].lat, saved[i].lng))),
+                          : formatDistance(
+                              l10n,
+                              GeoPoint.distMeters(
+                                _origin!,
+                                GeoPoint(saved[i].lat, saved[i].lng),
+                              ),
+                            ),
                       onTap: !hasMaps
                           ? null
                           : () {
-                        context.push(
-                          '/home/route-preview',
-                          extra: RoutePreviewArgs(
-                            destinationName: saved[i].name,
-                            destination: GeoPoint(saved[i].lat, saved[i].lng),
-                            origin: _origin,
-                          ),
-                        );
-                      },
-                      onDelete: () => ref.read(savedDestinationsControllerProvider.notifier).remove(saved[i]),
+                              context.push(
+                                '/home/route-preview',
+                                extra: RoutePreviewArgs(
+                                  destinationName: saved[i].name,
+                                  destination: GeoPoint(
+                                    saved[i].lat,
+                                    saved[i].lng,
+                                  ),
+                                  origin: _origin,
+                                ),
+                              );
+                            },
+                      onDelete: () => ref
+                          .read(savedDestinationsControllerProvider.notifier)
+                          .remove(saved[i]),
                     ),
                   ],
                 ],
@@ -205,17 +252,23 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                     title: Text(l10n.homeNoRidesYet),
                     subtitle: Text(l10n.homeRidesAutoSub),
                   )
-                : Column(children: [
-                    ListTile(
-                      leading: const Icon(Icons.history),
-                      title: Text(l10n.homeRidesSummary(
-                        rides.length,
-                        rides.fold(0.0, (s, r) => s + r.distanceKm).toStringAsFixed(1),
-                      )),
-                      trailing: const Icon(Icons.chevron_right),
-                      onTap: () => context.push('/home/rides'),
-                    ),
-                  ]),
+                : Column(
+                    children: [
+                      ListTile(
+                        leading: const Icon(Icons.history),
+                        title: Text(
+                          l10n.homeRidesSummary(
+                            rides.length,
+                            rides
+                                .fold(0.0, (s, r) => s + r.distanceKm)
+                                .toStringAsFixed(1),
+                          ),
+                        ),
+                        trailing: const Icon(Icons.chevron_right),
+                        onTap: () => context.push('/home/rides'),
+                      ),
+                    ],
+                  ),
           ),
         ],
       ),
@@ -236,6 +289,7 @@ class _SavedPlaceCard extends StatelessWidget {
   /// Formatted distance from the rider's current position, or null while no
   /// GPS fix is available yet.
   final String? distanceLabel;
+
   /// Null while navigation is gated — the tile is the second way in, and
   /// leaving it live would let one tap bypass the block on the quick action.
   final VoidCallback? onTap;
@@ -250,50 +304,58 @@ class _SavedPlaceCard extends StatelessWidget {
     return Opacity(
       opacity: onTap == null ? 0.4 : 1,
       child: InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(12),
-      child: Container(
-        width: 160,
-        padding: const EdgeInsets.fromLTRB(12, 4, 4, 12),
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: theme.colorScheme.outlineVariant, width: 2),
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Expanded(
-                  child: Padding(
-                    padding: const EdgeInsets.only(top: 8),
-                    child: Text(
-                      location.name,
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                      style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.bold),
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(12),
+        child: Container(
+          width: 160,
+          padding: const EdgeInsets.fromLTRB(12, 4, 4, 12),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(
+              color: theme.colorScheme.outlineVariant,
+              width: 2,
+            ),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Expanded(
+                    child: Padding(
+                      padding: const EdgeInsets.only(top: 8),
+                      child: Text(
+                        location.name,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.textTheme.titleSmall?.copyWith(
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
                     ),
                   ),
-                ),
-                IconButton(
-                  tooltip: l10n.actionDelete,
-                  icon: const Icon(Icons.delete_outline, size: 20),
-                  visualDensity: VisualDensity.compact,
-                  onPressed: onDelete,
-                ),
-              ],
-            ),
-            const SizedBox(height: 4),
-            if (distanceLabel != null)
-              Padding(
-                padding: const EdgeInsets.only(left: 8),
-                child: Text(distanceLabel!, style: theme.textTheme.bodyMedium),
+                  IconButton(
+                    tooltip: l10n.actionDelete,
+                    icon: const Icon(Icons.delete_outline, size: 20),
+                    visualDensity: VisualDensity.compact,
+                    onPressed: onDelete,
+                  ),
+                ],
               ),
-          ],
+              const SizedBox(height: 4),
+              if (distanceLabel != null)
+                Padding(
+                  padding: const EdgeInsets.only(left: 8),
+                  child: Text(
+                    distanceLabel!,
+                    style: theme.textTheme.bodyMedium,
+                  ),
+                ),
+            ],
+          ),
         ),
-      ),
       ),
     );
   }

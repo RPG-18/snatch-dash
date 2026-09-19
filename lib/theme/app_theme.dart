@@ -4,20 +4,21 @@ import 'colors.dart';
 
 /// Material 3 dark theme matching the original app's gold-on-black look.
 ThemeData buildOpenDashTheme() {
-  final colorScheme = ColorScheme.fromSeed(
-    seedColor: OpenDashColors.gold,
-    brightness: Brightness.dark,
-  ).copyWith(
-    primary: OpenDashColors.gold,
-    onPrimary: OpenDashColors.onGold,
-    primaryContainer: OpenDashColors.goldTint,
-    secondary: OpenDashColors.goldBright,
-    surface: OpenDashColors.surf1,
-    surfaceContainerHigh: OpenDashColors.surf2,
-    onSurface: OpenDashColors.textHi,
-    onSurfaceVariant: OpenDashColors.textMid,
-    error: OpenDashColors.alert,
-  );
+  final colorScheme =
+      ColorScheme.fromSeed(
+        seedColor: OpenDashColors.gold,
+        brightness: Brightness.dark,
+      ).copyWith(
+        primary: OpenDashColors.gold,
+        onPrimary: OpenDashColors.onGold,
+        primaryContainer: OpenDashColors.goldTint,
+        secondary: OpenDashColors.goldBright,
+        surface: OpenDashColors.surf1,
+        surfaceContainerHigh: OpenDashColors.surf2,
+        onSurface: OpenDashColors.textHi,
+        onSurfaceVariant: OpenDashColors.textMid,
+        error: OpenDashColors.alert,
+      );
 
   return ThemeData(
     useMaterial3: true,
@@ -47,10 +48,7 @@ ThemeData buildOpenDashTheme() {
         );
       }),
     ),
-    cardTheme: const CardThemeData(
-      color: OpenDashColors.surf1,
-      elevation: 0,
-    ),
+    cardTheme: const CardThemeData(color: OpenDashColors.surf1, elevation: 0),
     dividerColor: OpenDashColors.line,
   );
 }

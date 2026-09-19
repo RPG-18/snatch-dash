@@ -53,7 +53,11 @@ class _RoutePreviewScreenState extends ConsumerState<RoutePreviewScreen> {
       return;
     }
 
-    final routes = await nav.Router.routes(origin, widget.args.destination, routesCount: _routesCount);
+    final routes = await nav.Router.routes(
+      origin,
+      widget.args.destination,
+      routesCount: _routesCount,
+    );
     if (!mounted) return;
     if (routes == null || routes.isEmpty) {
       setState(() {
@@ -99,7 +103,11 @@ class _RoutePreviewScreenState extends ConsumerState<RoutePreviewScreen> {
     final hours = (totalMinutes % (24 * 60)) ~/ 60;
     final minutes = totalMinutes % 60;
     if (days > 0) {
-      return l10n.unitDayHourMin(days.toString(), hours.toString(), minutes.toString());
+      return l10n.unitDayHourMin(
+        days.toString(),
+        hours.toString(),
+        minutes.toString(),
+      );
     }
     if (hours > 0) {
       return l10n.unitHourMin(hours.toString(), minutes.toString());
@@ -131,7 +139,9 @@ class _RoutePreviewScreenState extends ConsumerState<RoutePreviewScreen> {
             child: _loading
                 ? const Center(child: CircularProgressIndicator())
                 : _error != null
-                ? Center(child: Text(_errorText(l10n), textAlign: TextAlign.center))
+                ? Center(
+                    child: Text(_errorText(l10n), textAlign: TextAlign.center),
+                  )
                 : RouteOptionsMap(
                     routes: _routes,
                     selectedIndex: _selectedIndex,
@@ -204,7 +214,9 @@ class _RouteCard extends StatelessWidget {
           // string (day, hour, min) onto a second line and change the
           // card's height depending on which one is selected.
           border: Border.all(
-            color: selected ? theme.colorScheme.primary : theme.colorScheme.outlineVariant,
+            color: selected
+                ? theme.colorScheme.primary
+                : theme.colorScheme.outlineVariant,
             width: 2,
           ),
           color: selected ? theme.colorScheme.primaryContainer : null,
@@ -213,7 +225,12 @@ class _RouteCard extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           mainAxisSize: MainAxisSize.min,
           children: [
-            Text(duration, style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold)),
+            Text(
+              duration,
+              style: theme.textTheme.titleMedium?.copyWith(
+                fontWeight: FontWeight.bold,
+              ),
+            ),
             const SizedBox(height: 4),
             Text(distance, style: theme.textTheme.bodyMedium),
           ],

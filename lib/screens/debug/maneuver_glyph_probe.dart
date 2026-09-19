@@ -51,13 +51,13 @@ class _ManeuverGlyphProbeState extends State<ManeuverGlyphProbe> {
   }
 
   Future<void> _push() => DashEngine.instance.setNavState(
-        remainingMeters: 500,
-        nextTurnMeters: 200,
-        maneuver: _byte,
-        etaHHMM: '1200',
-        offRoute: false,
-        points: const [],
-      );
+    remainingMeters: 500,
+    nextTurnMeters: 200,
+    maneuver: _byte,
+    etaHHMM: '1200',
+    offRoute: false,
+    points: const [],
+  );
 
   void _step(int delta) {
     setState(() => _byte = (_byte + delta) & 0xFF);
@@ -74,10 +74,17 @@ class _ManeuverGlyphProbeState extends State<ManeuverGlyphProbe> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Text('glyph probe', style: TextStyle(color: Colors.white54, fontSize: 10)),
+            const Text(
+              'glyph probe',
+              style: TextStyle(color: Colors.white54, fontSize: 10),
+            ),
             Text(
               '0x$hex',
-              style: const TextStyle(color: Colors.white, fontSize: 20, fontFamily: 'monospace'),
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 20,
+                fontFamily: 'monospace',
+              ),
             ),
             Row(
               mainAxisSize: MainAxisSize.min,

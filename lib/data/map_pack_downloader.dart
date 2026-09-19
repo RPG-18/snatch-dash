@@ -57,17 +57,21 @@ class PackDownloadResult {
   final String? detail;
 
   InstalledPack toInstalledPack() => InstalledPack(
-        code: code,
-        sha256: sha256 ?? '',
-        generatedAt: generatedAt ?? '',
-        sizeBytes: sizeBytes ?? 0,
-        installedAtMs: DateTime.now().millisecondsSinceEpoch,
-      );
+    code: code,
+    sha256: sha256 ?? '',
+    generatedAt: generatedAt ?? '',
+    sizeBytes: sizeBytes ?? 0,
+    installedAtMs: DateTime.now().millisecondsSinceEpoch,
+  );
 }
 
 /// Bytes transferred so far for a pack still in flight.
 class PackProgress {
-  const PackProgress({required this.code, required this.bytesSoFar, required this.totalBytes});
+  const PackProgress({
+    required this.code,
+    required this.bytesSoFar,
+    required this.totalBytes,
+  });
 
   final String code;
   final int bytesSoFar;
@@ -76,7 +80,8 @@ class PackProgress {
   /// arrives, so a progress bar always has something to grow against.
   final int totalBytes;
 
-  double? get fraction => totalBytes > 0 ? (bytesSoFar / totalBytes).clamp(0.0, 1.0) : null;
+  double? get fraction =>
+      totalBytes > 0 ? (bytesSoFar / totalBytes).clamp(0.0, 1.0) : null;
 }
 
 /// Dart side of the `ru.snatchdash.app/maps` channel — the system
@@ -87,7 +92,7 @@ class PackProgress {
 /// class only starts, polls, and collects results.
 class MapPackDownloader {
   MapPackDownloader({MethodChannel? channel})
-      : _channel = channel ?? const MethodChannel('ru.snatchdash.app/maps');
+    : _channel = channel ?? const MethodChannel('ru.snatchdash.app/maps');
 
   final MethodChannel _channel;
 
@@ -99,7 +104,8 @@ class MapPackDownloader {
   /// manifest gives the size up front, so running out at 90% of 356 MB is a
   /// failure we can simply decline to have.
   Future<bool> hasRoomFor(int bytes) async =>
-      await _channel.invokeMethod<bool>('hasRoomFor', {'bytes': bytes}) ?? false;
+      await _channel.invokeMethod<bool>('hasRoomFor', {'bytes': bytes}) ??
+      false;
 
   /// Enqueues [region]. [title] is what the system download notification
   /// shows, so it should be the localised pack name rather than the code.
@@ -111,17 +117,17 @@ class MapPackDownloader {
     required Uri url,
     required String generatedAt,
     required String title,
-  }) =>
-      _channel.invokeMethod<int>('start', {
-        'code': region.code,
-        'url': url.toString(),
-        'sha256': region.sha256,
-        'sizeBytes': region.sizeBytes,
-        'generatedAt': generatedAt,
-        'title': title,
-      });
+  }) => _channel.invokeMethod<int>('start', {
+    'code': region.code,
+    'url': url.toString(),
+    'sha256': region.sha256,
+    'sizeBytes': region.sizeBytes,
+    'generatedAt': generatedAt,
+    'title': title,
+  });
 
-  Future<void> cancel(String code) => _channel.invokeMethod<void>('cancel', {'code': code});
+  Future<void> cancel(String code) =>
+      _channel.invokeMethod<void>('cancel', {'code': code});
 
   /// Deletes an installed pack file. Returns false if there was nothing there.
   Future<bool> delete(String code) async =>
@@ -130,13 +136,17 @@ class MapPackDownloader {
   /// Progress of everything in flight. There are no callbacks from
   /// `DownloadManager`, so the screen polls this while it is open.
   Future<List<PackProgress>> progress() async {
-    final rows = await _channel.invokeListMethod<Map<Object?, Object?>>('progress') ?? const [];
+    final rows =
+        await _channel.invokeListMethod<Map<Object?, Object?>>('progress') ??
+        const [];
     return rows
-        .map((row) => PackProgress(
-              code: row['code'] as String,
-              bytesSoFar: (row['bytesSoFar'] as num?)?.toInt() ?? 0,
-              totalBytes: (row['totalBytes'] as num?)?.toInt() ?? 0,
-            ))
+        .map(
+          (row) => PackProgress(
+            code: row['code'] as String,
+            bytesSoFar: (row['bytesSoFar'] as num?)?.toInt() ?? 0,
+            totalBytes: (row['totalBytes'] as num?)?.toInt() ?? 0,
+          ),
+        )
         .toList();
   }
 
@@ -148,20 +158,28 @@ class MapPackDownloader {
   /// download completes; anything that finished while the app was closed is
   /// picked up then.
   Future<List<PackDownloadResult>> reconcile() async {
-    final rows = await _channel.invokeListMethod<Map<Object?, Object?>>('reconcile') ?? const [];
+    final rows =
+        await _channel.invokeListMethod<Map<Object?, Object?>>('reconcile') ??
+        const [];
     return rows.map(_resultFrom).toList();
   }
 
   /// Packs present on disk under their final name — what the engine will see.
   /// Used to spot a registry that has drifted from reality.
   Future<Map<String, int>> installedFiles() async {
-    final rows = await _channel.invokeListMethod<Map<Object?, Object?>>('installedFiles') ?? const [];
+    final rows =
+        await _channel.invokeListMethod<Map<Object?, Object?>>(
+          'installedFiles',
+        ) ??
+        const [];
     return {
-      for (final row in rows) row['code'] as String: (row['sizeBytes'] as num?)?.toInt() ?? 0,
+      for (final row in rows)
+        row['code'] as String: (row['sizeBytes'] as num?)?.toInt() ?? 0,
     };
   }
 
-  static PackDownloadResult _resultFrom(Map<Object?, Object?> row) => PackDownloadResult(
+  static PackDownloadResult _resultFrom(Map<Object?, Object?> row) =>
+      PackDownloadResult(
         code: row['code'] as String,
         outcome: _outcomeFrom(row['outcome'] as String?),
         sha256: row['sha256'] as String?,
@@ -171,10 +189,10 @@ class MapPackDownloader {
       );
 
   static PackOutcome _outcomeFrom(String? name) => switch (name) {
-        'INSTALLED' => PackOutcome.installed,
-        'CHECKSUM_MISMATCH' => PackOutcome.checksumMismatch,
-        'CONFLICT' => PackOutcome.conflict,
-        'CANCELLED' => PackOutcome.cancelled,
-        _ => PackOutcome.failed,
-      };
+    'INSTALLED' => PackOutcome.installed,
+    'CHECKSUM_MISMATCH' => PackOutcome.checksumMismatch,
+    'CONFLICT' => PackOutcome.conflict,
+    'CANCELLED' => PackOutcome.cancelled,
+    _ => PackOutcome.failed,
+  };
 }

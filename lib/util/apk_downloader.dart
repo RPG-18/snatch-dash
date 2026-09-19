@@ -39,7 +39,10 @@ Future<File> downloadApk(
   final request = http.Request('GET', Uri.parse(url));
   final response = await http.Client().send(request);
   if (response.statusCode != 200) {
-    throw HttpException('Download failed: HTTP ${response.statusCode}', uri: Uri.parse(url));
+    throw HttpException(
+      'Download failed: HTTP ${response.statusCode}',
+      uri: Uri.parse(url),
+    );
   }
 
   final sink = file.openWrite();

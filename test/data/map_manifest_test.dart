@@ -44,35 +44,60 @@ void main() {
       expect(first.sha256.length, 64);
     });
 
-    test('ignores unknown fields — adding one must not break installed apps', () {
-      final withExtras = _liveShape
-          .replaceFirst('"version": 1,', '"version": 1, "new_top_level": {"a": 1},')
-          .replaceFirst('"code": "ru-ad",', '"code": "ru-ad", "new_region_field": 42,');
+    test(
+      'ignores unknown fields — adding one must not break installed apps',
+      () {
+        final withExtras = _liveShape
+            .replaceFirst(
+              '"version": 1,',
+              '"version": 1, "new_top_level": {"a": 1},',
+            )
+            .replaceFirst(
+              '"code": "ru-ad",',
+              '"code": "ru-ad", "new_region_field": 42,',
+            );
 
-      final manifest = MapManifestApi.parse(withExtras);
+        final manifest = MapManifestApi.parse(withExtras);
 
-      expect(manifest.regions, hasLength(2));
-      expect(manifest.regions.first.code, 'ru-ad');
-    });
+        expect(manifest.regions, hasLength(2));
+        expect(manifest.regions.first.code, 'ru-ad');
+      },
+    );
 
     test('refuses a schema newer than this build understands', () {
       final future = _liveShape.replaceFirst('"version": 1,', '"version": 99,');
 
       expect(
         () => MapManifestApi.parse(future),
-        throwsA(isA<ManifestVersionUnsupported>()
-            .having((e) => e.found, 'found', 99)
-            .having((e) => e.supported, 'supported', kSupportedManifestVersion)),
+        throwsA(
+          isA<ManifestVersionUnsupported>()
+              .having((e) => e.found, 'found', 99)
+              .having(
+                (e) => e.supported,
+                'supported',
+                kSupportedManifestVersion,
+              ),
+        ),
       );
     });
 
     test('rejects malformed input rather than guessing', () {
-      expect(() => MapManifestApi.parse('not json'), throwsA(isA<ManifestMalformed>()));
-      expect(() => MapManifestApi.parse('[]'), throwsA(isA<ManifestMalformed>()));
-      expect(() => MapManifestApi.parse('{"countries": []}'), throwsA(isA<ManifestMalformed>()));
+      expect(
+        () => MapManifestApi.parse('not json'),
+        throwsA(isA<ManifestMalformed>()),
+      );
+      expect(
+        () => MapManifestApi.parse('[]'),
+        throwsA(isA<ManifestMalformed>()),
+      );
+      expect(
+        () => MapManifestApi.parse('{"countries": []}'),
+        throwsA(isA<ManifestMalformed>()),
+      );
       expect(
         () => MapManifestApi.parse(
-            '{"version":1,"countries":[{"regions":[{"code":"x","path":"y"}]}]}'),
+          '{"version":1,"countries":[{"regions":[{"code":"x","path":"y"}]}]}',
+        ),
         throwsA(isA<ManifestMalformed>()),
       );
     });
@@ -100,7 +125,10 @@ void main() {
     });
 
     test('merged agglomerations name both halves', () {
-      expect(mapRegionName('ru-len-spe', 'ru'), 'Санкт-Петербург и Ленинградская область');
+      expect(
+        mapRegionName('ru-len-spe', 'ru'),
+        'Санкт-Петербург и Ленинградская область',
+      );
       expect(mapRegionName('ru-mos-mow', 'en'), 'Moscow and Moscow Oblast');
     });
 
@@ -114,10 +142,20 @@ void main() {
       // A corpus rebuild that adds or renames a pack should fail here rather
       // than silently show raw codes in the list.
       expect(knownMapRegionCodes.length, 80);
-      for (final code in const ['ru-ad', 'ru-zab', 'ru-sa', 'ru-len-spe', 'ru-mos-mow']) {
+      for (final code in const [
+        'ru-ad',
+        'ru-zab',
+        'ru-sa',
+        'ru-len-spe',
+        'ru-mos-mow',
+      ]) {
         expect(hasMapRegionName(code), isTrue, reason: code);
       }
-      expect(hasMapRegionName('ru-chu'), isFalse, reason: 'Чукотки в корпусе нет');
+      expect(
+        hasMapRegionName('ru-chu'),
+        isFalse,
+        reason: 'Чукотки в корпусе нет',
+      );
     });
   });
 }

@@ -20,8 +20,10 @@ const _btnMediaPrevious = 0x0A;
 // the zoom codes, so merging them changes nothing but saves two branches.
 // They DO overlap with the call codes (0x06/0x07), which is why the call
 // branches have to stay first.
-bool _isLooseNextButton(int code) => code == 0x06 || code == 0x09 || code == 0x22;
-bool _isLoosePreviousButton(int code) => code == 0x05 || code == 0x07 || code == 0x0A;
+bool _isLooseNextButton(int code) =>
+    code == 0x06 || code == 0x09 || code == 0x22;
+bool _isLoosePreviousButton(int code) =>
+    code == 0x05 || code == 0x07 || code == 0x0A;
 
 /// Dispatches physical dash button presses to an app-side action, mirroring
 /// `DashViewModel.onButton` — the native `DashSession`/`DashEngineController`
@@ -57,13 +59,19 @@ class DashButtonController extends Notifier<void> {
       // already answered/outgoing — matching the original's `call != null`
       // (vs `call.incoming == true` for answer).
       DashEngine.instance.hangupCall();
-    } else if (mediaActive && (code == _btnMediaNext || _isLooseNextButton(code))) {
+    } else if (mediaActive &&
+        (code == _btnMediaNext || _isLooseNextButton(code))) {
       DashEngine.instance.skipNext();
-    } else if (mediaActive && (code == _btnMediaPrevious || _isLoosePreviousButton(code))) {
+    } else if (mediaActive &&
+        (code == _btnMediaPrevious || _isLoosePreviousButton(code))) {
       DashEngine.instance.skipPrevious();
-    } else if (code == _btnMapZoomIn || code == _btnMediaNext || _isLooseNextButton(code)) {
+    } else if (code == _btnMapZoomIn ||
+        code == _btnMediaNext ||
+        _isLooseNextButton(code)) {
       DashEngine.instance.zoomIn();
-    } else if (code == _btnMapZoomOut || code == _btnMediaPrevious || _isLoosePreviousButton(code)) {
+    } else if (code == _btnMapZoomOut ||
+        code == _btnMediaPrevious ||
+        _isLoosePreviousButton(code)) {
       DashEngine.instance.zoomOut();
     } else {
       // The native side acks and forwards every `09 00`, so a code with no branch
@@ -72,9 +80,12 @@ class DashButtonController extends Notifier<void> {
       // 0x15 nine times and 0x0B six times; neither appears above, and nothing in
       // the log said so. Whether they SHOULD do something is a separate question
       // this line exists to raise.
-      talker.warning('dash button 0x${code.toRadixString(16).toUpperCase()} has no action');
+      talker.warning(
+        'dash button 0x${code.toRadixString(16).toUpperCase()} has no action',
+      );
     }
   }
 }
 
-final dashButtonControllerProvider = NotifierProvider<DashButtonController, void>(DashButtonController.new);
+final dashButtonControllerProvider =
+    NotifierProvider<DashButtonController, void>(DashButtonController.new);

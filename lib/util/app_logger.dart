@@ -34,7 +34,10 @@ Future<List<File>> persistedLogFiles() async {
   // owns, from a share button the rider just tapped. The async variants buy nothing
   // here and cost a round trip each (avoid_slow_async_io).
   final files = [writer.previousFile, writer.currentFile];
-  return [for (final f in files) if (f.existsSync()) f];
+  return [
+    for (final f in files)
+      if (f.existsSync()) f,
+  ];
 }
 
 /// Pipes the native dash-protocol log (`DashSession`/`DashSocket`/…, see

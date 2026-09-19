@@ -8,7 +8,15 @@ import '../util/github_release.dart';
 import 'auto_update_settings.dart';
 import 'update_channel_settings.dart';
 
-enum AppUpdateStatus { idle, checking, upToDate, available, downloading, needsInstallPermission, error }
+enum AppUpdateStatus {
+  idle,
+  checking,
+  upToDate,
+  available,
+  downloading,
+  needsInstallPermission,
+  error,
+}
 
 class AppUpdateState {
   const AppUpdateState({
@@ -38,14 +46,13 @@ class AppUpdateState {
     double? downloadProgress,
     String? errorMessage,
     bool? promptOnLaunch,
-  }) =>
-      AppUpdateState(
-        status: status ?? this.status,
-        release: release ?? this.release,
-        downloadProgress: downloadProgress,
-        errorMessage: errorMessage,
-        promptOnLaunch: promptOnLaunch ?? this.promptOnLaunch,
-      );
+  }) => AppUpdateState(
+    status: status ?? this.status,
+    release: release ?? this.release,
+    downloadProgress: downloadProgress,
+    errorMessage: errorMessage,
+    promptOnLaunch: promptOnLaunch ?? this.promptOnLaunch,
+  );
 }
 
 const _prefsKeyInstalledNightlyTag = 'installed_nightly_tag';
@@ -100,16 +107,28 @@ class AppUpdateController extends Notifier<AppUpdateState> {
         return;
       }
       final isNewer = switch (channel) {
-        UpdateChannel.stable => isStableReleaseNewer(release, (await PackageInfo.fromPlatform()).version),
-        UpdateChannel.nightly => isNightlyReleaseNewer(release, await _installedNightlyTag()),
+        UpdateChannel.stable => isStableReleaseNewer(
+          release,
+          (await PackageInfo.fromPlatform()).version,
+        ),
+        UpdateChannel.nightly => isNightlyReleaseNewer(
+          release,
+          await _installedNightlyTag(),
+        ),
       };
       if (!ref.mounted) return;
       state = isNewer
-          ? AppUpdateState(status: AppUpdateStatus.available, release: release, promptOnLaunch: silent)
+          ? AppUpdateState(
+              status: AppUpdateStatus.available,
+              release: release,
+              promptOnLaunch: silent,
+            )
           : const AppUpdateState(status: AppUpdateStatus.upToDate);
     } catch (e) {
       if (!ref.mounted) return;
-      state = silent ? const AppUpdateState() : AppUpdateState(status: AppUpdateStatus.error, errorMessage: '$e');
+      state = silent
+          ? const AppUpdateState()
+          : AppUpdateState(status: AppUpdateStatus.error, errorMessage: '$e');
     }
   }
 
@@ -136,14 +155,19 @@ class AppUpdateController extends Notifier<AppUpdateState> {
         return;
       }
 
-      state = state.copyWith(status: AppUpdateStatus.downloading, downloadProgress: 0);
+      state = state.copyWith(
+        status: AppUpdateStatus.downloading,
+        downloadProgress: 0,
+      );
       try {
         final file = await downloadApk(
           release.apkUrl,
           release.apkName,
           onProgress: (received, total) {
             if (!ref.mounted) return;
-            state = state.copyWith(downloadProgress: total != null ? received / total : null);
+            state = state.copyWith(
+              downloadProgress: total != null ? received / total : null,
+            );
           },
         );
         if (!ref.mounted) return;
@@ -152,10 +176,16 @@ class AppUpdateController extends Notifier<AppUpdateState> {
         }
         await ApkInstaller.installApk(file.path);
         if (!ref.mounted) return;
-        state = state.copyWith(status: AppUpdateStatus.available); // installer took over; back to "available" if cancelled
+        state = state.copyWith(
+          status: AppUpdateStatus.available,
+        ); // installer took over; back to "available" if cancelled
       } catch (e) {
         if (!ref.mounted) return;
-        state = AppUpdateState(status: AppUpdateStatus.error, release: release, errorMessage: '$e');
+        state = AppUpdateState(
+          status: AppUpdateStatus.error,
+          release: release,
+          errorMessage: '$e',
+        );
       }
     } finally {
       _installing = false;
@@ -164,18 +194,29 @@ class AppUpdateController extends Notifier<AppUpdateState> {
 
   /// Opens the system "install unknown apps" settings screen for this app —
   /// call [downloadAndInstall] again once the user's back and granted it.
-  Future<void> openInstallPermissionSettings() => ApkInstaller.openInstallPermissionSettings();
+  Future<void> openInstallPermissionSettings() =>
+      ApkInstaller.openInstallPermissionSettings();
 
   Future<String?> _installedNightlyTag() async =>
-      (await SharedPreferences.getInstance()).getString(_prefsKeyInstalledNightlyTag);
+      (await SharedPreferences.getInstance()).getString(
+        _prefsKeyInstalledNightlyTag,
+      );
 
   Future<void> _setInstalledNightlyTag(String tag) async =>
-      (await SharedPreferences.getInstance()).setString(_prefsKeyInstalledNightlyTag, tag);
+      (await SharedPreferences.getInstance()).setString(
+        _prefsKeyInstalledNightlyTag,
+        tag,
+      );
 }
 
-final appUpdateControllerProvider = NotifierProvider<AppUpdateController, AppUpdateState>(AppUpdateController.new);
+final appUpdateControllerProvider =
+    NotifierProvider<AppUpdateController, AppUpdateState>(
+      AppUpdateController.new,
+    );
 
 /// The running build's own version — read once per app session (Settings
 /// screen's "Текущая версия" line, and `checkForUpdate`'s stable-channel
 /// comparison).
-final packageInfoProvider = FutureProvider<PackageInfo>((ref) => PackageInfo.fromPlatform());
+final packageInfoProvider = FutureProvider<PackageInfo>(
+  (ref) => PackageInfo.fromPlatform(),
+);

@@ -9,13 +9,18 @@ const _prefsVehicles = 'vehicles';
 const _prefsActive = 'active_vehicle';
 
 class VehicleState {
-  const VehicleState({this.vehicles = const [], this.activeVehicleId = VehicleStore.defaultVehicleId});
+  const VehicleState({
+    this.vehicles = const [],
+    this.activeVehicleId = VehicleStore.defaultVehicleId,
+  });
 
   final List<VehicleProfile> vehicles;
   final String activeVehicleId;
 
-  VehicleProfile get active =>
-      vehicles.firstWhere((v) => v.id == activeVehicleId, orElse: () => vehicles.first);
+  VehicleProfile get active => vehicles.firstWhere(
+    (v) => v.id == activeVehicleId,
+    orElse: () => vehicles.first,
+  );
 }
 
 final _defaultVehicle = const VehicleProfile(
@@ -63,11 +68,15 @@ class VehicleStoreController extends Notifier<VehicleState> {
       }
     }
     final savedActive = prefs.getString(_prefsKeyActive);
-    final activeId = vehicles.any((v) => v.id == savedActive) ? savedActive! : vehicles.first.id;
+    final activeId = vehicles.any((v) => v.id == savedActive)
+        ? savedActive!
+        : vehicles.first.id;
     // The provider can be disposed while the awaits above are pending —
     // writing `state` after that throws `UnmountedRefException`.
     if (!ref.mounted) return;
-    if (generation != _generation) return; // superseded by a mutation — don't clobber it
+    if (generation != _generation) {
+      return; // superseded by a mutation — don't clobber it
+    }
     state = VehicleState(vehicles: vehicles, activeVehicleId: activeId);
     await _persist();
   }
@@ -84,14 +93,20 @@ class VehicleStoreController extends Notifier<VehicleState> {
           )
         : profile;
     _generation++;
-    state = VehicleState(vehicles: [...state.vehicles, created], activeVehicleId: created.id);
+    state = VehicleState(
+      vehicles: [...state.vehicles, created],
+      activeVehicleId: created.id,
+    );
     await _persist();
   }
 
   Future<void> update(VehicleProfile profile) async {
     _generation++;
     state = VehicleState(
-      vehicles: [for (final v in state.vehicles) if (v.id == profile.id) profile else v],
+      vehicles: [
+        for (final v in state.vehicles)
+          if (v.id == profile.id) profile else v,
+      ],
       activeVehicleId: state.activeVehicleId,
     );
     await _persist();
@@ -112,6 +127,7 @@ class VehicleStoreController extends Notifier<VehicleState> {
   }
 }
 
-final vehicleStoreProvider = NotifierProvider<VehicleStoreController, VehicleState>(
-  VehicleStoreController.new,
-);
+final vehicleStoreProvider =
+    NotifierProvider<VehicleStoreController, VehicleState>(
+      VehicleStoreController.new,
+    );

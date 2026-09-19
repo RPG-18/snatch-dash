@@ -22,14 +22,14 @@ class FuelFillup {
   final String vehicleId;
 
   FuelFillup copyWith({int? id}) => FuelFillup(
-        id: id ?? this.id,
-        dateMs: dateMs,
-        litres: litres,
-        cost: cost,
-        odometerKm: odometerKm,
-        location: location,
-        vehicleId: vehicleId,
-      );
+    id: id ?? this.id,
+    dateMs: dateMs,
+    litres: litres,
+    cost: cost,
+    odometerKm: odometerKm,
+    location: location,
+    vehicleId: vehicleId,
+  );
 }
 
 /// A manually logged expense for the bike or ride.
@@ -51,13 +51,13 @@ class Expense {
   final String vehicleId;
 
   Expense copyWith({int? id}) => Expense(
-        id: id ?? this.id,
-        dateMs: dateMs,
-        category: category,
-        amount: amount,
-        note: note,
-        vehicleId: vehicleId,
-      );
+    id: id ?? this.id,
+    dateMs: dateMs,
+    category: category,
+    amount: amount,
+    note: note,
+    vehicleId: vehicleId,
+  );
 }
 
 /// One recorded ride = one connect→disconnect session with the dash.
@@ -120,16 +120,15 @@ class MaintenanceItem {
     int? lastDoneOdoKm,
     int? lastDoneDateMs,
     int? intervalKm,
-  }) =>
-      MaintenanceItem(
-        id: id ?? this.id,
-        name: name,
-        iconKey: iconKey,
-        intervalKm: intervalKm ?? this.intervalKm,
-        lastDoneOdoKm: lastDoneOdoKm ?? this.lastDoneOdoKm,
-        lastDoneDateMs: lastDoneDateMs ?? this.lastDoneDateMs,
-        vehicleId: vehicleId,
-      );
+  }) => MaintenanceItem(
+    id: id ?? this.id,
+    name: name,
+    iconKey: iconKey,
+    intervalKm: intervalKm ?? this.intervalKm,
+    lastDoneOdoKm: lastDoneOdoKm ?? this.lastDoneOdoKm,
+    lastDoneDateMs: lastDoneDateMs ?? this.lastDoneDateMs,
+    vehicleId: vehicleId,
+  );
 }
 
 enum MaintenanceAction {
@@ -162,7 +161,8 @@ class OfficialMaintenanceSchedule {
 class Himalayan450MaintenanceSchedule {
   Himalayan450MaintenanceSchedule._();
 
-  static const _sourcePages = "Owner's Manual, Periodical Maintenance, pp. 122-127";
+  static const _sourcePages =
+      "Owner's Manual, Periodical Maintenance, pp. 122-127";
 
   static OfficialMaintenanceSchedule? forItem(MaintenanceItem item) {
     if (item.vehicleId != VehicleStore.defaultVehicleId) return null;
@@ -182,7 +182,8 @@ class Himalayan450MaintenanceSchedule {
           action: MaintenanceAction.replace,
           intervalKm: 10000,
           intervalMonths: 12,
-          guidance: 'Replace every 10,000 km or 12 months after the initial 500 km service.',
+          guidance:
+              'Replace every 10,000 km or 12 months after the initial 500 km service.',
           manualPages: _sourcePages,
         );
       case 'air filter':

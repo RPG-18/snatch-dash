@@ -3,8 +3,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../data/saved_location_repository.dart';
 import '../models/shared_location.dart';
 
-final savedLocationRepositoryProvider =
-    Provider<SavedLocationRepository>((ref) => SqliteSavedLocationRepository());
+final savedLocationRepositoryProvider = Provider<SavedLocationRepository>(
+  (ref) => SqliteSavedLocationRepository(),
+);
 
 /// Saved destinations shown on Home / offered for quick re-routing. Ports
 /// the saved-locations half of `RouteViewModel.kt`, now backed by `sqflite`
@@ -44,5 +45,5 @@ class SavedDestinationsController extends Notifier<List<SavedLocation>> {
 
 final savedDestinationsControllerProvider =
     NotifierProvider<SavedDestinationsController, List<SavedLocation>>(
-  SavedDestinationsController.new,
-);
+      SavedDestinationsController.new,
+    );

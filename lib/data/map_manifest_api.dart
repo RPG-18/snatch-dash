@@ -25,7 +25,8 @@ class ManifestVersionUnsupported implements Exception {
   final int supported;
 
   @override
-  String toString() => 'Manifest schema v$found is newer than supported v$supported';
+  String toString() =>
+      'Manifest schema v$found is newer than supported v$supported';
 }
 
 /// The manifest could not be read as the shape we expect.
@@ -45,8 +46,8 @@ class ManifestMalformed implements Exception {
 /// check needs the server (see spec/offline_maps_screen.md, "Пустые состояния").
 class MapManifestApi {
   MapManifestApi({http.Client? client, Directory? mapsDir})
-      : _client = client ?? http.Client(),
-        _mapsDirOverride = mapsDir;
+    : _client = client ?? http.Client(),
+      _mapsDirOverride = mapsDir;
 
   final http.Client _client;
   final Directory? _mapsDirOverride;
@@ -69,7 +70,8 @@ class MapManifestApi {
     return dir;
   }
 
-  Uri packUrl(String relativePath) => Uri.parse(kMapServerBaseUrl).resolve(relativePath);
+  Uri packUrl(String relativePath) =>
+      Uri.parse(kMapServerBaseUrl).resolve(relativePath);
 
   Uri get manifestUrl => Uri.parse(kMapServerBaseUrl).resolve(_fileName);
 
@@ -120,7 +122,9 @@ class MapManifestApi {
     // re-reads the manifest — and with one fixed `.tmp` the second writer's
     // half-written file is what the first one renames into place, destroying the
     // very cache this method exists to protect.
-    final tmp = File(p.join(dir, '$_fileName.${DateTime.now().microsecondsSinceEpoch}.tmp'));
+    final tmp = File(
+      p.join(dir, '$_fileName.${DateTime.now().microsecondsSinceEpoch}.tmp'),
+    );
     try {
       await tmp.writeAsString(raw, flush: true);
       await tmp.rename(p.join(dir, _fileName));
@@ -143,7 +147,9 @@ class MapManifestApi {
     } on FormatException catch (e) {
       throw ManifestMalformed('not JSON: ${e.message}');
     }
-    if (decoded is! Map<String, dynamic>) throw const ManifestMalformed('root is not an object');
+    if (decoded is! Map<String, dynamic>) {
+      throw const ManifestMalformed('root is not an object');
+    }
 
     final version = decoded['version'];
     if (version is! int) throw const ManifestMalformed('missing "version"');
@@ -152,7 +158,9 @@ class MapManifestApi {
     }
 
     final countries = decoded['countries'];
-    if (countries is! List) throw const ManifestMalformed('missing "countries"');
+    if (countries is! List) {
+      throw const ManifestMalformed('missing "countries"');
+    }
 
     final regions = <MapRegion>[];
     for (final country in countries) {
@@ -165,15 +173,20 @@ class MapManifestApi {
         final path = region['path'];
         final size = region['size'];
         final sha256 = region['sha256'];
-        if (code is! String || path is! String || size is! num || sha256 is! String) {
+        if (code is! String ||
+            path is! String ||
+            size is! num ||
+            sha256 is! String) {
           throw ManifestMalformed('bad region entry: $region');
         }
-        regions.add(MapRegion(
-          code: code,
-          path: path,
-          sizeBytes: size.toInt(),
-          sha256: sha256,
-        ));
+        regions.add(
+          MapRegion(
+            code: code,
+            path: path,
+            sizeBytes: size.toInt(),
+            sha256: sha256,
+          ),
+        );
       }
     }
 
@@ -181,7 +194,8 @@ class MapManifestApi {
       schemaVersion: version,
       generatedAt: decoded['generated_at'] as String? ?? '',
       fileCount: (decoded['file_count'] as num?)?.toInt() ?? regions.length,
-      totalSizeBytes: (decoded['total_size'] as num?)?.toInt() ??
+      totalSizeBytes:
+          (decoded['total_size'] as num?)?.toInt() ??
           regions.fold(0, (sum, r) => sum + r.sizeBytes),
       regions: regions,
     );

@@ -97,7 +97,9 @@ class _OpenDashMapState extends State<OpenDashMap> {
     if (widget.routePoints.length >= 2) {
       final line = objects.addPolylineWithGeometry(
         ymk.Polyline(
-          widget.routePoints.map((p) => ymk.Point(latitude: p.lat, longitude: p.lng)).toList(),
+          widget.routePoints
+              .map((p) => ymk.Point(latitude: p.lat, longitude: p.lng))
+              .toList(),
         ),
       );
       line.style = const ymk.LineStyle(strokeWidth: 5.5);
@@ -106,7 +108,9 @@ class _OpenDashMapState extends State<OpenDashMap> {
 
     final dest = widget.dest;
     if (dest != null) {
-      objects.addPlacemarkWithPoint(ymk.Point(latitude: dest.lat, longitude: dest.lng));
+      objects.addPlacemarkWithPoint(
+        ymk.Point(latitude: dest.lat, longitude: dest.lng),
+      );
     }
 
     if (widget.navMode && widget.riderLat != null && widget.riderLng != null) {
@@ -121,11 +125,16 @@ class _OpenDashMapState extends State<OpenDashMap> {
     final window = _mapWindow;
     if (window == null) return;
     final map = window.map;
-    const animation = ymk.Animation(type: ymk.AnimationType.Smooth, duration: 0.6);
+    const animation = ymk.Animation(
+      type: ymk.AnimationType.Smooth,
+      duration: 0.6,
+    );
 
     if (widget.fitRoute && widget.routePoints.length >= 2) {
-      var minLat = widget.routePoints.first.lat, maxLat = widget.routePoints.first.lat;
-      var minLng = widget.routePoints.first.lng, maxLng = widget.routePoints.first.lng;
+      var minLat = widget.routePoints.first.lat,
+          maxLat = widget.routePoints.first.lat;
+      var minLng = widget.routePoints.first.lng,
+          maxLng = widget.routePoints.first.lng;
       for (final p in widget.routePoints) {
         if (p.lat < minLat) minLat = p.lat;
         if (p.lat > maxLat) maxLat = p.lat;
@@ -136,15 +145,25 @@ class _OpenDashMapState extends State<OpenDashMap> {
         ymk.Point(latitude: minLat, longitude: minLng),
         ymk.Point(latitude: maxLat, longitude: maxLng),
       );
-      final position = map.cameraPositionForGeometry(ymk.Geometry.fromBoundingBox(bounds));
+      final position = map.cameraPositionForGeometry(
+        ymk.Geometry.fromBoundingBox(bounds),
+      );
       map.move(position, animation: animation);
       return;
     }
 
     if (widget.riderLat != null && widget.riderLng != null) {
-      final target = ymk.Point(latitude: widget.riderLat!, longitude: widget.riderLng!);
+      final target = ymk.Point(
+        latitude: widget.riderLat!,
+        longitude: widget.riderLng!,
+      );
       final position = widget.navMode
-          ? ymk.CameraPosition(target, zoom: _navZoom, azimuth: widget.riderBearing, tilt: _navTilt)
+          ? ymk.CameraPosition(
+              target,
+              zoom: _navZoom,
+              azimuth: widget.riderBearing,
+              tilt: _navTilt,
+            )
           : ymk.CameraPosition(target, zoom: _followZoom, azimuth: 0, tilt: 0);
       map.move(position, animation: animation);
       return;
@@ -153,7 +172,12 @@ class _OpenDashMapState extends State<OpenDashMap> {
     final dest = widget.dest;
     if (dest != null) {
       map.move(
-        ymk.CameraPosition(ymk.Point(latitude: dest.lat, longitude: dest.lng), zoom: 13, azimuth: 0, tilt: 0),
+        ymk.CameraPosition(
+          ymk.Point(latitude: dest.lat, longitude: dest.lng),
+          zoom: 13,
+          azimuth: 0,
+          tilt: 0,
+        ),
       );
     }
   }

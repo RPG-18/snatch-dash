@@ -15,7 +15,9 @@ class RidesScreen extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final rides = ref.watch(ridesControllerProvider);
     final l10n = AppLocalizations.of(context)!;
-    final dateFormat = DateFormat.yMd(Localizations.localeOf(context).toString());
+    final dateFormat = DateFormat.yMd(
+      Localizations.localeOf(context).toString(),
+    );
 
     return Scaffold(
       appBar: AppBar(title: Text(l10n.ridesTitle)),
@@ -32,13 +34,23 @@ class RidesScreen extends ConsumerWidget {
                 return Card(
                   child: ListTile(
                     leading: const Icon(Icons.route_outlined),
-                    title: Text(l10n.rideDurationSummary(ride.distanceKm.toStringAsFixed(1), minutes)),
+                    title: Text(
+                      l10n.rideDurationSummary(
+                        ride.distanceKm.toStringAsFixed(1),
+                        minutes,
+                      ),
+                    ),
                     subtitle: Text(
-                      l10n.rideDateAvgSpeed(dateFormat.format(start), ride.avgSpeedKmh.toStringAsFixed(0)),
+                      l10n.rideDateAvgSpeed(
+                        dateFormat.format(start),
+                        ride.avgSpeedKmh.toStringAsFixed(0),
+                      ),
                     ),
                     trailing: IconButton(
                       icon: const Icon(Icons.delete_outline),
-                      onPressed: () => ref.read(ridesControllerProvider.notifier).deleteRide(ride),
+                      onPressed: () => ref
+                          .read(ridesControllerProvider.notifier)
+                          .deleteRide(ride),
                     ),
                   ),
                 );

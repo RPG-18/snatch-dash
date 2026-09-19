@@ -54,25 +54,37 @@ class MaintenanceNotifier {
   Future<void> _initialize() async {
     final l10n = deviceLocalizations();
     const android = AndroidInitializationSettings('@mipmap/ic_launcher');
-    await _plugin.initialize(settings: const InitializationSettings(android: android));
+    await _plugin.initialize(
+      settings: const InitializationSettings(android: android),
+    );
     await _plugin
-        .resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()
-        ?.createNotificationChannel(AndroidNotificationChannel(
-          _channelId,
-          l10n.maintChannelName,
-          description: l10n.maintChannelDesc,
-          importance: Importance.defaultImportance,
-        ));
+        .resolvePlatformSpecificImplementation<
+          AndroidFlutterLocalNotificationsPlugin
+        >()
+        ?.createNotificationChannel(
+          AndroidNotificationChannel(
+            _channelId,
+            l10n.maintChannelName,
+            description: l10n.maintChannelDesc,
+            importance: Importance.defaultImportance,
+          ),
+        );
   }
 
   bool _isDue(MaintenanceItem m, int odo) {
-    final distanceDue = (m.lastDoneOdoKm + m.intervalKm - odo) < m.intervalKm * 0.25;
+    final distanceDue =
+        (m.lastDoneOdoKm + m.intervalKm - odo) < m.intervalKm * 0.25;
     final schedule = Himalayan450MaintenanceSchedule.forItem(m);
     final months = schedule?.intervalMonths;
     if (months == null) return distanceDue;
     final lastDone = DateTime.fromMillisecondsSinceEpoch(m.lastDoneDateMs);
-    final dueAt = DateTime(lastDone.year, lastDone.month + months, lastDone.day);
-    final remainingDays = (dueAt.difference(DateTime.now()).inMilliseconds / 86400000).ceil();
+    final dueAt = DateTime(
+      lastDone.year,
+      lastDone.month + months,
+      lastDone.day,
+    );
+    final remainingDays =
+        (dueAt.difference(DateTime.now()).inMilliseconds / 86400000).ceil();
     return distanceDue || remainingDays < months * 30 * 0.25;
   }
 
@@ -94,7 +106,8 @@ class MaintenanceNotifier {
     final dueIds = due.map((m) => m.id.toString()).toSet();
 
     final prefs = await SharedPreferences.getInstance();
-    final notified = (prefs.getStringList(_prefsKeyNotified) ?? const []).toSet();
+    final notified = (prefs.getStringList(_prefsKeyNotified) ?? const [])
+        .toSet();
     // Drop serviced items so they can remind again next interval, but keep
     // still-due items already flagged.
     final stillKnownDue = notified.intersection(dueIds);
@@ -105,15 +118,24 @@ class MaintenanceNotifier {
       return;
     }
 
-    final enabled = await _plugin
-            .resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()
+    final enabled =
+        await _plugin
+            .resolvePlatformSpecificImplementation<
+              AndroidFlutterLocalNotificationsPlugin
+            >()
             ?.areNotificationsEnabled() ??
         true;
     if (!enabled) {
-      await prefs.setStringList(_prefsKeyNotified, stillKnownDue.toList()); // not flagged → can fire later
+      await prefs.setStringList(
+        _prefsKeyNotified,
+        stillKnownDue.toList(),
+      ); // not flagged → can fire later
       return;
     }
-    await prefs.setStringList(_prefsKeyNotified, dueIds.toList()); // posting now → remember all due
+    await prefs.setStringList(
+      _prefsKeyNotified,
+      dueIds.toList(),
+    ); // posting now → remember all due
 
     final l10n = deviceLocalizations();
     final (title, body) = _buildText(l10n, due, odometer);
@@ -133,20 +155,35 @@ class MaintenanceNotifier {
     );
   }
 
-  (String, String) _buildText(AppLocalizations l10n, List<MaintenanceItem> due, int odo) {
+  (String, String) _buildText(
+    AppLocalizations l10n,
+    List<MaintenanceItem> due,
+    int odo,
+  ) {
     String line(MaintenanceItem m) {
       final remaining = m.lastDoneOdoKm + m.intervalKm - odo;
       final schedule = Himalayan450MaintenanceSchedule.forItem(m);
       int? remainingDays;
       if (schedule?.intervalMonths != null) {
         final lastDone = DateTime.fromMillisecondsSinceEpoch(m.lastDoneDateMs);
-        final dueAt = DateTime(lastDone.year, lastDone.month + schedule!.intervalMonths!, lastDone.day);
-        remainingDays = (dueAt.difference(DateTime.now()).inMilliseconds / 86400000).ceil();
+        final dueAt = DateTime(
+          lastDone.year,
+          lastDone.month + schedule!.intervalMonths!,
+          lastDone.day,
+        );
+        remainingDays =
+            (dueAt.difference(DateTime.now()).inMilliseconds / 86400000).ceil();
       }
-      if (remainingDays != null && remainingDays < 0) return l10n.maintLineOverdueByDate(m.name);
+      if (remainingDays != null && remainingDays < 0) {
+        return l10n.maintLineOverdueByDate(m.name);
+      }
       if (remaining < 0) return l10n.maintLineOverdueKm(m.name, -remaining);
       if (remainingDays != null) {
-        return l10n.maintLineDueKmDays(m.name, remaining, max(remainingDays, 0));
+        return l10n.maintLineDueKmDays(
+          m.name,
+          remaining,
+          max(remainingDays, 0),
+        );
       }
       return l10n.maintLineDueKm(m.name, remaining);
     }

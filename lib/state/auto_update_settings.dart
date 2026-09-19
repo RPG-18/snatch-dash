@@ -39,4 +39,6 @@ class AutoUpdateController extends Notifier<bool> {
   }
 }
 
-final autoUpdateSettingsProvider = NotifierProvider<AutoUpdateController, bool>(AutoUpdateController.new);
+final autoUpdateSettingsProvider = NotifierProvider<AutoUpdateController, bool>(
+  AutoUpdateController.new,
+);

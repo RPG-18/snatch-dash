@@ -47,8 +47,10 @@ class MapkitLifecycle {
     final wanted = _foreground || _navigating;
     if (wanted == _running) return;
     _running = wanted;
-    talker.info('[MapKit] ${wanted ? 'onStart' : 'onStop'} '
-        '(foreground=$_foreground navigating=$_navigating)');
+    talker.info(
+      '[MapKit] ${wanted ? 'onStart' : 'onStop'} '
+      '(foreground=$_foreground navigating=$_navigating)',
+    );
     if (wanted) {
       mapkit.onStart();
     } else {

@@ -23,16 +23,22 @@ class OfflineMapsScreen extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final l10n = AppLocalizations.of(context)!;
     final state = ref.watch(offlineMapsControllerProvider);
-    final installed = ref.watch(installedPacksProvider) ?? const <InstalledPack>[];
+    final installed =
+        ref.watch(installedPacksProvider) ?? const <InstalledPack>[];
     final navigating = ref.watch(dashEngineStateProvider).navigating;
 
     // Selects the nonce too, so the same failure twice in a row still fires.
-    ref.listen(offlineMapsControllerProvider.select((s) => (s.lastError, s.errorNonce)), (_, next) {
-      final error = next.$1;
-      if (error == null) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(_errorText(l10n, error))));
-      ref.read(offlineMapsControllerProvider.notifier).errorShown();
-    });
+    ref.listen(
+      offlineMapsControllerProvider.select((s) => (s.lastError, s.errorNonce)),
+      (_, next) {
+        final error = next.$1;
+        if (error == null) return;
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(_errorText(l10n, error))));
+        ref.read(offlineMapsControllerProvider.notifier).errorShown();
+      },
+    );
 
     // ref.listen only fires on changes *after* it subscribes, and the poller
     // deliberately outlives this screen: a download that failed while the rider
@@ -42,8 +48,9 @@ class OfflineMapsScreen extends ConsumerWidget {
     if (pending != null) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!context.mounted) return;
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text(_errorText(l10n, pending))));
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(_errorText(l10n, pending))));
         ref.read(offlineMapsControllerProvider.notifier).errorShown();
       });
     }
@@ -56,7 +63,10 @@ class OfflineMapsScreen extends ConsumerWidget {
           if (state.status == ManifestStatus.appTooOld)
             _Banner(icon: Icons.system_update, text: l10n.offlineMapsAppTooOld)
           else if (state.status == ManifestStatus.unavailable)
-            _ServerUnavailable(onRetry: () => ref.read(offlineMapsControllerProvider.notifier).refresh())
+            _ServerUnavailable(
+              onRetry: () =>
+                  ref.read(offlineMapsControllerProvider.notifier).refresh(),
+            )
           else ...[
             if (state.status == ManifestStatus.staleCache)
               _Banner(icon: Icons.cloud_off, text: l10n.offlineMapsStaleCache),
@@ -73,12 +83,17 @@ class OfflineMapsScreen extends ConsumerWidget {
                 // bottom bar on top of it — five tabs offering to leave a screen
                 // whose whole job is one choice.
                 onTap: () => Navigator.of(context, rootNavigator: true).push(
-                  MaterialPageRoute<void>(builder: (_) => const _PackPickerScreen()),
+                  MaterialPageRoute<void>(
+                    builder: (_) => const _PackPickerScreen(),
+                  ),
                 ),
               ),
           ],
           const SizedBox(height: 16),
-          Text(l10n.offlineMapsDownloadedSection, style: Theme.of(context).textTheme.labelLarge),
+          Text(
+            l10n.offlineMapsDownloadedSection,
+            style: Theme.of(context).textTheme.labelLarge,
+          ),
           const SizedBox(height: 8),
           if (installed.isEmpty)
             Card(
@@ -104,7 +119,8 @@ class OfflineMapsScreen extends ConsumerWidget {
     );
   }
 
-  static String _errorText(AppLocalizations l10n, String code) => switch (code) {
+  static String _errorText(AppLocalizations l10n, String code) =>
+      switch (code) {
         'noSpace' => l10n.offlineMapsNoSpace,
         'enqueueFailed' => l10n.offlineMapsEnqueueFailed,
         // Its own line rather than the generic failure: this one will not fix
@@ -172,9 +188,9 @@ class _Banner extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Card(
-        color: Theme.of(context).colorScheme.surfaceContainerHighest,
-        child: ListTile(leading: Icon(icon), title: Text(text)),
-      );
+    color: Theme.of(context).colorScheme.surfaceContainerHighest,
+    child: ListTile(leading: Icon(icon), title: Text(text)),
+  );
 }
 
 /// No local manifest and no server — the only state where the list of
@@ -193,15 +209,20 @@ class _ServerUnavailable extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Row(children: [
-              const Icon(Icons.cloud_off),
-              const SizedBox(width: 12),
-              Expanded(child: Text(l10n.offlineMapsServerUnavailable)),
-            ]),
+            Row(
+              children: [
+                const Icon(Icons.cloud_off),
+                const SizedBox(width: 12),
+                Expanded(child: Text(l10n.offlineMapsServerUnavailable)),
+              ],
+            ),
             const SizedBox(height: 8),
             Align(
               alignment: Alignment.centerRight,
-              child: TextButton(onPressed: onRetry, child: Text(l10n.offlineMapsRetry)),
+              child: TextButton(
+                onPressed: onRetry,
+                child: Text(l10n.offlineMapsRetry),
+              ),
             ),
           ],
         ),
@@ -219,12 +240,19 @@ class _InstalledTile extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final l10n = AppLocalizations.of(context)!;
-    final name = mapRegionName(pack.code, Localizations.localeOf(context).languageCode);
+    final name = mapRegionName(
+      pack.code,
+      Localizations.localeOf(context).languageCode,
+    );
     // `select` on the state, not a read through the notifier: this is what makes
     // the icon flip when the manifest lands rather than by luck of the parent
     // happening to rebuild.
-    final hasUpdate = ref.watch(offlineMapsControllerProvider.select((s) => s.hasUpdateFor(pack)));
-    final progress = ref.watch(offlineMapsControllerProvider.select((s) => s.progress[pack.code]));
+    final hasUpdate = ref.watch(
+      offlineMapsControllerProvider.select((s) => s.hasUpdateFor(pack)),
+    );
+    final progress = ref.watch(
+      offlineMapsControllerProvider.select((s) => s.progress[pack.code]),
+    );
     final updating = progress != null;
 
     return ListTile(
@@ -234,9 +262,11 @@ class _InstalledTile extends ConsumerWidget {
           ? _StopWithProgress(fraction: progress.fraction)
           : Icon(hasUpdate ? Icons.download_outlined : Icons.map_outlined),
       title: Text(name),
-      subtitle: Text(hasUpdate && !updating
-          ? '${formatByteSize(l10n, pack.sizeBytes)} · ${l10n.offlineMapsUpdateAvailable}'
-          : formatByteSize(l10n, pack.sizeBytes)),
+      subtitle: Text(
+        hasUpdate && !updating
+            ? '${formatByteSize(l10n, pack.sizeBytes)} · ${l10n.offlineMapsUpdateAvailable}'
+            : formatByteSize(l10n, pack.sizeBytes),
+      ),
       // Tapping an out-of-date pack re-downloads it. Without this the download
       // icon above would promise something nothing delivers — the picker hides
       // installed packs, so there would be no way to update at all.
@@ -253,26 +283,42 @@ class _InstalledTile extends ConsumerWidget {
           : PopupMenuButton<String>(
               onSelected: (_) => _confirmDelete(context, ref, name),
               itemBuilder: (context) => [
-                PopupMenuItem(value: 'delete', child: Text(l10n.offlineMapsDeleteAction)),
+                PopupMenuItem(
+                  value: 'delete',
+                  child: Text(l10n.offlineMapsDeleteAction),
+                ),
               ],
             ),
     );
   }
 
   Future<void> _startUpdate(
-      BuildContext context, WidgetRef ref, AppLocalizations l10n, String name) async {
+    BuildContext context,
+    WidgetRef ref,
+    AppLocalizations l10n,
+    String name,
+  ) async {
     // Same reason as deletion: installing a pack rebuilds the whole style.
     if (navigating) {
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text(l10n.offlineMapsExitNavigationFirst)));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(l10n.offlineMapsExitNavigationFirst)),
+      );
       return;
     }
     final region = ref.read(offlineMapsControllerProvider).regionFor(pack.code);
-    if (region == null) return; // dropped from the corpus since the last refresh
-    await ref.read(offlineMapsControllerProvider.notifier).download(region, name);
+    if (region == null) {
+      return; // dropped from the corpus since the last refresh
+    }
+    await ref
+        .read(offlineMapsControllerProvider.notifier)
+        .download(region, name);
   }
 
-  Future<void> _confirmCancel(BuildContext context, WidgetRef ref, AppLocalizations l10n) async {
+  Future<void> _confirmCancel(
+    BuildContext context,
+    WidgetRef ref,
+    AppLocalizations l10n,
+  ) async {
     // Held before the await: while the dialog is open the poller can install the
     // pack, the list rebuilds and this tile is unmounted — and `ref.read` on a
     // defunct WidgetRef throws a StateError nobody catches. The provider is not
@@ -288,34 +334,49 @@ class _InstalledTile extends ConsumerWidget {
         // does not perform.
         actions: [
           TextButton(
-              onPressed: () => Navigator.pop(dialogContext, false), child: Text(l10n.actionNo)),
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: Text(l10n.actionNo),
+          ),
           TextButton(
-              onPressed: () => Navigator.pop(dialogContext, true), child: Text(l10n.actionYes)),
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: Text(l10n.actionYes),
+          ),
         ],
       ),
     );
     if (confirmed ?? false) await controller.cancel(pack.code);
   }
 
-  Future<void> _confirmDelete(BuildContext context, WidgetRef ref, String name) async {
+  Future<void> _confirmDelete(
+    BuildContext context,
+    WidgetRef ref,
+    String name,
+  ) async {
     final l10n = AppLocalizations.of(context)!;
     // Changing the set of packs rebuilds the whole style, which is a visible
     // break in the frame — not something to do mid-ride.
     if (navigating) {
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text(l10n.offlineMapsExitNavigationFirst)));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(l10n.offlineMapsExitNavigationFirst)),
+      );
       return;
     }
-    final controller = ref.read(offlineMapsControllerProvider.notifier); // see _confirmCancel
+    final controller = ref.read(
+      offlineMapsControllerProvider.notifier,
+    ); // see _confirmCancel
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(
         title: Text(l10n.offlineMapsDeleteTitle(name)),
         actions: [
           TextButton(
-              onPressed: () => Navigator.pop(dialogContext, false), child: Text(l10n.actionCancel)),
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: Text(l10n.actionCancel),
+          ),
           TextButton(
-              onPressed: () => Navigator.pop(dialogContext, true), child: Text(l10n.actionDelete)),
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: Text(l10n.actionDelete),
+          ),
         ],
       ),
     );
@@ -343,16 +404,19 @@ class _PackPickerScreenState extends ConsumerState<_PackPickerScreen> {
     final language = Localizations.localeOf(context).languageCode;
     final state = ref.watch(offlineMapsControllerProvider);
     final installed = {
-      for (final p in ref.watch(installedPacksProvider) ?? const <InstalledPack>[]) p.code,
+      for (final p
+          in ref.watch(installedPacksProvider) ?? const <InstalledPack>[])
+        p.code,
     };
     final navigating = ref.watch(dashEngineStateProvider).navigating;
 
-    final matches = state.regions
-        .where((r) => !installed.contains(r.code))
-        .map((r) => (region: r, name: mapRegionName(r.code, language)))
-        .where((e) => _matches(e.name, e.region.code, _query))
-        .toList()
-      ..sort((a, b) => a.name.compareTo(b.name));
+    final matches =
+        state.regions
+            .where((r) => !installed.contains(r.code))
+            .map((r) => (region: r, name: mapRegionName(r.code, language)))
+            .where((e) => _matches(e.name, e.region.code, _query))
+            .toList()
+          ..sort((a, b) => a.name.compareTo(b.name));
 
     return Scaffold(
       appBar: AppBar(
@@ -387,7 +451,8 @@ class _PackPickerScreenState extends ConsumerState<_PackPickerScreen> {
   static bool _matches(String name, String code, String query) {
     if (query.isEmpty) return true;
     final needle = query.trim().toLowerCase();
-    return name.toLowerCase().contains(needle) || code.toLowerCase().contains(needle);
+    return name.toLowerCase().contains(needle) ||
+        code.toLowerCase().contains(needle);
   }
 }
 
@@ -415,23 +480,38 @@ class _AvailableTile extends ConsumerWidget {
           : const Icon(Icons.download_outlined),
       title: Text(name),
       subtitle: Text(formatByteSize(l10n, region.sizeBytes)),
-      onTap: () => downloading ? _confirmCancel(context, ref, l10n) : _start(context, ref, l10n),
+      onTap: () => downloading
+          ? _confirmCancel(context, ref, l10n)
+          : _start(context, ref, l10n),
     );
   }
 
-  Future<void> _start(BuildContext context, WidgetRef ref, AppLocalizations l10n) async {
+  Future<void> _start(
+    BuildContext context,
+    WidgetRef ref,
+    AppLocalizations l10n,
+  ) async {
     if (navigating) {
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text(l10n.offlineMapsExitNavigationFirst)));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(l10n.offlineMapsExitNavigationFirst)),
+      );
       return;
     }
-    await ref.read(offlineMapsControllerProvider.notifier).download(region, name);
+    await ref
+        .read(offlineMapsControllerProvider.notifier)
+        .download(region, name);
   }
 
-  Future<void> _confirmCancel(BuildContext context, WidgetRef ref, AppLocalizations l10n) async {
+  Future<void> _confirmCancel(
+    BuildContext context,
+    WidgetRef ref,
+    AppLocalizations l10n,
+  ) async {
     // Cancelling is allowed while navigating: an in-flight download hasn't
     // changed the active pack set yet, so stopping it breaks nothing.
-    final controller = ref.read(offlineMapsControllerProvider.notifier); // see _InstalledTile
+    final controller = ref.read(
+      offlineMapsControllerProvider.notifier,
+    ); // see _InstalledTile
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(
@@ -442,9 +522,13 @@ class _AvailableTile extends ConsumerWidget {
         // does not perform.
         actions: [
           TextButton(
-              onPressed: () => Navigator.pop(dialogContext, false), child: Text(l10n.actionNo)),
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: Text(l10n.actionNo),
+          ),
           TextButton(
-              onPressed: () => Navigator.pop(dialogContext, true), child: Text(l10n.actionYes)),
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: Text(l10n.actionYes),
+          ),
         ],
       ),
     );
@@ -460,14 +544,14 @@ class _StopWithProgress extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => SizedBox(
-        width: 40,
-        height: 40,
-        child: Stack(
-          alignment: Alignment.center,
-          children: [
-            CircularProgressIndicator(value: fraction, strokeWidth: 2),
-            const Icon(Icons.stop, size: 18),
-          ],
-        ),
-      );
+    width: 40,
+    height: 40,
+    child: Stack(
+      alignment: Alignment.center,
+      children: [
+        CircularProgressIndicator(value: fraction, strokeWidth: 2),
+        const Icon(Icons.stop, size: 18),
+      ],
+    ),
+  );
 }

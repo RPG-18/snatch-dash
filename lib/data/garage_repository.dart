@@ -6,22 +6,42 @@ import '../models/garage_models.dart';
 /// `SyncRepository.kt` sitting on top of `OpenDashDb`) — screens and
 /// controllers don't change.
 abstract class GarageRepository {
-  Future<List<FuelFillup>> fuelFills(String vehicleId); // newest (highest odometer) first
-  Future<FuelFillup> addFuel(double litres, double cost, int odometerKm, String location, String vehicleId);
+  Future<List<FuelFillup>> fuelFills(
+    String vehicleId,
+  ); // newest (highest odometer) first
+  Future<FuelFillup> addFuel(
+    double litres,
+    double cost,
+    int odometerKm,
+    String location,
+    String vehicleId,
+  );
   Future<void> deleteFuel(FuelFillup fill);
 
   Future<int> odometer(String vehicleId);
   Future<void> setOdometer(int km, String vehicleId);
 
   Future<List<Expense>> expenses(String vehicleId);
-  Future<Expense> addExpense(String category, double amount, String note, int dateMs, String vehicleId);
+  Future<Expense> addExpense(
+    String category,
+    double amount,
+    String note,
+    int dateMs,
+    String vehicleId,
+  );
   Future<void> deleteExpense(Expense expense);
 
   Future<List<MaintenanceItem>> maintenanceItems(String vehicleId);
   Future<void> ensureMaintenance(String vehicleId);
   Future<void> markServiceDone(MaintenanceItem item, int odoKm);
   Future<void> logService(MaintenanceItem item, int odoKm, int intervalKm);
-  Future<MaintenanceItem> addService(String name, String iconKey, int intervalKm, String vehicleId, int currentOdo);
+  Future<MaintenanceItem> addService(
+    String name,
+    String iconKey,
+    int intervalKm,
+    String vehicleId,
+    int currentOdo,
+  );
   Future<void> deleteService(MaintenanceItem item);
 
   Future<List<Ride>> rides();
@@ -68,7 +88,12 @@ class InMemoryGarageRepository implements GarageRepository {
 
   @override
   Future<FuelFillup> addFuel(
-      double litres, double cost, int odometerKm, String location, String vehicleId) async {
+    double litres,
+    double cost,
+    int odometerKm,
+    String location,
+    String vehicleId,
+  ) async {
     final fill = FuelFillup(
       id: _id(),
       dateMs: DateTime.now().millisecondsSinceEpoch,
@@ -79,7 +104,9 @@ class InMemoryGarageRepository implements GarageRepository {
       vehicleId: vehicleId,
     );
     (_fuel[vehicleId] ??= []).add(fill);
-    if (odometerKm > (_odometer[vehicleId] ?? 0)) _odometer[vehicleId] = odometerKm;
+    if (odometerKm > (_odometer[vehicleId] ?? 0)) {
+      _odometer[vehicleId] = odometerKm;
+    }
     return fill;
   }
 
@@ -89,7 +116,8 @@ class InMemoryGarageRepository implements GarageRepository {
   }
 
   @override
-  Future<int> odometer(String vehicleId) async => _odometer[vehicleId] ?? _defaultOdometer;
+  Future<int> odometer(String vehicleId) async =>
+      _odometer[vehicleId] ?? _defaultOdometer;
 
   @override
   Future<void> setOdometer(int km, String vehicleId) async {
@@ -105,7 +133,12 @@ class InMemoryGarageRepository implements GarageRepository {
 
   @override
   Future<Expense> addExpense(
-      String category, double amount, String note, int dateMs, String vehicleId) async {
+    String category,
+    double amount,
+    String note,
+    int dateMs,
+    String vehicleId,
+  ) async {
     final expense = Expense(
       id: _id(),
       dateMs: dateMs,
@@ -148,12 +181,19 @@ class InMemoryGarageRepository implements GarageRepository {
   @override
   Future<void> markServiceDone(MaintenanceItem item, int odoKm) async {
     _replaceMaintenance(
-      item.copyWith(lastDoneOdoKm: odoKm, lastDoneDateMs: DateTime.now().millisecondsSinceEpoch),
+      item.copyWith(
+        lastDoneOdoKm: odoKm,
+        lastDoneDateMs: DateTime.now().millisecondsSinceEpoch,
+      ),
     );
   }
 
   @override
-  Future<void> logService(MaintenanceItem item, int odoKm, int intervalKm) async {
+  Future<void> logService(
+    MaintenanceItem item,
+    int odoKm,
+    int intervalKm,
+  ) async {
     _replaceMaintenance(
       item.copyWith(
         lastDoneOdoKm: odoKm,
@@ -165,7 +205,12 @@ class InMemoryGarageRepository implements GarageRepository {
 
   @override
   Future<MaintenanceItem> addService(
-      String name, String iconKey, int intervalKm, String vehicleId, int currentOdo) async {
+    String name,
+    String iconKey,
+    int intervalKm,
+    String vehicleId,
+    int currentOdo,
+  ) async {
     final item = MaintenanceItem(
       id: _id(),
       name: name,

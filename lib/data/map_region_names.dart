@@ -40,7 +40,10 @@ const Map<String, _Name> _names = {
   'ru-kgd': (ru: 'Калининградская область', en: 'Kaliningrad Oblast'),
   'ru-kgn': (ru: 'Курганская область', en: 'Kurgan Oblast'),
   'ru-kha': (ru: 'Хабаровский край', en: 'Khabarovsk Krai'),
-  'ru-khm': (ru: 'Ханты-Мансийский автономный округ', en: 'Khanty-Mansi Autonomous Okrug'),
+  'ru-khm': (
+    ru: 'Ханты-Мансийский автономный округ',
+    en: 'Khanty-Mansi Autonomous Okrug',
+  ),
   'ru-kir': (ru: 'Кировская область', en: 'Kirov Oblast'),
   'ru-kk': (ru: 'Хакасия', en: 'Khakassia'),
   'ru-kl': (ru: 'Калмыкия', en: 'Kalmykia'),
@@ -50,12 +53,18 @@ const Map<String, _Name> _names = {
   'ru-kr': (ru: 'Карелия', en: 'Karelia'),
   'ru-krs': (ru: 'Курская область', en: 'Kursk Oblast'),
   'ru-kya': (ru: 'Красноярский край', en: 'Krasnoyarsk Krai'),
-  'ru-len-spe': (ru: 'Санкт-Петербург и Ленинградская область', en: 'Saint Petersburg and Leningrad Oblast'),
+  'ru-len-spe': (
+    ru: 'Санкт-Петербург и Ленинградская область',
+    en: 'Saint Petersburg and Leningrad Oblast',
+  ),
   'ru-lip': (ru: 'Липецкая область', en: 'Lipetsk Oblast'),
   'ru-mag': (ru: 'Магаданская область', en: 'Magadan Oblast'),
   'ru-me': (ru: 'Марий Эл', en: 'Mari El'),
   'ru-mo': (ru: 'Мордовия', en: 'Mordovia'),
-  'ru-mos-mow': (ru: 'Москва и Московская область', en: 'Moscow and Moscow Oblast'),
+  'ru-mos-mow': (
+    ru: 'Москва и Московская область',
+    en: 'Moscow and Moscow Oblast',
+  ),
   'ru-mur': (ru: 'Мурманская область', en: 'Murmansk Oblast'),
   'ru-nen': (ru: 'Ненецкий автономный округ', en: 'Nenets Autonomous Okrug'),
   'ru-ngr': (ru: 'Новгородская область', en: 'Novgorod Oblast'),
@@ -91,9 +100,15 @@ const Map<String, _Name> _names = {
   'ru-vla': (ru: 'Владимирская область', en: 'Vladimir Oblast'),
   'ru-vlg': (ru: 'Вологодская область', en: 'Vologda Oblast'),
   'ru-vor': (ru: 'Воронежская область', en: 'Voronezh Oblast'),
-  'ru-yan': (ru: 'Ямало-Ненецкий автономный округ', en: 'Yamalo-Nenets Autonomous Okrug'),
+  'ru-yan': (
+    ru: 'Ямало-Ненецкий автономный округ',
+    en: 'Yamalo-Nenets Autonomous Okrug',
+  ),
   'ru-yar': (ru: 'Ярославская область', en: 'Yaroslavl Oblast'),
-  'ru-yev': (ru: 'Еврейская автономная область', en: 'Jewish Autonomous Oblast'),
+  'ru-yev': (
+    ru: 'Еврейская автономная область',
+    en: 'Jewish Autonomous Oblast',
+  ),
   'ru-zab': (ru: 'Забайкальский край', en: 'Zabaykalsky Krai'),
 };
 

@@ -189,6 +189,17 @@ class DashEngineController(
     /** Serialises open against close, so "one live session" is a property and not a hope. */
     private val sessionLock = Mutex()
 
+    /**
+     * Whether the session now current ever completed its handshake.
+     *
+     * Read when one fails: a failure after READY says something about the ride, a failure
+     * before it can also say the SSID was wrong — see the Failed branch.
+     */
+    @Volatile private var sessionReachedReady = false
+
+    /** The pending re-handshake, if one is due — see [scheduleAuthRetry]. */
+    private var authRetryJob: Job? = null
+
     private var wifiWatchJob: Job? = null
     private var mediaForwardJob: Job? = null
     private var callForwardJob: Job? = null
@@ -374,7 +385,21 @@ class DashEngineController(
             current.flatMapLatest { it?.events ?: emptyFlow() }.collect { ev ->
                 when (ev) {
                     is SessionEvent.Button -> onButton?.invoke(ev.code)
-                    is SessionEvent.Failed -> publishState(errorMessage = ev.reason)
+                    is SessionEvent.Failed -> {
+                        publishState(errorMessage = ev.reason)
+                        // A handshake that was refused over a working link, on a name no
+                        // rider ever typed, is evidence about the name: that is what a
+                        // different Royal Enfield in range looks like. Only this layer can
+                        // tell — the Wi-Fi layer sees a healthy association either way.
+                        // Narrowly [handshakeRefused], because a socket error or a taken
+                        // port would otherwise blacklist the CORRECT SSID for the rest of
+                        // the connection.
+                        if (ev.handshakeRefused && !sessionReachedReady &&
+                            wifiManager.usingScanGuess
+                        ) {
+                            wifiManager.rejectScanGuess()
+                        }
+                    }
                     // Not an error to show the rider: the link and our sockets are fine, the
                     // dash stopped talking. The IDLE it comes with is what drives the retry
                     // in the state collector below.
@@ -388,6 +413,7 @@ class DashEngineController(
                     // point — otherwise one stale `RE_*` entry would be remembered across
                     // restarts and would disable discovery for good.
                     SessionEvent.Ready -> {
+                        sessionReachedReady = true
                         val live = wifiManager.state.value.ssid
                         if (dashConfig.needsDiscovery && live.isNotBlank() &&
                             live != dashConfig.ssidPrefix
@@ -410,6 +436,10 @@ class DashEngineController(
         // reported as "gave up — 120000ms without reaching STREAMING". The timer is
         // re-armed by the session collector below on the first non-STREAMING state.
         cancelGiveupTimer()
+        // Including the pending re-handshake: a retry left over from the previous attempt
+        // would otherwise open a session in the middle of this method, behind the back of
+        // the teardown above and of [sessionStarted], which this method has just cleared.
+        authRetryJob?.cancel(); authRetryJob = null
         wifiWatchJob?.cancel()
         sessionStarted = false
         wifiWatchJob = scope.launch {
@@ -497,6 +527,14 @@ class DashEngineController(
                 RideDiagnostics.log("session", "→ $st")
                 publishState()
                 if (st == DashState.STREAMING) cancelGiveupTimer() else armGiveupTimer()
+                // A session that is getting somewhere makes a pending retry pointless, and
+                // firing it anyway is what tore down three good handshakes on 2026-09-19:
+                // each one had authenticated in ~200 ms and was still walking the 1790 ms
+                // of nav-entry pauses when the next retry landed.
+                if (st != DashState.IDLE && st != DashState.ERROR) {
+                    authRetryJob?.cancel()
+                    authRetryJob = null
+                }
                 when (st) {
                     // Guarded: assembleCurrent() reads the pack directory and
                     // prepare() parses the style, and either can throw. Uncaught,
@@ -548,22 +586,7 @@ class DashEngineController(
                     // exception, handled in the flatMapLatest above: on a `connect()` over a
                     // wreck, [current] still IS the wreck when this collector starts, and the
                     // replayed READY/STREAMING is the wreck's.
-                    DashState.ERROR, DashState.IDLE -> {
-                        val wifi = wifiManager.state.value
-                        if (sessionStarted && wifi.status == WifiConnStatus.CONNECTED && authRetries < MAX_AUTH_RETRIES) {
-                            delay(AUTH_RETRY_DELAY_MS)
-                            val settled = sessionState
-                            if (wifiManager.state.value.status == WifiConnStatus.CONNECTED &&
-                                (settled == DashState.IDLE || settled == DashState.ERROR)
-                            ) {
-                                // Counted only when a session was actually opened: a
-                                // refusal above means the previous attempt is still alive
-                                // and this retry cost nothing, so it must not spend one of
-                                // the four.
-                                if (openSession(wifi.ssid)) authRetries++
-                            }
-                        }
-                    }
+                    DashState.ERROR, DashState.IDLE -> scheduleAuthRetry()
                     else -> {}
                 }
             }
@@ -617,6 +640,7 @@ class DashEngineController(
                 return@withLock false
             }
             closeCurrent(farewell = false)
+            sessionReachedReady = false
             current.value = DashSession.open(
                 ssid = ssid,
                 chrome = chrome,
@@ -693,6 +717,7 @@ class DashEngineController(
         streamJob?.cancel()
         sessionWatchJob?.cancel(); sessionWatchJob = null
         sessionEventJob?.cancel(); sessionEventJob = null
+        authRetryJob?.cancel(); authRetryJob = null
         wifiWatchJob?.cancel(); wifiWatchJob = null
         sessionStarted = false
         stopMediaForwarding()
@@ -730,6 +755,40 @@ class DashEngineController(
         // "rider asked to disconnect" apart from "session died on its own", which otherwise both
         // surface as the same DashStage.idle/error and would otherwise fire a spurious alert.
         publishState(explicitDisconnect = true)
+    }
+
+    /**
+     * Arrange one more handshake on the same Wi-Fi, [AUTH_RETRY_DELAY_MS] from now.
+     *
+     * In its own job rather than as a `delay` inside the state collector, and that is the
+     * whole point. Collecting is sequential, so a `delay` there stops the collector: the
+     * stale IDLEs a closing session leaves in `flatMapLatest`'s buffer each cost 1.5 s, and
+     * the READY of the session that eventually works is read seconds after it happened. A
+     * job also has the property the inline wait could not have — it can be cancelled the
+     * moment the session starts getting somewhere, which is what the collector now does.
+     *
+     * One at a time: a second stale IDLE must not queue a second attempt behind the first.
+     */
+    private fun scheduleAuthRetry() {
+        if (authRetryJob?.isActive == true) return
+        val wifi = wifiManager.state.value
+        if (!sessionStarted || wifi.status != WifiConnStatus.CONNECTED) return
+        if (authRetries >= MAX_AUTH_RETRIES) return
+        authRetryJob = scope.launch {
+            delay(AUTH_RETRY_DELAY_MS)
+            // Re-read rather than trust the values above: the wait is long enough for the
+            // link to go away and for the session to have recovered on its own.
+            val settled = wifiManager.state.value
+            if (settled.status != WifiConnStatus.CONNECTED) return@launch
+            if (sessionState != DashState.IDLE && sessionState != DashState.ERROR) return@launch
+            // Counted only when a session was actually opened: [openSession] refuses while
+            // the previous attempt is still alive, and a retry that cost nothing must not
+            // spend one of the four.
+            // [settled], not the name captured before the wait: prefix discovery can
+            // resolve the exact SSID during those 1.5 s, and retrying with the stale prefix
+            // would hand the handshake a name the dash refuses.
+            if (openSession(settled.ssid)) authRetries++
+        }
     }
 
     /** Start the give-up countdown if it isn't already running (idempotent) — see

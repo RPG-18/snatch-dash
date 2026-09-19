@@ -70,6 +70,24 @@ class DashSsidCandidatesTest {
     }
 
     @Test
+    fun `a name already found not to be the dash is skipped`() {
+        // The whole point of remembering a rejection: the next request reads the same stale
+        // scan, and without this it would pick the same wrong network again, for ever.
+        assertEquals(
+            listOf("RE_BBBB"),
+            dashSsidCandidates(listOf("RE_AAAA", "RE_BBBB"), "RE_", exclude = setOf("RE_AAAA")),
+        )
+    }
+
+    @Test
+    fun `excluding the only candidate leaves nothing to guess`() {
+        assertEquals(
+            emptyList(),
+            dashSsidCandidates(listOf("RE_AAAA"), "RE_", exclude = setOf("RE_AAAA")),
+        )
+    }
+
+    @Test
     fun `the prefix matches at the start only`() {
         assertEquals(emptyList(), dashSsidCandidates(listOf("MY_RE_9CP9"), "RE_"))
     }

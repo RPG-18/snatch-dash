@@ -62,8 +62,16 @@ internal sealed interface SessionEvent {
      * The session is over and will not recover on its own; [reason] is what to show the
      * rider. The state says which kind: ERROR for a fault of ours (the handshake timed out,
      * a port was taken), IDLE for a link that died under a socket that was working.
+     *
+     * @param handshakeRefused the link worked and the dash still never completed the
+     *   handshake. That is a statement about WHO is on the other end, which is why it is
+     *   reported separately: it is the only failure that can incriminate an SSID guessed
+     *   from a scan. A socket error or a taken port says nothing about the name.
      */
-    data class Failed(val reason: String) : SessionEvent
+    data class Failed(
+        val reason: String,
+        val handshakeRefused: Boolean = false,
+    ) : SessionEvent
 
     /**
      * Nothing has arrived from the dash for [DashSession.RX_IDLE_TIMEOUT_MS].
@@ -424,7 +432,12 @@ internal class DashSession private constructor(
             // withTimeout signals by throwing a CancellationException subclass, so the
             // general clause would treat a real auth timeout as a deliberate teardown and
             // report nothing at all.
-            fail("Auth timed out — no 07 01 01 from dash. Check SSID matches '$ssid'.")
+            // The one failure that implicates the SSID: datagrams flowed for the whole
+            // window and the far end still never said 07 01 01.
+            fail(
+                "Auth timed out — no 07 01 01 from dash. Check SSID matches '$ssid'.",
+                handshakeRefused = true,
+            )
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -441,12 +454,12 @@ internal class DashSession private constructor(
      * completion handler, and the caller learns why from the event rather than from a
      * callback that could fire twice.
      */
-    private fun fail(reason: String) {
+    private fun fail(reason: String, handshakeRefused: Boolean = false) {
         if (!finished.compareAndSet(false, true)) return
         DebugLog.e(TAG, { "ERROR — $reason" })
         RideDiagnostics.log("error", "session fail: $reason")
         setState(DashState.ERROR)
-        eventChannel.trySend(SessionEvent.Failed(reason))
+        eventChannel.trySend(SessionEvent.Failed(reason, handshakeRefused))
         outbox.close()
         job.cancel()
     }

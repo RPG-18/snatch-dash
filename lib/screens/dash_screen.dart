@@ -12,6 +12,7 @@ import '../nav/geo_point.dart';
 import '../state/dash_engine_state.dart';
 import '../state/offline_maps_controller.dart';
 import '../state/route_controller.dart';
+import '../util/app_logger.dart';
 import '../util/location_permission.dart';
 import 'debug/maneuver_glyph_probe.dart';
 
@@ -210,7 +211,17 @@ class DashScreen extends ConsumerWidget {
                 // state stream, not by awaiting the call that started it.
                 unawaited(DashEngine.instance.connect());
               } else {
-                unawaited(DashEngine.instance.disconnect());
+                // Caught, unlike connect(): disconnect now suspends on the native side
+                // until the farewell packets have left, so it can come back as a
+                // PlatformException — a detaching engine, or a teardown that threw.
+                // Fire-and-forget plus a throwing future is an unhandled async error that
+                // reaches nobody; the rider's own signal is still the state stream.
+                unawaited(
+                  DashEngine.instance.disconnect().catchError(
+                    (Object e, StackTrace st) =>
+                        talker.handle(e, st, 'disconnect() failed'),
+                  ),
+                );
               }
             },
             icon: Icon(

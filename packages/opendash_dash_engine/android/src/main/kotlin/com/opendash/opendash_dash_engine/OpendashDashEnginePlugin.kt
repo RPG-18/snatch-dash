@@ -10,11 +10,13 @@ import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import io.flutter.plugin.common.MethodChannel.MethodCallHandler
 import io.flutter.plugin.common.MethodChannel.Result
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 /**
@@ -130,7 +132,40 @@ class OpendashDashEnginePlugin : FlutterPlugin, MethodCallHandler, EventChannel.
             // the farewell packets have to actually leave before the socket closes (see
             // DashEngineController.disconnect). result.success must be called on the main
             // thread, which [scope] is.
-            "disconnect" -> scope.launch { c.disconnect(); result.success(null) }
+            //
+            // **Every path answers.** A MethodChannel call that is never replied to leaves
+            // its Dart future pending for the life of the process — the rider taps
+            // "Отключить" and the button stays spinning forever. Before this method became
+            // suspend, a throw left `onMethodCall` and reached Dart as a PlatformException;
+            // moving the work into a coroutine lost that, which is a regression rather than
+            // a simplification. Two ways to go unanswered and both are covered: the
+            // coroutine throws, and the scope is already cancelled — where `launch` does
+            // nothing at all, silently.
+            "disconnect" -> if (!scope.isActive) {
+                result.error("ENGINE_GONE", "Plugin detached before disconnect could run", null)
+            } else {
+                scope.launch {
+                    try {
+                        c.disconnect()
+                        result.success(null)
+                    } catch (e: CancellationException) {
+                        // Answer, then keep unwinding: the scope is going away under us
+                        // (detach), and the channel may already be torn down — hence the
+                        // runCatching around the reply rather than around the rethrow.
+                        runCatching {
+                            result.error("CANCELLED", "disconnect was cancelled", null)
+                        }
+                        throw e
+                    } catch (e: Exception) {
+                        DebugLog.e(TAG, { "disconnect failed" }, e)
+                        result.error(
+                            "DISCONNECT_FAILED",
+                            "${e.javaClass.simpleName}: ${e.message}",
+                            null,
+                        )
+                    }
+                }
+            }
 
             "setDestination" -> {
                 c.setDestination(

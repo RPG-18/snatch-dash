@@ -112,15 +112,48 @@ class DashWifiManager(
     private var resolvedSsid: String? = null
 
     /**
-     * The prefix this attempt came from, while it is running on a name guessed from a scan.
+     * The name [markConnected] has already announced for the CURRENT request.
+     *
+     * Split out of [resolvedSsid] because the two want different lifetimes and sharing one
+     * field broke whichever of them was cleared last. This one only suppresses a second
+     * "link up" for a link already announced, so it belongs to one request and is cleared
+     * by [release]. [resolvedSsid] answers "what did we last successfully resolve", which
+     * [connect]'s `sameTarget` reads to tell a reconnect to the same dash from a new one —
+     * so it must outlive a request, and clearing it in [release] turned every "Send to
+     * Dash" during a reconnect into a new target: `hasConnectedOnce` reset, and the next
+     * `onUnavailable` taking the "never connected" exit.
+     */
+    private var announcedSsid: String? = null
+
+    /**
+     * A dash name taken from a scan, together with the prefix it came from.
      *
      * A scan entry is a hypothesis, not a fact: the cache can be minutes old (six, on the
-     * phone this was written for) and can hold a network that is not this rider's dash. So
-     * the guess is used for ONE attempt and reverted the moment that attempt fails, and it
-     * is never written to the config — [DashEngineController] does that only once the dash
-     * has accepted the name inside the handshake.
+     * phone this was written for) and can hold a network that is not this rider's dash. The
+     * guess is therefore never written to the config — [DashEngineController] does that only
+     * once the dash has accepted the name inside the handshake — and it has exactly one
+     * lifecycle, kept in this one place:
+     *
+     *   born in [resolvePrefixFromScan], withdrawn by [revertScanGuess] when the attempt
+     *   fails at the Wi-Fi layer, withdrawn by [rejectScanGuess] when the link came up but
+     *   the dash never authenticated, and forgotten in [connect] and [disconnect].
+     *
+     * Both halves live together because both are needed: the ssid is what we request, the
+     * prefix is what we go back to, and what the caller of [connect] still asks for.
      */
-    private var scanGuessFrom: String? = null
+    private data class ScanGuess(val prefix: String, val ssid: String)
+
+    @Volatile private var scanGuess: ScanGuess? = null
+
+    /**
+     * Names a scan offered that turned out not to be the dash, for this [connect] only.
+     *
+     * Without this, withdrawing a guess is a loop: the next request reads the same stale
+     * scan, finds the same wrong network and tries it again. Cleared whenever the rider
+     * starts a new connection, because "not the dash" was a fact about one attempt, not
+     * about the network for ever.
+     */
+    private val rejectedGuesses = mutableSetOf<String>()
 
     /**
      * Session-level connection-quality counters, reset in [connect] and reported once in
@@ -207,6 +240,13 @@ class DashWifiManager(
         val sameTarget = wantConnected && when {
             ssid == pendingSsid && prefixMatch == pendingPrefix -> true
             !prefixMatch && ssid == resolvedSsid -> true
+            // The mirror of the arm above, for a discovery that has not finished yet: we
+            // are chasing this very prefix under a name a scan handed us, so a caller still
+            // asking for the prefix means the same dash. Without it a "Send to Dash" during
+            // a reconnect reads as a different target, clears [hasConnectedOnce], and the
+            // next onUnavailable takes the "never connected" exit — turning endless retries
+            // into one 30-second attempt ending in ERROR.
+            prefixMatch && ssid == scanGuess?.prefix -> true
             else -> false
         }
         wantConnected    = true
@@ -214,6 +254,11 @@ class DashWifiManager(
         pendingPassword  = password
         pendingPrefix    = prefixMatch
         resolvedSsid     = null
+        // A new connection starts with no hypotheses and no grudges: the guess belongs to
+        // the attempt that made it, and "this network is not the dash" was a fact about one
+        // attempt rather than about the network.
+        scanGuess        = null
+        rejectedGuesses.clear()
         if (!sameTarget) {
             hasConnectedOnce = false
             reconnectCount   = 0
@@ -242,7 +287,7 @@ class DashWifiManager(
     @SuppressLint("MissingPermission")
     fun findDashSsid(prefix: String): String? = try {
         val wifi = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
-        val candidates = dashSsidCandidates(wifi.scanResults.map { it.SSID }, prefix)
+        val candidates = dashSsidCandidates(wifi.scanResults.map { it.SSID }, prefix, rejectedGuesses)
         val pick = when (candidates.size) {
             0 -> null
             1 -> candidates.single()
@@ -290,24 +335,48 @@ class DashWifiManager(
             "prefix '${maskSsid(pendingSsid)}*' resolved from scan results to " +
                 "'${maskSsid(exact)}' — requesting it by name",
         )
-        scanGuessFrom = pendingSsid
+        scanGuess = ScanGuess(prefix = pendingSsid, ssid = exact)
         pendingSsid = exact
         pendingPrefix = false
         // Deliberately NOT [onSsidResolved] and NOT [resolvedSsid]: both mean "this is the
-        // dash's name", and nothing has confirmed that yet. See [scanGuessFrom].
+        // dash's name", and nothing has confirmed that yet. See [ScanGuess].
     }
 
     /** Put the prefix back after an attempt on a guessed name got nowhere. */
     private fun revertScanGuess() {
-        val prefix = scanGuessFrom ?: return
-        scanGuessFrom = null
+        val guess = scanGuess ?: return
+        scanGuess = null
         RideDiagnostics.warn(
             TAG,
-            "the scanned name '${maskSsid(pendingSsid)}' led nowhere — back to discovery by " +
-                "'${maskSsid(prefix)}*'",
+            "the scanned name '${maskSsid(guess.ssid)}' led nowhere — back to discovery by " +
+                "'${maskSsid(guess.prefix)}*'",
         )
-        pendingSsid = prefix
+        pendingSsid = guess.prefix
         pendingPrefix = true
+    }
+
+    /** Whether the name currently being requested came from a scan rather than the rider. */
+    val usingScanGuess: Boolean get() = scanGuess != null
+
+    /**
+     * The link came up on a guessed name and the dash never authenticated on it — so that
+     * network is not this dash. Withdraw the guess, remember it, and start over.
+     *
+     * The Wi-Fi layer cannot notice this on its own: association succeeded, the link is
+     * healthy, and nothing below the K1G handshake can tell "the wrong Royal Enfield" from
+     * "the right one having a bad day". Only the session knows, so only the session's owner
+     * can call this — see DashEngineController's Failed branch.
+     */
+    fun rejectScanGuess() {
+        val guess = scanGuess ?: return
+        rejectedGuesses += guess.ssid
+        RideDiagnostics.warn(
+            TAG,
+            "'${maskSsid(guess.ssid)}' associated but never authenticated — not this dash; " +
+                "ignoring it for the rest of this connection",
+        )
+        revertScanGuess()
+        if (wantConnected) requestNetwork()
     }
 
     fun disconnect() {
@@ -323,6 +392,7 @@ class DashWifiManager(
         RideDiagnostics.log(TAG, "session summary: reconnects=$reconnectCount downtime=${downtimeAccumMs}ms")
         wantConnected = false
         hasConnectedOnce = false
+        scanGuess = null
         reconnectJob?.cancel()
         release()
         releaseCellularDefault()
@@ -476,6 +546,11 @@ class DashWifiManager(
                         val scanned = findDashSsid(pendingSsid)
                         if (scanned != null) {
                             DebugLog.i(TAG) { "SSID redacted, but the scan names it: '${maskSsid(scanned)}'" }
+                            // Recorded as a guess like any other, so [rejectScanGuess] can
+                            // withdraw it. Without this the pick made here was unfalsifiable:
+                            // `usingScanGuess` stayed false, nothing could blacklist it, and
+                            // every retry read the same scan and chose the same wrong network.
+                            scanGuess = ScanGuess(prefix = pendingSsid, ssid = scanned)
                             markConnected(scanned)
                             return
                         }
@@ -505,7 +580,7 @@ class DashWifiManager(
                     DebugLog.w(TAG) { "Capabilities changed with redacted WiFi SSID${fallbackNote()}" }
                     return
                 }
-                if (ssid == resolvedSsid) return
+                if (ssid == announcedSsid) return
                 resolvedSsid = ssid
                 this@DashWifiManager.network = network
                 DebugLog.i(TAG) { "Resolved dash SSID via capabilities: '${maskSsid(ssid)}'" }
@@ -594,6 +669,7 @@ class DashWifiManager(
         // The name arrived, whichever of the five routes brought it — stand the timeout down.
         ssidResolveJob?.cancel()
         ssidResolveJob = null
+        announcedSsid = ssid
         hasConnectedOnce = true
         if (downSinceMs != 0L) {
             downtimeAccumMs += monotonicMs() - downSinceMs
@@ -803,6 +879,13 @@ class DashWifiManager(
         ssidPollJob = null
         ssidResolveJob?.cancel()
         ssidResolveJob = null
+        // Per request, not per connect(). [onCapabilitiesChanged] skips an SSID equal to
+        // this field to avoid re-announcing the same link, and while it was only cleared in
+        // connect() that dedupe outlived the connection it belonged to: a reconnect to the
+        // same network was silently dropped there and never reached [markConnected], so the
+        // request sat in REQUESTING until the resolve timeout called it "Android hid the
+        // name" — with the name in plain sight.
+        announcedSsid = null
         stopRssiPolling()
         networkCallback?.let { runCatching { cm.unregisterNetworkCallback(it) } }
         networkCallback = null
@@ -820,12 +903,21 @@ class DashWifiManager(
  * not, duplicates are dropped because one AP appears once per band, and a blank prefix
  * matches NOTHING rather than everything — a rider who clears the prefix field must not
  * have the app join whichever network happens to be nearest.
+ *
+ * @param exclude names already tried and found not to be the dash. Filtering here rather
+ *   than at the call site is what makes the rule checkable: everything else about choosing
+ *   a network needs a live `WifiManager`, and a rejection that is not applied turns
+ *   withdrawing a guess into a loop over the same stale scan.
  */
-internal fun dashSsidCandidates(scanned: List<String?>, prefix: String): List<String> {
+internal fun dashSsidCandidates(
+    scanned: List<String?>,
+    prefix: String,
+    exclude: Set<String> = emptySet(),
+): List<String> {
     if (prefix.isBlank()) return emptyList()
     return scanned.asSequence()
         .mapNotNull { it?.trim('"')?.takeIf { s -> s.isNotBlank() } }
-        .filter { it.startsWith(prefix) }
+        .filter { it.startsWith(prefix) && it !in exclude }
         .distinct()
         .toList()
 }

@@ -330,17 +330,18 @@ class DashEngineController(
         // collector that would tear the session down is a separate coroutine resumed on the
         // next dispatch — and a method-channel call from Dart gets in between. Same treatment
         // the collector's own else-branch gives, just from the path that overtook it.
-        if (sessionLive) {
+        // Not closed here: this method runs on Main and cannot wait. The close goes into
+        // the WiFi collector below, ahead of its collect loop — see there for why it must
+        // be that coroutine and not a `scope.launch` of its own. Held by reference, not as
+        // a flag, because the session collector below also needs to know WHICH session is
+        // the wreck: it must not act on that session's replayed state.
+        val wreck: DashSession? = if (sessionLive) current.value else null
+        if (wreck != null) {
             RideDiagnostics.warn(
                 "connect",
-                "connect() over a $sessionState session whose link is $linkStatus — tearing it down first",
+                "connect() over a $sessionState session whose link is $linkStatus — " +
+                    "it will be closed once the WiFi request is in, before any new session",
             )
-            // Launched, not awaited: this method runs on Main and the new session is not
-            // created here but in the WiFi collector below, seconds later when the link
-            // comes up. Awaiting matters even less than the seconds suggest — both run
-            // under [sessionLock], so the close is ordered before the open whichever way
-            // the scheduler takes them.
-            scope.launch { closeSession(farewell = false) }
         }
         RideDiagnostics.init(context)
         RideDiagnostics.start("connect")
@@ -420,6 +421,22 @@ class DashEngineController(
             } else {
                 wifiManager.connect(dashConfig.ssidPrefix, dashConfig.password, prefixMatch = true)
             }
+            // The wreck from `connect()` above is closed HERE, in the coroutine that will
+            // open the replacement, and before that coroutine starts collecting. Sequential
+            // code is the ordering: no collect step — and so no [openSession] — can run
+            // until this returns. It used to be a separate `scope.launch`, on the theory
+            // that [sessionLock] orders the close before the open; the lock serialises,
+            // it does not order. Had the link come up before that launch reached the
+            // lock, [openSession] would have found the wreck still READY/STREAMING,
+            // refused it as a live session, and left [sessionStarted] false — then the
+            // close would land, [current] would go null, and the IDLE that follows takes
+            // the retry branch, which needs sessionStarted. Nothing opens; the connect
+            // dies at the 120 s give-up timer.
+            //
+            // After the WiFi request, not before it: the request is fire-and-forget, so
+            // the radio negotiates while the sockets close, and a CONNECTED that arrives
+            // meanwhile is simply the StateFlow's current value when collect begins.
+            if (wreck != null) closeSession(farewell = false)
             wifiManager.state.collect { wifi ->
                 RideDiagnostics.log(
                     "wifi",
@@ -465,8 +482,17 @@ class DashEngineController(
             // the connection dies silently at the 120 s give-up timer. The intermediate
             // `current.value = null` does not save it: closing an already-dead session
             // never suspends, so flatMapLatest is never given the chance to collect it.
+            // The wreck reads as "no session". Its real state is READY or STREAMING — that
+            // is what made it a wreck rather than a finished session — and a replay of
+            // that READY into this fresh collector ran [startStream] in full (style parse,
+            // snapshotter, MediaCodec, sender threads) on a session the WiFi collector was
+            // closing at that very moment, then all of it again for the replacement. As
+            // IDLE it takes the retry branch, which needs [sessionStarted] and so does
+            // nothing; the WiFi collector closes it and [current] moves on.
             current
-                .flatMapLatest { it?.state ?: flowOf(DashState.IDLE) }
+                .flatMapLatest { s ->
+                    if (s == null || s === wreck) flowOf(DashState.IDLE) else s.state
+                }
                 .collect { st ->
                 RideDiagnostics.log("session", "→ $st")
                 publishState()
@@ -518,7 +544,10 @@ class DashEngineController(
                     // session [wifiWatchJob] had already restarted, and cancel a handshake
                     // 1.5 s into its life every single time. A session is CONNECTING from the
                     // moment [DashSession.open] returns, and [current] swaps atomically, so
-                    // this collector cannot be handed a corpse at all any more.
+                    // this collector cannot be handed a corpse at all any more — with one
+                    // exception, handled in the flatMapLatest above: on a `connect()` over a
+                    // wreck, [current] still IS the wreck when this collector starts, and the
+                    // replayed READY/STREAMING is the wreck's.
                     DashState.ERROR, DashState.IDLE -> {
                         val wifi = wifiManager.state.value
                         if (sessionStarted && wifi.status == WifiConnStatus.CONNECTED && authRetries < MAX_AUTH_RETRIES) {

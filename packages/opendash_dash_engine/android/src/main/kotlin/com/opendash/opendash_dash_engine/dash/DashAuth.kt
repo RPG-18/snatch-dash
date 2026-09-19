@@ -44,13 +44,35 @@ internal class DashAuth(private val ssid: String) {
     private var exponent: BigInteger? = null
     private var keySent = false
 
+    /**
+     * Whether this dash has ever sent any part of its public key — set once, never cleared.
+     *
+     * `@Volatile` because it is the one field read off the RX coroutine: DashSession's auth
+     * wait polls it from another thread, and a stale read there produces exactly the
+     * mid-handshake `q3c.e` that must never be sent.
+     *
+     * Deliberately NOT reset by [reset]. A rejection clears [modulus]/[exponent] so the dash
+     * can offer a fresh key, and if this were cleared with them, the "the dash ignored us
+     * entirely" prod would come back to life after every rejection and keep asking past
+     * the bounded reject budget — the unbounded offer/reject/re-offer loop that budget
+     * exists to stop.
+     */
+    @Volatile var dashHasSpoken = false
+        private set
+
     var sessionKey: ByteArray? = null
         private set
 
     fun ingest(msg: DashMessage): AuthEvent {
         when (msg) {
-            is DashMessage.AuthModulus -> modulus = BigInteger(1, msg.value)
-            is DashMessage.AuthExponent -> exponent = BigInteger(1, msg.value)
+            is DashMessage.AuthModulus -> {
+                dashHasSpoken = true
+                modulus = BigInteger(1, msg.value)
+            }
+            is DashMessage.AuthExponent -> {
+                dashHasSpoken = true
+                exponent = BigInteger(1, msg.value)
+            }
             is DashMessage.AuthResult ->
                 return if (msg.accepted) AuthEvent.Confirmed else AuthEvent.Rejected
             // Everything else, including a 07 with a sub nobody has mapped: not ours.

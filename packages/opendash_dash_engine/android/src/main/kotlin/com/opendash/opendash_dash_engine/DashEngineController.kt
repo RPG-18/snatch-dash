@@ -336,9 +336,10 @@ class DashEngineController(
                 "connect() over a $sessionState session whose link is $linkStatus — tearing it down first",
             )
             // Launched, not awaited: this method runs on Main and the new session is not
-            // created here but in the WiFi collector below, seconds later when the link comes
-            // up — and [openSession] closes whatever is still current before opening anything,
-            // so the ordering that matters is guaranteed there rather than here.
+            // created here but in the WiFi collector below, seconds later when the link
+            // comes up. Awaiting matters even less than the seconds suggest — both run
+            // under [sessionLock], so the close is ordered before the open whichever way
+            // the scheduler takes them.
             scope.launch { closeSession(farewell = false) }
         }
         RideDiagnostics.init(context)
@@ -428,9 +429,12 @@ class DashEngineController(
                 )
                 publishState()
                 if (wifi.status == WifiConnStatus.CONNECTED && !sessionStarted) {
-                    sessionStarted = true
                     val resolvedSsid = if (ssid.isNotBlank()) ssid else wifi.ssid
-                    openSession(resolvedSsid)
+                    // From the result, not before it: [openSession] can refuse when a
+                    // session is still running, and setting the flag regardless would claim
+                    // a session that does not exist — leaving recovery to the retry branch
+                    // for no reason.
+                    sessionStarted = openSession(resolvedSsid)
                 } else if (wifi.status != WifiConnStatus.CONNECTED && sessionStarted) {
                     // The network the running session's sockets are bound to (via
                     // Network.bindSocket) is gone — whether WifiManager is about to retry
@@ -523,8 +527,11 @@ class DashEngineController(
                             if (wifiManager.state.value.status == WifiConnStatus.CONNECTED &&
                                 (settled == DashState.IDLE || settled == DashState.ERROR)
                             ) {
-                                authRetries++
-                                openSession(wifi.ssid)
+                                // Counted only when a session was actually opened: a
+                                // refusal above means the previous attempt is still alive
+                                // and this retry cost nothing, so it must not spend one of
+                                // the four.
+                                if (openSession(wifi.ssid)) authRetries++
                             }
                         }
                     }
@@ -548,7 +555,7 @@ class DashEngineController(
      * No farewell: every caller here is reconnecting because the link or the handshake
      * failed, so the two farewell packets could only be written into a socket nobody reads.
      */
-    private suspend fun openSession(ssid: String) = withContext(Dispatchers.IO) {
+    private suspend fun openSession(ssid: String): Boolean = withContext(Dispatchers.IO) {
         // The whole thing on IO, and the lock INSIDE it — that order is what keeps
         // [dispose] from deadlocking. Every caller here is a collector on
         // Dispatchers.Main; if the lock were taken on Main, releasing it would need Main
@@ -561,6 +568,25 @@ class DashEngineController(
         // and the synchronous ride-file append in DashSocket.reportSocketOptions — and
         // before stage 4 all of that happened inside a coroutine already on IO.
         sessionLock.withLock {
+            // Refuse to replace a session that is still getting somewhere, and do it HERE,
+            // inside the lock, where the answer cannot go stale between the question and
+            // the act. The retry in the state collector asks the same question before its
+            // 1.5 s wait, and on 2026-09-19 that was not enough: three sessions in a row
+            // authenticated in ~200 ms and were torn down by the next retry a second later,
+            // because reaching READY also needs the 1790 ms of captured nav-entry pauses.
+            // The dash had started answering; the app spent five seconds destroying its own
+            // successful handshakes.
+            val live = current.value
+            if (live != null &&
+                live.state.value != DashState.IDLE &&
+                live.state.value != DashState.ERROR
+            ) {
+                RideDiagnostics.log(
+                    "connect",
+                    "not replacing a session that is still ${live.state.value} — letting it finish",
+                )
+                return@withLock false
+            }
             closeCurrent(farewell = false)
             current.value = DashSession.open(
                 ssid = ssid,
@@ -574,6 +600,7 @@ class DashEngineController(
                 context = Dispatchers.IO +
                     (scope.coroutineContext[CoroutineExceptionHandler] ?: EmptyCoroutineContext),
             ) { DashSocket(wifiManager.network) }
+            true
         }
     }
 

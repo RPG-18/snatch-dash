@@ -195,7 +195,85 @@ class DashSessionTest {
         // One in the burst plus five retries. The sixth rejection is answered with silence:
         // a dash that has said no six times is not about to say yes.
         assertEquals(6, r.wire.sent.count { it.bytes.toHex() == authRequest })
+
+        // And it stays silent through the re-ask interval. A rejection clears the key
+        // halves, so a prod keyed on "has the dash offered a key" would read false here and
+        // start asking again every 2 s — walking straight past the budget just spent.
+        advanceTimeBy(6_000)
+        runCurrent()
+        assertEquals(
+            6,
+            r.wire.sent.count { it.bytes.toHex() == authRequest },
+            "the reject budget is a budget, not a pause",
+        )
         assertEquals(DashState.AUTHENTICATING, r.session.state.value, "still waiting, not failed")
+        r.close()
+    }
+
+    @Test
+    fun `a silent dash is asked again, and the ask is the same packet`() = runTest {
+        val r = rig()
+        advanceTimeBy(200)
+        runCurrent()
+        r.wire.clearSent()
+
+        // Six seconds of the dash saying nothing at all — which is what the 2026-09-19
+        // Huawei log holds: telemetry and a restart blob, but never a byte of type 07.
+        advanceTimeBy(6_000)
+        runCurrent()
+
+        val authRequest = enc(DashCommand.AuthRequest)
+        assertEquals(
+            3,
+            r.wire.sent.count { it.bytes.toHex() == authRequest },
+            "one re-ask every 2 s while the dash stays silent",
+        )
+        r.close()
+    }
+
+    @Test
+    fun `the re-asking stops as soon as the dash offers its key`() = runTest {
+        val r = rig()
+        advanceTimeBy(200)
+        runCurrent()
+
+        // Only the modulus: the dash has started its half of the handshake but has not
+        // finished it. Another q3c.e here would restart ITS side while DashAuth.keySent
+        // keeps ours from answering the second offer — a stall we would have caused.
+        val pub = rsaKey()
+        r.wire.deliver(incoming(0x07, 0x00, pub.modulus.toByteArray()))
+        runCurrent()
+        r.wire.clearSent()
+
+        advanceTimeBy(6_000)
+        runCurrent()
+
+        assertEquals(
+            0,
+            r.wire.sent.count { it.bytes.toHex() == enc(DashCommand.AuthRequest) },
+            "mid-handshake, the dash is left alone",
+        )
+        r.close()
+    }
+
+    @Test
+    fun `a dash that answers late still connects`() = runTest {
+        val r = rig()
+        advanceTimeBy(200)
+        runCurrent()
+
+        // 2026-09-18, Huawei: the request went out at 9:40:42 and the answer came at
+        // 9:41:01. Nineteen seconds is past AUTH_TIMEOUT, but five seconds is not, and
+        // before the re-asking a dash that ignored the one burst was never asked again.
+        advanceTimeBy(5_000)
+        runCurrent()
+        offerPubKey(r)
+        runCurrent()
+        r.wire.deliver(incoming(0x07, 0x01, byteArrayOf(0x01, 0x02)))
+        advanceTimeBy(1_800)
+        runCurrent()
+
+        assertEquals(DashState.READY, r.session.state.value)
         r.close()
     }
 
@@ -528,10 +606,12 @@ class DashSessionTest {
 
     private fun enc(cmd: DashCommand) = K1GCodec.encode(cmd).toHex()
 
+    private fun rsaKey(): RSAPublicKey = KeyPairGenerator.getInstance("RSA")
+        .apply { initialize(1024) }.generateKeyPair().public as RSAPublicKey
+
     /** Feeds the dash's RSA halves and returns the key it offered. */
     private fun offerPubKey(r: Rig): RSAPublicKey {
-        val pub = KeyPairGenerator.getInstance("RSA")
-            .apply { initialize(1024) }.generateKeyPair().public as RSAPublicKey
+        val pub = rsaKey()
         r.wire.deliver(incoming(0x07, 0x00, pub.modulus.toByteArray()))
         r.wire.deliver(incoming(0x07, 0x03, pub.publicExponent.toByteArray()))
         return pub

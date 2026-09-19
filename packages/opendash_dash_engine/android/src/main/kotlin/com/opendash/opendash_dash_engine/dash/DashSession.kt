@@ -111,6 +111,22 @@ internal class DashSession private constructor(
         private const val AUTH_TIMEOUT = 15_000L
 
         /**
+         * How often to ask for auth again while the dash stays completely silent.
+         *
+         * The burst used to be asked once, and a dash that was not ready to answer it
+         * never got a second chance — the 2026-09-19 Huawei log has 15 s of telemetry,
+         * a decoder-open ack and the `0B 02` restart blob from a dash that simply never
+         * sent its RSA key, followed by an answer in 64 ms the moment a fresh burst went
+         * out. The dash's screen still said "connected", because the hostname announce
+         * in the same burst DID land: the rider sees a connected dash showing nothing.
+         *
+         * 2 s: the dash answers in 64-200 ms when it can, so this never stacks a second
+         * request on one in flight, and it costs at most seven extra packets across the
+         * whole window — in a window where we otherwise send nothing at all.
+         */
+        private const val AUTH_REASK_INTERVAL_MS = 2_000L
+
+        /**
          * While connected, a healthy dash keeps sending SOMETHING on :2002 — heartbeat
          * replies, 0C/0F telemetry, button events. Silence this long means it is gone even
          * though the socket and the Wi-Fi link still look fine locally (still associated but
@@ -364,7 +380,35 @@ internal class DashSession private constructor(
             sendScript(Scripts.initialBurst(HOSTNAME, timeSyncNow()))
 
             DebugLog.i(TAG) { "Waiting up to ${AUTH_TIMEOUT}ms for auth (07 01 01)…" }
-            withTimeout(AUTH_TIMEOUT) { authConfirmed.await() }
+            withTimeout(AUTH_TIMEOUT) {
+                // Ask again while the dash says nothing — see AUTH_REASK_INTERVAL_MS. It
+                // stops for good the instant the dash offers any part of its key: from
+                // there it is mid-handshake, and another q3c.e would restart its side while
+                // DashAuth.keySent keeps ours from answering the second offer. "For good"
+                // is why this reads [DashAuth.dashHasSpoken] and not the live key fields —
+                // a rejection clears those, and prodding a dash that is busy rejecting us
+                // would walk straight past MAX_AUTH_REJECT_RETRIES.
+                val nagger = launch {
+                    var asks = 0
+                    while (!auth.dashHasSpoken) {
+                        delay(AUTH_REASK_INTERVAL_MS)
+                        if (auth.dashHasSpoken) break
+                        outbox.trySend(DashCommand.AuthRequest)
+                        asks++
+                        if (asks == 1) {
+                            RideDiagnostics.log(
+                                "auth",
+                                "no answer to the burst — re-asking every ${AUTH_REASK_INTERVAL_MS}ms",
+                            )
+                        }
+                    }
+                }
+                try {
+                    authConfirmed.await()
+                } finally {
+                    nagger.cancel()
+                }
+            }
             DebugLog.i(TAG) { "Authenticated ✓" }
             RideDiagnostics.log("auth", "authenticated (07 01 01) — entering nav mode")
 

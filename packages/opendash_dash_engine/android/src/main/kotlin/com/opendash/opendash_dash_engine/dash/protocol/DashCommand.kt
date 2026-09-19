@@ -3,13 +3,13 @@ package com.opendash.opendash_dash_engine.dash.protocol
 /**
  * One thing we say to the dash, named — the outgoing half of [DashMessage].
  *
- * Every variant here used to be a function in `DashCommands` returning bytes, and about half
+ * Every variant here used to be a function in `DashCommands` — deleted in stage 4 — and about half
  * of them were hex string literals copied out of captures. The literals were not the problem;
  * losing what the bytes MEAN was. `0016000200000000020100054B314720000556000155` is a
  * projection keep-alive, and nothing but a comment said so.
  *
  * The rule the whole type obeys: **bytes on the wire do not change.** Golden tests written
- * before any of this (`DashCommandsGoldenTest`, 40 of them) are the judge, and they compare
+ * before any of this (`K1GGoldenTest`, 40 of them) are the judge, and they compare
  * against the captures, not against this code.
  */
 internal sealed interface DashCommand {
@@ -75,11 +75,11 @@ internal sealed interface DashCommand {
 
     /** The instruction bubble: glyph, distance to the turn, distance remaining. */
     data class ActiveNav(
-        val maneuver: Int = DashCommands.NAV_MANEUVER_STRAIGHT,
+        val maneuver: Int = DashGlyphs.NAV_MANEUVER_STRAIGHT,
         val primaryDist: Int = 500,
-        val primaryUnit: Int = DashCommands.NAV_UNIT_METERS,
+        val primaryUnit: Int = DashGlyphs.NAV_UNIT_METERS,
         val totalDist: Int = 500,
-        val totalUnit: Int = DashCommands.NAV_UNIT_METERS,
+        val totalUnit: Int = DashGlyphs.NAV_UNIT_METERS,
         val projectionOn: Boolean = true,
     ) : DashCommand
 
@@ -107,4 +107,24 @@ internal sealed interface DashCommand {
         val seq: Int,
         val segCount: Int = 1 + tlvs.size,
     ) : DashCommand
+}
+
+/**
+ * [DashCommand.TimeSync] for the phone's clock right now.
+ *
+ * The only place in the engine that reads the clock to build a packet, and it is here rather
+ * than in [Scripts] or [DashSession] so it can be tested: a script is data, and data that
+ * reads the clock cannot be compared against a capture.
+ *
+ * The dash has no clock source of its own — it shows whatever the phone last fed it, which is
+ * why this goes out every 30 s. better-dash replays a hardcoded capture time (0x0E 0x33 0x34 =
+ * 14:51:52) once, leaving the dash clock both wrong and frozen.
+ */
+internal fun timeSyncNow(): DashCommand.TimeSync {
+    val cal = java.util.Calendar.getInstance()
+    return DashCommand.TimeSync(
+        hour = cal.get(java.util.Calendar.HOUR_OF_DAY),
+        minute = cal.get(java.util.Calendar.MINUTE),
+        second = cal.get(java.util.Calendar.SECOND),
+    )
 }

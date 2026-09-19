@@ -2,7 +2,7 @@ package com.opendash.opendash_dash_engine
 
 import androidx.annotation.NonNull
 import com.opendash.opendash_dash_engine.dash.map.GeoPoint
-import com.opendash.opendash_dash_engine.dash.protocol.DashCommands
+import com.opendash.opendash_dash_engine.dash.protocol.DashGlyphs
 import com.opendash.opendash_dash_engine.util.DebugLog
 import io.flutter.embedding.engine.plugins.FlutterPlugin
 import io.flutter.plugin.common.EventChannel
@@ -126,7 +126,11 @@ class OpendashDashEnginePlugin : FlutterPlugin, MethodCallHandler, EventChannel.
             "getPlatformVersion" -> result.success("Android ${android.os.Build.VERSION.RELEASE}")
 
             "connect" -> { c.connect(); result.success(null) }
-            "disconnect" -> { c.disconnect(); result.success(null) }
+            // Launched, and Dart waits for the whole thing: disconnect suspends now because
+            // the farewell packets have to actually leave before the socket closes (see
+            // DashEngineController.disconnect). result.success must be called on the main
+            // thread, which [scope] is.
+            "disconnect" -> scope.launch { c.disconnect(); result.success(null) }
 
             "setDestination" -> {
                 c.setDestination(
@@ -144,7 +148,7 @@ class OpendashDashEnginePlugin : FlutterPlugin, MethodCallHandler, EventChannel.
                 c.setNavState(
                     remainingMeters = call.argument<Double>("remainingMeters"),
                     nextTurnMeters = call.argument<Double>("nextTurnMeters"),
-                    maneuver = call.argument<Int>("maneuver") ?: DashCommands.NAV_MANEUVER_STRAIGHT,
+                    maneuver = call.argument<Int>("maneuver") ?: DashGlyphs.NAV_MANEUVER_STRAIGHT,
                     etaHHMM = call.argument<String>("etaHHMM"),
                     isOffRoute = call.argument<Boolean>("offRoute") ?: false,
                     points = rawPoints.map { GeoPoint(it[0], it[1]) },

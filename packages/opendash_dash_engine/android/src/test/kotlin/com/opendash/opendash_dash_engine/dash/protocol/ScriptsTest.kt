@@ -52,8 +52,8 @@ class ScriptsTest {
     fun `the burst encodes to the bytes the golden test pins`() {
         val bytes = Scripts.initialBurst("OpenDash", timeSync).map { K1GCodec.encode(it.cmd).toHex() }
 
-        assertEquals(DashCommands.authRequest().toHex(), bytes[0])
-        assertEquals(DashCommands.hostnameAnnounce("OpenDash").toHex(), bytes[1])
+        assertEquals(K1GCodec.encode(DashCommand.AuthRequest).toHex(), bytes[0])
+        assertEquals(K1GCodec.encode(DashCommand.HostnameAnnounce("OpenDash")).toHex(), bytes[1])
         assertEquals(
             listOf(
                 "0016000200000000020100054b314720030557000155",
@@ -110,16 +110,16 @@ class ScriptsTest {
 
         assertEquals(
             listOf(
-                DashCommands.navContext().toHex(),
-                DashCommands.emptyLists().toHex(),
-                DashCommands.routeCard("Home", projectionOn = false).toHex(),
-                DashCommands.routeCard("Home", projectionOn = false).toHex(),
-                DashCommands.routeCard("Home", projectionOn = false).toHex(),
-                DashCommands.routeCard("Home", projectionOn = false).toHex(),
-                DashCommands.projectionFrame().toHex(),
-                DashCommands.navPlaceholder().toHex(),
-                DashCommands.navStart().toHex(),
-                DashCommands.routeCard("Home", projectionOn = true).toHex(),
+                K1GCodec.encode(DashCommand.NavContext).toHex(),
+                K1GCodec.encode(DashCommand.EmptyLists).toHex(),
+                K1GCodec.encode(DashCommand.RouteCard("Home", projectionOn = false)).toHex(),
+                K1GCodec.encode(DashCommand.RouteCard("Home", projectionOn = false)).toHex(),
+                K1GCodec.encode(DashCommand.RouteCard("Home", projectionOn = false)).toHex(),
+                K1GCodec.encode(DashCommand.RouteCard("Home", projectionOn = false)).toHex(),
+                K1GCodec.encode(DashCommand.ProjectionFrame).toHex(),
+                K1GCodec.encode(DashCommand.NavPlaceholder).toHex(),
+                K1GCodec.encode(DashCommand.NavStart).toHex(),
+                K1GCodec.encode(DashCommand.RouteCard("Home", projectionOn = true)).toHex(),
             ),
             bytes,
         )

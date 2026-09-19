@@ -26,7 +26,7 @@ import kotlin.test.assertTrue
  * moved, and does the dash still accept them". That answer needs hardware, so §4 of the
  * plan says to stop and show the byte diff to a human rather than update the expectation.
  */
-class DashCommandsGoldenTest {
+class K1GGoldenTest {
 
     // ── Fixed packets: every byte a literal ───────────────────────────────
     //
@@ -38,7 +38,7 @@ class DashCommandsGoldenTest {
     fun `auth request is 08 04 with value 01`() {
         assertEquals(
             "0016000200000000020100054b314720000804000101",
-            DashCommands.authRequest().toHex(),
+            authRequest().toHex(),
         )
     }
 
@@ -46,7 +46,7 @@ class DashCommandsGoldenTest {
     fun `nav context is 05 2E with value 1E`() {
         assertEquals(
             "0016000200000000020100054b31472000052e00011e",
-            DashCommands.navContext().toHex(),
+            navContext().toHex(),
         )
     }
 
@@ -55,7 +55,7 @@ class DashCommandsGoldenTest {
         assertEquals(
             "002a000600000000020100054b31472000" +
                 "052f000100" + "0530000100" + "0531000100" + "0532000100" + "0533000100",
-            DashCommands.emptyLists().toHex(),
+            emptyLists().toHex(),
         )
     }
 
@@ -63,19 +63,19 @@ class DashCommandsGoldenTest {
     fun `nav start is 06 80 with value 0B`() {
         assertEquals(
             "0016000200000000020100054b31472000068000010b",
-            DashCommands.navStart().toHex(),
+            navStart().toHex(),
         )
         // Same TLV as a button ack for code 0x0B — 06 80 is the dash's generic event slot,
         // not a button-specific one. Stated because a reader who assumes otherwise will
         // misread the one packet инвариант 5 says must be sent exactly once per session.
-        assertEquals(DashCommands.buttonAck(0x0B).toHex(), DashCommands.navStart().toHex())
+        assertEquals(buttonAck(0x0B).toHex(), navStart().toHex())
     }
 
     @Test
     fun `nav placeholder is 06 0A with two zero bytes`() {
         assertEquals(
             "0017000200000000020100054b31472000060a00020000",
-            DashCommands.navPlaceholder().toHex(),
+            navPlaceholder().toHex(),
         )
     }
 
@@ -85,19 +85,19 @@ class DashCommandsGoldenTest {
         // keep-alive, 06 05 is the projection switch.
         assertEquals(
             "0016000200000000020100054b314720000556000155",
-            DashCommands.projectionFrame().toHex(),
+            projectionFrame().toHex(),
         )
         assertEquals(
             "0016000200000000020100054b3147200005560001aa",
-            DashCommands.projectionStop().toHex(),
+            projectionStop().toHex(),
         )
         assertEquals(
             "0016000200000000020100054b314720000605000155",
-            DashCommands.projectionOn().toHex(),
+            projectionOn().toHex(),
         )
         assertEquals(
             "0016000200000000020100054b3147200006050001aa",
-            DashCommands.projectionOff().toHex(),
+            projectionOff().toHex(),
         )
     }
 
@@ -106,11 +106,11 @@ class DashCommandsGoldenTest {
         // Mandatory replies to the dash's 09 06 55 / 09 04 55 notifies (инвариант 7).
         assertEquals(
             "0016000200000000020100054b314720000611000155",
-            DashCommands.frameDecodedIdr().toHex(),
+            frameDecodedIdr().toHex(),
         )
         assertEquals(
             "0016000200000000020100054b314720000612000155",
-            DashCommands.frameDecodedP().toHex(),
+            frameDecodedP().toHex(),
         )
     }
 
@@ -118,7 +118,7 @@ class DashCommandsGoldenTest {
     fun `call clear is an 05 22 card holding a single NUL`() {
         assertEquals(
             "0016000200000000020100054b314720000522000100",
-            DashCommands.callClear().toHex(),
+            callClear().toHex(),
         )
     }
 
@@ -128,11 +128,11 @@ class DashCommandsGoldenTest {
     fun `button ack echoes the code back in 06 80`() {
         assertEquals(
             "0016000200000000020100054b314720000680000122",
-            DashCommands.buttonAck(DashCommands.BTN_22).toHex(),
+            buttonAck(DashGlyphs.BTN_22).toHex(),
         )
         assertEquals(
             "0016000200000000020100054b314720000680000105",
-            DashCommands.buttonAck(DashCommands.BTN_05).toHex(),
+            buttonAck(DashGlyphs.BTN_05).toHex(),
         )
     }
 
@@ -141,8 +141,8 @@ class DashCommandsGoldenTest {
         assertEquals(
             listOf<Byte>(0x05, 0x06, 0x07, 0x09, 0x0A, 0x22),
             listOf(
-                DashCommands.BTN_05, DashCommands.BTN_06, DashCommands.BTN_07,
-                DashCommands.BTN_09, DashCommands.BTN_0A, DashCommands.BTN_22,
+                DashGlyphs.BTN_05, DashGlyphs.BTN_06, DashGlyphs.BTN_07,
+                DashGlyphs.BTN_09, DashGlyphs.BTN_0A, DashGlyphs.BTN_22,
             ),
         )
     }
@@ -153,7 +153,7 @@ class DashCommandsGoldenTest {
     fun `auth send key is a 21-byte header plus exactly the ciphertext`() {
         val ciphertext = ByteArray(128) { (it and 0xFF).toByte() }
 
-        val pkt = DashCommands.authSendKey(ciphertext)
+        val pkt = authSendKey(ciphertext)
 
         assertEquals(149, pkt.size, "0x95 = 21 header bytes + 128 of RSA output")
         assertEquals(
@@ -171,7 +171,7 @@ class DashCommandsGoldenTest {
         // saying why, so this fails at the call site instead.
         for (size in listOf(0, 127, 129, 256)) {
             assertFailsWith<IllegalArgumentException>("$size bytes must be rejected") {
-                DashCommands.authSendKey(ByteArray(size))
+                authSendKey(ByteArray(size))
             }
         }
     }
@@ -187,24 +187,24 @@ class DashCommandsGoldenTest {
             "0049000b00000000020100054b314720" +
                 "0006080001050610000141060300015506040001a2060f0001aa" +
                 "0601000101054c000113052d00020000051b0001190521000132054d000132",
-            DashCommands.heartbeat(25).toHex(),
+            heartbeat(25).toHex(),
         )
     }
 
     @Test
     fun `heartbeat is 25C by default — the value DashSession actually sends`() {
-        assertEquals(DashCommands.heartbeat(25).toHex(), DashCommands.heartbeat().toHex())
+        assertEquals(heartbeat(25).toHex(), heartbeat().toHex())
     }
 
     @Test
     fun `the temperature offset puts -40C at 00 and 215C at FF`() {
-        assertEquals(0x00, tempByteOf(DashCommands.heartbeat(-40)))
-        assertEquals(0xFF, tempByteOf(DashCommands.heartbeat(215)))
+        assertEquals(0x00, tempByteOf(heartbeat(-40)))
+        assertEquals(0xFF, tempByteOf(heartbeat(215)))
         // The ends of the encodable range. Past them the byte wraps rather than clamping.
         // Nothing goes there today — DashSession sends the default — and this states what
         // would happen if a real sensor ever fed it.
-        assertEquals(0xFF, tempByteOf(DashCommands.heartbeat(-41)))
-        assertEquals(0x00, tempByteOf(DashCommands.heartbeat(216)))
+        assertEquals(0xFF, tempByteOf(heartbeat(-41)))
+        assertEquals(0x00, tempByteOf(heartbeat(216)))
     }
 
     /**
@@ -229,14 +229,14 @@ class DashCommandsGoldenTest {
     fun `hostname announce wraps the name in 06 0B with a trailing NUL`() {
         assertEquals(
             "001e000200000000020100054b31472001" + "060b0009" + "4f70656e44617368" + "00",
-            DashCommands.hostnameAnnounce("OpenDash").toHex(),
+            hostnameAnnounce("OpenDash").toHex(),
             "TLV length 0x0009 is the 8 name bytes plus the NUL",
         )
     }
 
     @Test
     fun `hostname announce truncates at 200 bytes and still terminates`() {
-        val pkt = DashCommands.hostnameAnnounce("A".repeat(250))
+        val pkt = hostnameAnnounce("A".repeat(250))
 
         assertEquals(222, pkt.size, "16 header + 1 seq + 4 TLV header + 200 + NUL")
         assertEquals("00de000200000000020100054b31472001060b00c9", pkt.copyOfRange(0, 21).toHex())
@@ -250,7 +250,7 @@ class DashCommandsGoldenTest {
         // (201 bytes) lose the last one's trailing byte and leave a dangling e2 86 before
         // the NUL. Nothing sends a name like this — the announce carries "OpenDash" — and a
         // future fix should make this test fail rather than change behaviour in silence.
-        val pkt = DashCommands.hostnameAnnounce("→".repeat(67))
+        val pkt = hostnameAnnounce("→".repeat(67))
 
         assertEquals(222, pkt.size)
         assertEquals("e28600", pkt.copyOfRange(219, 222).toHex(), "half a character, then the NUL")
@@ -260,7 +260,7 @@ class DashCommandsGoldenTest {
 
     @Test
     fun `time sync is 06 06 with three bytes of wall clock`() {
-        val pkt = DashCommands.timeSync()
+        val pkt = timeSync()
 
         assertEquals(
             "0018000200000000020100054b3147200006060003",
@@ -289,9 +289,9 @@ class DashCommandsGoldenTest {
         val burst = burstBytes()
 
         assertEquals(9, burst.size)
-        assertEquals(DashCommands.authRequest().toHex(), burst[0].toHex(), "#0 auth request")
+        assertEquals(authRequest().toHex(), burst[0].toHex(), "#0 auth request")
         assertEquals(
-            DashCommands.hostnameAnnounce("OpenDash").toHex(),
+            hostnameAnnounce("OpenDash").toHex(),
             burst[1].toHex(),
             "#1 hostname announce",
         )
@@ -357,7 +357,7 @@ class DashCommandsGoldenTest {
                 "0508000430333033" + "0554000130" + "050900020000" + "0546000110" +
                 "050a000155" + "050c000104" + "050b0006303031303030" + "0555000120" +
                 "06050001aa" + "060d0001aa",
-            DashCommands.routeCard(capturedTitle, projectionOn = false).toHex(),
+            routeCard(capturedTitle, projectionOn = false).toHex(),
             "differs from NAV_TEMPLATE only at seq (25 → 00), 05 05 (000a → 0000) " +
                 "and 05 09 (004f → 0000)",
         )
@@ -368,7 +368,7 @@ class DashCommandsGoldenTest {
         // The template says 7.9 km remaining and 1.0 km to the turn, from someone else's
         // ride in France. Re-sending that unpatched at 1 Hz would put believable, wrong
         // numbers in front of the rider — worse than a zero, which reads as "no route".
-        val card = DashCommands.routeCard(capturedTitle)
+        val card = routeCard(capturedTitle)
 
         assertEquals(0x0000, u16At(card, 55), "05 05 secondary distance")
         assertEquals(0x0000, u16At(card, 84), "05 09 total distance")
@@ -376,8 +376,8 @@ class DashCommandsGoldenTest {
 
     @Test
     fun `projection on flips the 06 05 byte and nothing else`() {
-        val off = DashCommands.routeCard(capturedTitle, projectionOn = false)
-        val on = DashCommands.routeCard(capturedTitle, projectionOn = true)
+        val off = routeCard(capturedTitle, projectionOn = false)
+        val on = routeCard(capturedTitle, projectionOn = true)
 
         assertEquals(off.size, on.size)
         val differing = off.indices.filter { off[it] != on[it] }
@@ -388,17 +388,17 @@ class DashCommandsGoldenTest {
 
     @Test
     fun `every live field lands at its own offset in the suffix`() {
-        val card = DashCommands.routeCard(
+        val card = routeCard(
             title = capturedTitle,
             projectionOn = true,
-            maneuver = DashCommands.NAV_MANEUVER_TURN_RIGHT,
+            maneuver = DashGlyphs.NAV_MANEUVER_TURN_RIGHT,
             // Both units are deliberately the OPPOSITE of what the template carries
             // (05 06 is 0x30 metres, 05 46 is 0x10 km-tenths). Passing the matching value
             // would assert a byte that was already there and hold nothing down: dropping
             // both patch1 calls from routeCard would still leave this test green.
-            primaryUnit = DashCommands.NAV_UNIT_KM_TENTHS,
+            primaryUnit = DashGlyphs.NAV_UNIT_KM_TENTHS,
             totalDist = 0x1234,
-            totalUnit = DashCommands.NAV_UNIT_METERS,
+            totalUnit = DashGlyphs.NAV_UNIT_METERS,
             etaHHMM = "1845",
         )
 
@@ -421,7 +421,7 @@ class DashCommandsGoldenTest {
     @Test
     fun `an ETA that is not four characters is ignored, leaving the template's`() {
         for (bad in listOf("", "184", "18455", "18:45")) {
-            val card = DashCommands.routeCard(capturedTitle, etaHHMM = bad)
+            val card = routeCard(capturedTitle, etaHHMM = bad)
             assertEquals(
                 "30333033",
                 card.copyOfRange(71, 75).toHex(),
@@ -432,7 +432,7 @@ class DashCommandsGoldenTest {
 
     @Test
     fun `a title longer than 60 bytes is truncated and still NUL-terminated`() {
-        val card = DashCommands.routeCard("B".repeat(100))
+        val card = routeCard("B".repeat(100))
 
         assertEquals("0501003d", card.copyOfRange(17, 21).toHex(), "TLV length 0x3D = 60 + NUL")
         assertContentEquals(ByteArray(60) { 0x42 }, card.copyOfRange(21, 81))
@@ -443,7 +443,7 @@ class DashCommandsGoldenTest {
 
     @Test
     fun `a shorter title shortens the packet, template length is not baked in`() {
-        val card = DashCommands.routeCard("Go")
+        val card = routeCard("Go")
 
         assertEquals("05010003", card.copyOfRange(17, 21).toHex())
         assertEquals(109, card.size)
@@ -456,7 +456,7 @@ class DashCommandsGoldenTest {
         // The whole reason routeCard searches from the END. A destination name whose bytes
         // spell 05 09 00 02 would otherwise absorb the total-distance patch, corrupting the
         // name AND leaving the real field showing the French ride's 7.9 km.
-        val card = DashCommands.routeCard("\u0005\u0009\u0000\u0002XY")
+        val card = routeCard("\u0005\u0009\u0000\u0002XY")
 
         assertEquals("05010007", card.copyOfRange(17, 21).toHex())
         assertContentEquals(
@@ -484,7 +484,7 @@ class DashCommandsGoldenTest {
             "003b000900000000020100054b31472000" +
                 "0502000109" + "0504000201f4" + "0506000130" + "0509000201f4" +
                 "0546000130" + "050a000155" + "0605000155" + "060d0001aa",
-            DashCommands.activeNavPacket().toHex(),
+            activeNavPacket().toHex(),
             "seg_count 0009 = header segment + eight TLVs",
         )
     }
@@ -495,14 +495,14 @@ class DashCommandsGoldenTest {
             "003b000900000000020100054b31472000" +
                 "0502000109" + "05040002ffff" + "0506000130" + "0509000201f4" +
                 "0546000130" + "050a000155" + "0605000155" + "060d0001aa",
-            DashCommands.activeNavPacket(primaryDist = 0xFFFF).toHex(),
+            activeNavPacket(primaryDist = 0xFFFF).toHex(),
         )
     }
 
     @Test
     fun `projection off flips 06 05 to AA here too`() {
-        val on = DashCommands.activeNavPacket(projectionOn = true)
-        val off = DashCommands.activeNavPacket(projectionOn = false)
+        val on = activeNavPacket(projectionOn = true)
+        val off = activeNavPacket(projectionOn = false)
 
         val differing = on.indices.filter { on[it] != off[it] }
         assertEquals(1, differing.size)
@@ -515,15 +515,15 @@ class DashCommandsGoldenTest {
         // What Maneuver.dashCode on the Dart side resolves to. Confirmed a byte at a time
         // against the physical dash; 0x0B in particular is "roundabout, exit 1", NOT the
         // neutral arrow the upstream project claimed it was.
-        assertEquals(0x09, DashCommands.NAV_MANEUVER_STRAIGHT)
-        assertEquals(0x14, DashCommands.NAV_MANEUVER_TURN_LEFT)
-        assertEquals(0x15, DashCommands.NAV_MANEUVER_TURN_RIGHT)
-        assertEquals(0x0A, DashCommands.ROUNDABOUT_CW_BASE)
-        assertEquals(0x46, DashCommands.ROUNDABOUT_CW_EXIT10_BASE)
-        assertEquals(0x31, DashCommands.ROUNDABOUT_CCW_BASE)
-        assertEquals(0x50, DashCommands.ROUNDABOUT_CCW_EXIT10_BASE)
-        assertEquals(0x10, DashCommands.NAV_UNIT_KM_TENTHS)
-        assertEquals(0x30, DashCommands.NAV_UNIT_METERS)
+        assertEquals(0x09, DashGlyphs.NAV_MANEUVER_STRAIGHT)
+        assertEquals(0x14, DashGlyphs.NAV_MANEUVER_TURN_LEFT)
+        assertEquals(0x15, DashGlyphs.NAV_MANEUVER_TURN_RIGHT)
+        assertEquals(0x0A, DashGlyphs.ROUNDABOUT_CW_BASE)
+        assertEquals(0x46, DashGlyphs.ROUNDABOUT_CW_EXIT10_BASE)
+        assertEquals(0x31, DashGlyphs.ROUNDABOUT_CCW_BASE)
+        assertEquals(0x50, DashGlyphs.ROUNDABOUT_CCW_EXIT10_BASE)
+        assertEquals(0x10, DashGlyphs.NAV_UNIT_KM_TENTHS)
+        assertEquals(0x30, DashGlyphs.NAV_UNIT_METERS)
     }
 
     // ── Media and call cards ──────────────────────────────────────────────
@@ -532,7 +532,7 @@ class DashCommandsGoldenTest {
     fun `now playing is 05 0D with three NUL-separated fields`() {
         assertEquals(
             "001a000200000000020100054b31472000" + "050d0005" + "41" + "00" + "42" + "00" + "43",
-            DashCommands.nowPlaying("A", "B", "C").toHex(),
+            nowPlaying("A", "B", "C").toHex(),
             "no trailing NUL — the last field runs to the end of the TLV",
         )
     }
@@ -541,13 +541,13 @@ class DashCommandsGoldenTest {
     fun `empty media fields still produce both separators`() {
         assertEquals(
             "0017000200000000020100054b31472000050d00020000",
-            DashCommands.nowPlaying("", "", "").toHex(),
+            nowPlaying("", "", "").toHex(),
         )
     }
 
     @Test
     fun `an ASCII media field is cut at twenty bytes`() {
-        val pkt = DashCommands.nowPlaying("T".repeat(50), "L".repeat(50), "R".repeat(50))
+        val pkt = nowPlaying("T".repeat(50), "L".repeat(50), "R".repeat(50))
 
         assertEquals(83, pkt.size)
         assertEquals("050d003e", pkt.copyOfRange(17, 21).toHex(), "3 × 20 + 2 separators = 0x3E")
@@ -563,7 +563,7 @@ class DashCommandsGoldenTest {
         // String.take(20) runs before UTF-8 encoding, so a Cyrillic title yields a 40-byte
         // field. Pinned because the dash's own field width is unknown: "obviously" changing
         // this to a byte limit is a protocol change, not a cleanup.
-        val pkt = DashCommands.nowPlaying("Ю".repeat(30), "", "")
+        val pkt = nowPlaying("Ю".repeat(30), "", "")
 
         assertEquals(63, pkt.size)
         assertEquals("050d002a", pkt.copyOfRange(17, 21).toHex(), "0x2A = 40 bytes + 2 separators")
@@ -574,13 +574,13 @@ class DashCommandsGoldenTest {
     fun `call notify is a NUL-terminated 05 22 card`() {
         assertEquals(
             "001b000200000000020100054b31472000" + "05220006" + "4d6f746f72" + "00",
-            DashCommands.callNotify("Motor").toHex(),
+            callNotify("Motor").toHex(),
         )
     }
 
     @Test
     fun `call notify truncates to twenty characters and keeps its terminator`() {
-        val pkt = DashCommands.callNotify("N".repeat(50))
+        val pkt = callNotify("N".repeat(50))
 
         assertEquals(42, pkt.size)
         assertEquals("05220015", pkt.copyOfRange(17, 21).toHex(), "20 name bytes + NUL")
@@ -592,6 +592,58 @@ class DashCommandsGoldenTest {
     fun `an empty caller name is a bare NUL, which is exactly call clear`() {
         // Not something to rely on, but worth knowing: clearing the card and notifying an
         // unnamed caller put identical bytes on the wire, so the dash cannot tell them apart.
-        assertEquals(DashCommands.callClear().toHex(), DashCommands.callNotify("").toHex())
+        assertEquals(callClear().toHex(), callNotify("").toHex())
     }
 }
+
+// ── The commands under test, by name ──────────────────────────────────────
+//
+// `DashCommands` was deleted in stage 4: [K1GCodec] builds every packet now, and the wrappers
+// existed only so the call sites could migrate one at a time. These stay because this file is
+// about "the bytes for a NAMED command" — spelling `K1GCodec.encode(DashCommand.NavStart)` at
+// each of sixty assertions would bury the name under the mechanism. Each is one call; nothing
+// is computed here, so nothing here can make a wrong expectation pass.
+
+private fun authRequest() = K1GCodec.encode(DashCommand.AuthRequest)
+private fun authSendKey(ct: ByteArray) = K1GCodec.encode(DashCommand.AuthSendKey(ct))
+private fun hostnameAnnounce(name: String) = K1GCodec.encode(DashCommand.HostnameAnnounce(name))
+private fun timeSync() = K1GCodec.encode(timeSyncNow())
+private fun navContext() = K1GCodec.encode(DashCommand.NavContext)
+private fun emptyLists() = K1GCodec.encode(DashCommand.EmptyLists)
+private fun navStart() = K1GCodec.encode(DashCommand.NavStart)
+private fun navPlaceholder() = K1GCodec.encode(DashCommand.NavPlaceholder)
+private fun projectionFrame() = K1GCodec.encode(DashCommand.ProjectionFrame)
+private fun projectionOn() = K1GCodec.encode(DashCommand.ProjectionOn)
+private fun projectionStop() = K1GCodec.encode(DashCommand.ProjectionStop)
+private fun projectionOff() = K1GCodec.encode(DashCommand.ProjectionOff)
+private fun frameDecodedIdr() = K1GCodec.encode(DashCommand.DecoderOpenedAck(keyFrame = true))
+private fun frameDecodedP() = K1GCodec.encode(DashCommand.DecoderOpenedAck(keyFrame = false))
+private fun buttonAck(code: Byte) = K1GCodec.encode(DashCommand.ButtonAck(code.toInt() and 0xFF))
+private fun heartbeat(tempC: Int = 25) = K1GCodec.encode(DashCommand.Heartbeat(tempC))
+private fun callNotify(name: String) = K1GCodec.encode(DashCommand.CallNotify(name))
+private fun callClear() = K1GCodec.encode(DashCommand.CallClear)
+private fun nowPlaying(title: String, album: String, artist: String) =
+    K1GCodec.encode(DashCommand.NowPlaying(title, album, artist))
+
+private fun routeCard(
+    title: String,
+    projectionOn: Boolean = false,
+    maneuver: Int? = null,
+    primaryUnit: Int? = null,
+    totalDist: Int? = null,
+    totalUnit: Int? = null,
+    etaHHMM: String? = null,
+) = K1GCodec.encode(
+    DashCommand.RouteCard(title, projectionOn, maneuver, primaryUnit, totalDist, totalUnit, etaHHMM),
+)
+
+private fun activeNavPacket(
+    maneuver: Int = DashGlyphs.NAV_MANEUVER_STRAIGHT,
+    primaryDist: Int = 500,
+    primaryUnit: Int = DashGlyphs.NAV_UNIT_METERS,
+    totalDist: Int = 500,
+    totalUnit: Int = DashGlyphs.NAV_UNIT_METERS,
+    projectionOn: Boolean = true,
+) = K1GCodec.encode(
+    DashCommand.ActiveNav(maneuver, primaryDist, primaryUnit, totalDist, totalUnit, projectionOn),
+)

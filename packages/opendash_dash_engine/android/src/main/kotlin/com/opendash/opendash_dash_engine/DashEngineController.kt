@@ -21,7 +21,7 @@ import com.opendash.opendash_dash_engine.dash.map.MapSnapshotProvider
 import com.opendash.opendash_dash_engine.dash.map.MapStyleAssembler
 import com.opendash.opendash_dash_engine.dash.map.MapTheme
 import com.opendash.opendash_dash_engine.dash.map.OverlayRenderer
-import com.opendash.opendash_dash_engine.dash.protocol.DashCommands
+import com.opendash.opendash_dash_engine.dash.protocol.DashGlyphs
 import com.opendash.opendash_dash_engine.dash.video.DashEncoder
 import com.opendash.opendash_dash_engine.media.CallController
 import com.opendash.opendash_dash_engine.media.CallInfoProvider
@@ -30,16 +30,34 @@ import com.opendash.opendash_dash_engine.util.DebugLog
 import com.opendash.opendash_dash_engine.util.RideDiagnostics
 import com.opendash.opendash_dash_engine.util.memorySummary
 import com.opendash.opendash_dash_engine.util.monotonicMs
+import com.opendash.opendash_dash_engine.dash.DashChrome
+import com.opendash.opendash_dash_engine.dash.DashSocket
+import com.opendash.opendash_dash_engine.dash.NavFigures
+import com.opendash.opendash_dash_engine.dash.NowPlaying
+import com.opendash.opendash_dash_engine.dash.SessionEvent
+import com.opendash.opendash_dash_engine.dash.protocol.DashCommand
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
+import kotlin.coroutines.EmptyCoroutineContext
 import kotlinx.coroutines.withContext
 
 /**
@@ -116,7 +134,29 @@ class DashEngineController(
 
     private val dashConfig = DashConfig.get(context)
     private val wifiManager = DashWifiManager(context, scope)
-    private val session = DashSession(scope)
+    /**
+     * The connection the engine is speaking over right now, or null between connections.
+     *
+     * A [DashSession] is one-shot (see its own doc), so "reconnect" means a new object here.
+     * A StateFlow rather than a plain field because the collectors below have to follow the
+     * swap: `flatMapLatest` drops the old session's state and events the instant this
+     * changes, which is what used to need a `sessionSeq` token checked inside the session.
+     */
+    private val current = MutableStateFlow<DashSession?>(null)
+
+    /**
+     * What the dash's repeating cards say — destination, turn figures, media, call.
+     *
+     * Owned here and not by the session, because Flutter pushes these at arbitrary times,
+     * including while nothing is connected. When they lived on the session, every reconnect
+     * started from defaults and the first cards of a new session showed "OpenDash" with no
+     * guidance until Dart happened to push again.
+     */
+    private val chrome = MutableStateFlow(DashChrome())
+
+    /** IDLE when there is no session — which is exactly what "no session" looks like. */
+    private val sessionState: DashState
+        get() = current.value?.state?.value ?: DashState.IDLE
     private val locationTracker = LocationTracker(context, scope)
     private val styleAssembler = MapStyleAssembler(context)
 
@@ -145,6 +185,11 @@ class DashEngineController(
 
     private var streamJob: Job? = null
     private var sessionWatchJob: Job? = null
+    private var sessionEventJob: Job? = null
+
+    /** Serialises open against close, so "one live session" is a property and not a hope. */
+    private val sessionLock = Mutex()
+
     private var wifiWatchJob: Job? = null
     private var mediaForwardJob: Job? = null
     private var callForwardJob: Job? = null
@@ -237,8 +282,7 @@ class DashEngineController(
      * The stream job's completion handler reports a loop that ended on its own (see it), and
      * on the ordinary disconnect path the session has not left STREAMING yet by the time the
      * loop unwinds — so without this flag every deliberate «Отключить» would write a warning
-     * about a stream nobody lost, and call `session.disconnect()` a beat before the caller
-     * does. @Volatile: written on Main, read on `dash-frame`.
+     * about a stream nobody lost, and close the session a beat before the caller does. @Volatile: written on Main, read on `dash-frame`.
      */
     @Volatile private var stoppingDeliberately = false
 
@@ -253,14 +297,15 @@ class DashEngineController(
 
     fun connect() {
         // Idempotent on a live connection, which spec/fsm.md already promises for the
-        // `idleMap → navigating` transition ("connect() — no-op"): only DashSession.connect()
-        // had that guard, this method had none and ran the whole cycle again on a connected
+        // `idleMap → navigating` transition ("connect() — no-op"). The guard used to live one
+        // layer down, in DashSession.connect; a one-shot session has no such method, so this
+        // is now the only place it can be. Without it the whole cycle ran again on a connected
         // dash. That re-request tore down the WiFi link the running session's sockets are bound
         // to (see DashWifiManager.connect's own guard), reset [hasConnectedOnce] and
         // [authRetries], opened a second ride file mid-ride and restarted media forwarding —
         // for a rider, "Send to Dash" killed the picture ~10s later. Nothing is lost by
         // returning here: [setDestination] pushes the new destination to the session itself.
-        val sessionState = session.state.value
+        val sessionState = sessionState
         val sessionLive = sessionState != DashState.IDLE && sessionState != DashState.ERROR
         val linkStatus = wifiManager.state.value.status
         if (sessionLive && linkStatus == WifiConnStatus.CONNECTED) {
@@ -275,9 +320,9 @@ class DashEngineController(
         // Nothing below would clean it up. This method resets [sessionStarted] to false and
         // starts a fresh wifi collector, which StateFlow immediately hands its current value —
         // REQUESTING, not CONNECTED. The "link came up" branch needs CONNECTED; the teardown
-        // branch needs sessionStarted; neither fires, so `session.disconnect()` is never
-        // called and `session.connect()` later bounces off its own IDLE/ERROR guard. The old
-        // session then pushes RTP into a dead socket until the RX watchdog notices
+        // branch needs sessionStarted; neither fires, so the wreck is never closed and the
+        // guard above later reads it as a live connection. The old session then pushes RTP
+        // into a dead socket until the RX watchdog notices
         // (RX_IDLE_TIMEOUT_MS = 10s) and the retry after it adds AUTH_RETRY_DELAY_MS: about
         // 11.5 seconds of frozen picture on the dash after a "Send to Dash".
         //
@@ -291,7 +336,11 @@ class DashEngineController(
                 "connect",
                 "connect() over a $sessionState session whose link is $linkStatus — tearing it down first",
             )
-            session.disconnect()
+            // Launched, not awaited: this method runs on Main and the new session is not
+            // created here but in the WiFi collector below, seconds later when the link comes
+            // up — and [openSession] closes whatever is still current before opening anything,
+            // so the ordering that matters is guaranteed there rather than here.
+            scope.launch { closeSession(farewell = false) }
         }
         RideDiagnostics.init(context)
         RideDiagnostics.start("connect")
@@ -319,8 +368,21 @@ class DashEngineController(
                 delay(MEM_SAMPLE_INTERVAL_MS)
             }
         }
-        session.onButton = { code -> onButton?.invoke(code.toInt() and 0xFF) }
-        session.onError = { msg -> publishState(errorMessage = msg) }
+        sessionEventJob?.cancel()
+        sessionEventJob = scope.launch {
+            current.flatMapLatest { it?.events ?: emptyFlow() }.collect { ev ->
+                when (ev) {
+                    is SessionEvent.Button -> onButton?.invoke(ev.code)
+                    is SessionEvent.Failed -> publishState(errorMessage = ev.reason)
+                    // Not an error to show the rider: the link and our sockets are fine, the
+                    // dash stopped talking. The IDLE it comes with is what drives the retry
+                    // in the state collector below.
+                    SessionEvent.DashSilent ->
+                        RideDiagnostics.log("session", "dash went silent — reconnecting")
+                    SessionEvent.Ready -> {}
+                }
+            }
+        }
         locationTracker.start()
         authRetries = 0
 
@@ -354,7 +416,7 @@ class DashEngineController(
                 if (wifi.status == WifiConnStatus.CONNECTED && !sessionStarted) {
                     sessionStarted = true
                     val resolvedSsid = if (ssid.isNotBlank()) ssid else wifi.ssid
-                    session.connect(resolvedSsid, wifiManager.network)
+                    openSession(resolvedSsid)
                 } else if (wifi.status != WifiConnStatus.CONNECTED && sessionStarted) {
                     // The network the running session's sockets are bound to (via
                     // Network.bindSocket) is gone — whether WifiManager is about to retry
@@ -364,7 +426,7 @@ class DashEngineController(
                     // Tear it down so the `connect()` branch above starts a fresh one,
                     // bound to whatever network reconnect eventually resolves.
                     sessionStarted = false
-                    session.disconnect()
+                    closeSession(farewell = false)
                 }
             }
         }
@@ -376,7 +438,10 @@ class DashEngineController(
         // ran [startStream] N times over.
         sessionWatchJob?.cancel()
         sessionWatchJob = scope.launch {
-            session.state.collect { st ->
+            current
+                .flatMapLatest { it?.state ?: flowOf(DashState.IDLE) }
+                .distinctUntilChanged()
+                .collect { st ->
                 RideDiagnostics.log("session", "→ $st")
                 publishState()
                 if (st == DashState.STREAMING) cancelGiveupTimer() else armGiveupTimer()
@@ -405,10 +470,10 @@ class DashEngineController(
                     // directly, same network, bounded so a genuinely dead dash still ends in
                     // ERROR rather than retrying forever.
                     //
-                    // IDLE alongside ERROR, and for the same reason: DashSession.endLink puts a
-                    // link that died under a live WiFi network into IDLE, not ERROR (its own doc
-                    // explains why — the state guard in DashSession.connect must let the retry
-                    // through). That is spec/wifi_retry_policy.md's scenario C, the RX watchdog
+                    // IDLE alongside ERROR, and for the same reason: a link that died under a
+                    // live WiFi network ends the session at IDLE, not ERROR — see
+                    // [SessionEvent.DashSilent], which says why the two are different findings.
+                    // That is spec/wifi_retry_policy.md's scenario C, the RX watchdog
                     // firing while WifiManager still reports CONNECTED, so [wifiWatchJob] never
                     // sees a state change and nothing at all reconnected: the ride ended at the
                     // 120-second give-up timer. A deliberate disconnect() never reaches here at
@@ -422,21 +487,22 @@ class DashEngineController(
                     // delay is what tells the two apart: a session that really is dead is still
                     // IDLE/ERROR, a replayed one has moved on.
                     //
-                    // The window used to be wider: DashSession.connect() published CONNECTING
-                    // from inside its coroutine on Dispatchers.IO, so this collector could see
-                    // the corpse of a session [wifiWatchJob] had already restarted, and cancel a
-                    // handshake 1.5 s into its life every single time. CONNECTING is published
-                    // synchronously now, which closes that half of it.
+                    // The window used to be wider: the session published CONNECTING from
+                    // inside its own coroutine, so this collector could see the corpse of a
+                    // session [wifiWatchJob] had already restarted, and cancel a handshake
+                    // 1.5 s into its life every single time. A session is CONNECTING from the
+                    // moment [DashSession.open] returns, and [current] swaps atomically, so
+                    // this collector cannot be handed a corpse at all any more.
                     DashState.ERROR, DashState.IDLE -> {
                         val wifi = wifiManager.state.value
                         if (sessionStarted && wifi.status == WifiConnStatus.CONNECTED && authRetries < MAX_AUTH_RETRIES) {
                             delay(AUTH_RETRY_DELAY_MS)
-                            val settled = session.state.value
+                            val settled = sessionState
                             if (wifiManager.state.value.status == WifiConnStatus.CONNECTED &&
                                 (settled == DashState.IDLE || settled == DashState.ERROR)
                             ) {
                                 authRetries++
-                                session.connect(wifi.ssid, wifiManager.network)
+                                openSession(wifi.ssid)
                             }
                         }
                     }
@@ -448,7 +514,64 @@ class DashEngineController(
         startMediaForwarding()
     }
 
-    fun disconnect() {
+    /**
+     * Start a connection, replacing whatever was running.
+     *
+     * The close comes first and is awaited, and that ordering IS the invariant: two live
+     * sessions cannot exist, because a second one is not created until the first has stopped
+     * its coroutines and closed its sockets. Without the wait it is not merely untidy — the
+     * sockets bind fixed ports :2000 and :2002, and with SO_REUSEADDR gone a leftover one
+     * makes this throw instead of quietly taking half the dash's traffic.
+     *
+     * No farewell: every caller here is reconnecting because the link or the handshake
+     * failed, so the two farewell packets could only be written into a socket nobody reads.
+     */
+    private suspend fun openSession(ssid: String) = sessionLock.withLock {
+        closeCurrent(farewell = false)
+        current.value = DashSession.open(
+            ssid = ssid,
+            chrome = chrome,
+            clock = ::monotonicMs,
+            parent = scope.coroutineContext.job,
+            // The plugin's handler, carried over deliberately: the session's SupervisorJob
+            // keeps one dying child from taking its siblings, but an unhandled throw still
+            // reaches Android's default handler — which is a crash mid-ride — unless the
+            // handler travels with the context.
+            context = Dispatchers.IO +
+                (scope.coroutineContext[CoroutineExceptionHandler] ?: EmptyCoroutineContext),
+        ) { DashSocket(wifiManager.network) }
+    }
+
+    /** Ends the current session, if any, and waits for it. Safe to call with none. */
+    private suspend fun closeSession(farewell: Boolean) = sessionLock.withLock {
+        closeCurrent(farewell)
+    }
+
+    /**
+     * The close itself, without the lock — for [openSession], which already holds it.
+     *
+     * [current] is cleared AFTER the close returns, not before. Clearing first looks tidier
+     * and breaks the invariant: a concurrent [openSession] would read null, skip the wait,
+     * and build a [DashSocket] over ports the dying session still has bound — a
+     * `BindException` now that SO_REUSEADDR is gone.
+     */
+    private suspend fun closeCurrent(farewell: Boolean) {
+        val live = current.value ?: return
+        live.close(farewell)
+        current.value = null
+    }
+
+    /**
+     * Stop everything and tell the dash we are going.
+     *
+     * Suspends now, and every caller had to change for it. The farewell —
+     * `projectionStop` + `projectionOff` — is two datagrams that must actually leave before
+     * the socket closes, or the dash sits in projection on its last frame until its own
+     * timeout, which a rider reads as "the map froze". The previous version reached for
+     * `runBlocking` on the main thread to get that; waiting properly is the same guarantee
+     * without stalling the UI.
+     */
+    suspend fun disconnect() {
         RideDiagnostics.log("connect", "disconnect() called")
         // No farewell [mem] sample here, and that IS the decision — one stood here for a day
         // and came out. It cannot be taken on this thread (memorySummary walks
@@ -478,10 +601,14 @@ class DashEngineController(
         stoppingDeliberately = true
         streamJob?.cancel()
         sessionWatchJob?.cancel(); sessionWatchJob = null
+        sessionEventJob?.cancel(); sessionEventJob = null
         wifiWatchJob?.cancel(); wifiWatchJob = null
         sessionStarted = false
         stopMediaForwarding()
-        session.disconnect()
+        // NonCancellable because this method is reachable FROM the collectors it cancels two
+        // lines above — the READY branch's failure path and the give-up timer both call it —
+        // and a farewell that is cancelled halfway is the exact failure it exists to prevent.
+        withContext(NonCancellable) { closeSession(farewell = true) }
         wifiManager.disconnect()
         locationTracker.stop()
         // The encoder is NOT released here. cancel() above is cooperative — the frame
@@ -520,7 +647,7 @@ class DashEngineController(
         if (giveupJob?.isActive == true) return
         giveupJob = scope.launch {
             delay(RECONNECT_GIVEUP_MS)
-            if (session.state.value != DashState.STREAMING) {
+            if (sessionState != DashState.STREAMING) {
                 DebugLog.w(TAG) { "Giving up — ${RECONNECT_GIVEUP_MS}ms without reaching STREAMING" }
                 RideDiagnostics.log("error", "gave up — ${RECONNECT_GIVEUP_MS}ms without reaching STREAMING")
                 disconnect()
@@ -542,7 +669,7 @@ class DashEngineController(
         mediaForwardJob?.cancel()
         mediaForwardJob = scope.launch {
             mediaInfo.nowPlaying.collect { np ->
-                session.updateNowPlaying(np?.title, np?.album.orEmpty(), np?.artist.orEmpty())
+                updateNowPlaying(np?.title, np?.album.orEmpty(), np?.artist.orEmpty())
                 inputs.update { it.copy(nowPlayingTitle = np?.title) }
                 publishState()
             }
@@ -554,7 +681,7 @@ class DashEngineController(
                 // active/outgoing call has nothing to "answer", so surfacing it
                 // here would show a nonsensical answer button in the dash UI.
                 val incoming = call?.takeIf { it.incoming }
-                session.updateCall(incoming?.caller)
+                updateCall(incoming?.caller)
                 inputs.update {
                     it.copy(incomingCaller = incoming?.caller, hasActiveCall = call != null)
                 }
@@ -583,7 +710,7 @@ class DashEngineController(
                 navigating = lat != null && lng != null,
             )
         }
-        session.updateRouteCard(name ?: "OpenDash")
+        setRouteCard(name ?: "OpenDash")
         // DashSession reads [DashInputs.navigating] off the state stream for its own
         // chrome/nav-info decisions — push immediately instead of waiting for
         // the next frame-loop tick() so "Send to Dash" takes effect at once.
@@ -594,7 +721,7 @@ class DashEngineController(
         inputs.update {
             it.copy(destName = null, dest = null, navigating = false, route = RouteGeometry())
         }
-        session.updateRouteCard("OpenDash")
+        setRouteCard("OpenDash")
         publishState()
     }
 
@@ -636,7 +763,9 @@ class DashEngineController(
         if (remainingMeters != null && nextTurnMeters != null) {
             val (pv, pu) = toDashDistance(nextTurnMeters)
             val (tv, tu) = toDashDistance(remainingMeters)
-            session.updateNavInfo(maneuver, pv, pu, tv, tu, etaHHMM)
+            chrome.update {
+                it.copy(nav = NavFigures(maneuver, pv, pu, tv, tu, etaHHMM))
+            }
         }
     }
 
@@ -684,10 +813,33 @@ class DashEngineController(
     fun setSsid(ssid: String) { dashConfig.ssid = ssid.trim() }
     fun setWifiPassword(password: String) { dashConfig.password = password }
 
-    fun updateNowPlaying(title: String?, album: String, artist: String) =
-        session.updateNowPlaying(title, album, artist)
+    fun updateNowPlaying(title: String?, album: String, artist: String) {
+        val playing = title?.takeIf { it.isNotBlank() }?.let { NowPlaying(it, album, artist) }
+        chrome.update { it.copy(nowPlaying = playing) }
+    }
 
-    fun updateCall(caller: String?) = session.updateCall(caller)
+    fun updateCall(caller: String?) {
+        chrome.update { it.copy(caller = caller?.takeIf { c -> c.isNotBlank() }) }
+    }
+
+    /**
+     * Point the dash's card at [name] and push one card immediately.
+     *
+     * Immediately, rather than waiting up to a second for the next tick, because this is what
+     * "Send to Dash" looks like from the rider's seat. The nav figures are cleared with it:
+     * a new destination makes the previous route's distances and glyph wrong, and the card
+     * repeats at 1 Hz, so stale figures would be asserted every second until Dart pushed new
+     * ones. Chrome stays on regardless of destination — the dash only opens its decoder as
+     * part of nav mode, so there is no separate idle mode (spec/fsm.md).
+     */
+    private fun setRouteCard(name: String) {
+        val title = name.ifBlank { "OpenDash" }
+        chrome.update { it.copy(destinationName = title, nav = null) }
+        val live = current.value ?: return
+        if (live.state.value == DashState.READY || live.state.value == DashState.STREAMING) {
+            live.send(DashCommand.RouteCard(title, projectionOn = true))
+        }
+    }
 
     /** Answer the current ringing call — requires ANSWER_PHONE_CALLS (API 26+). */
     fun answerCall(): Boolean = callController.answer()
@@ -722,8 +874,18 @@ class DashEngineController(
         "needsDiscovery" to dashConfig.needsDiscovery,
     )
 
+    /**
+     * The plugin is detaching and the scope goes away on the next line, so this is the one
+     * place `runBlocking` is the right tool: there is no coroutine left to hand the farewell
+     * to.
+     *
+     * It blocks the main thread, so what it waits on matters. The farewell itself is bounded
+     * (`FAREWELL_TIMEOUT_MS`); the join after it is not, and is only safe because the session
+     * closes its transport as it cancels rather than after — see the closer child in
+     * [DashSession]. Before that fix this line was an ANR waiting for a quiet dash.
+     */
     fun dispose() {
-        disconnect()
+        runBlocking { disconnect() }
         runCatching { toneGenerator?.release() }
     }
 
@@ -821,8 +983,8 @@ class DashEngineController(
             streamer = FrameStreamer(
                 source = renderer,
                 encoderFactory = { onEncoded -> DashEncoder(onEncoded).also { it.prepare() } },
-                rtpSender = session::rtpSender,
-                streaming = { session.state.value == DashState.STREAMING },
+                rtpSender = { current.value?.rtpSender() },
+                streaming = { sessionState == DashState.STREAMING },
                 thermal = ::thermalLabel,
                 clock = ::monotonicMs,
                 senderContext = threads.rtp,
@@ -833,7 +995,7 @@ class DashEngineController(
             // Inside the launched job the same failure would be an uncaught exception in a
             // coroutine and the dash would sit in READY behind a stream that never started.
             streamer.prepareEncoder()
-            session.startStreaming()
+            current.value?.startStreaming()
         } catch (e: Throwable) {
             streamer?.releaseEncoder()
             threads?.close()
@@ -874,20 +1036,20 @@ class DashEngineController(
             // is still answering. Handing the session to IDLE puts it back under the
             // collector's own retry path, which knows how to restart a dead session on a
             // live link. Found by review, 2026-09-18.
-            if (!stoppingDeliberately && session.state.value == DashState.STREAMING) {
+            if (!stoppingDeliberately && sessionState == DashState.STREAMING) {
                 RideDiagnostics.warn(
                     "stream",
                     "frame loop ended while the session still reports STREAMING — " +
                         "ending the session so it can be retried",
                 )
-                scope.launch { session.disconnect() }
+                scope.launch { closeSession(farewell = true) }
             }
         }
     }
 
     private fun toDashDistance(meters: Double): Pair<Int, Int> =
-        if (meters >= 1000) (((meters / 100).toInt())) to DashCommands.NAV_UNIT_KM_TENTHS
-        else meters.toInt() to DashCommands.NAV_UNIT_METERS
+        if (meters >= 1000) (((meters / 100).toInt())) to DashGlyphs.NAV_UNIT_KM_TENTHS
+        else meters.toInt() to DashGlyphs.NAV_UNIT_METERS
 
     /**
      * When the frame tick last published — see [TICK_PUBLISH_INTERVAL_MS].
@@ -934,7 +1096,7 @@ class DashEngineController(
         val gps = gpsFlags(loc, locationTracker.trusted.value)
         onState(
             mapOf(
-                "stage" to session.state.value.name,
+                "stage" to sessionState.name,
                 "explicitDisconnect" to explicitDisconnect,
                 "wifiStatus" to wifiManager.state.value.status.name,
                 "wifiSsid" to wifiManager.state.value.ssid,

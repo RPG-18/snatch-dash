@@ -1,6 +1,5 @@
 package com.opendash.opendash_dash_engine.dash
 
-import com.opendash.opendash_dash_engine.dash.protocol.DashCommands
 import com.opendash.opendash_dash_engine.dash.protocol.DashMessage
 import com.opendash.opendash_dash_engine.util.DebugLog
 import java.math.BigInteger
@@ -9,10 +8,17 @@ import java.security.SecureRandom
 import java.security.spec.RSAPublicKeySpec
 import javax.crypto.Cipher
 
-/** Result of feeding one incoming TLV into the auth state machine. */
-sealed class AuthEvent {
-    /** Both pubkey halves received — send this q3c.d packet now. */
-    data class SendKey(val packet: ByteArray) : AuthEvent()
+/** Result of feeding one incoming message into the auth state machine. */
+internal sealed class AuthEvent {
+    /**
+     * Both pubkey halves received — send q3c.d with this ciphertext now.
+     *
+     * The ciphertext, not a finished packet: building packets belongs to
+     * [com.opendash.opendash_dash_engine.dash.protocol.K1GCodec], and a state machine that
+     * also serialises is a state machine whose tests have to decode bytes to ask what it
+     * decided.
+     */
+    data class SendKey(val cipher: ByteArray) : AuthEvent()
     /** Dash confirmed (07 01 01). */
     object Confirmed : AuthEvent()
     /** Dash rejected (07 01 != 01) — resend authRequest if retries remain. */
@@ -66,6 +72,7 @@ internal class DashAuth(private val ssid: String) {
         keySent = false
     }
 
+    /** The RSA-encrypted `SSID ‖ AES-256 key` block, 128 B. */
     private fun buildKeyPacket(modulus: BigInteger, exponent: BigInteger): ByteArray {
         val aes = ByteArray(32).also { SecureRandom().nextBytes(it) }
         sessionKey = aes
@@ -85,6 +92,6 @@ internal class DashAuth(private val ssid: String) {
             .generatePublic(RSAPublicKeySpec(modulus, exponent))
         val cipher = Cipher.getInstance("RSA/ECB/PKCS1Padding")
         cipher.init(Cipher.ENCRYPT_MODE, pubKey)
-        return DashCommands.authSendKey(cipher.doFinal(payload))
+        return cipher.doFinal(payload)
     }
 }

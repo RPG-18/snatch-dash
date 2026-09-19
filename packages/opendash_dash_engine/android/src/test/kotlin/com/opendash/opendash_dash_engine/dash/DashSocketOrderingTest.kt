@@ -1,6 +1,7 @@
 package com.opendash.opendash_dash_engine.dash
 
-import com.opendash.opendash_dash_engine.dash.protocol.DashCommands
+import com.opendash.opendash_dash_engine.dash.protocol.DashCommand
+import com.opendash.opendash_dash_engine.dash.protocol.K1GCodec
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -47,7 +48,7 @@ class DashSocketOrderingTest {
             pool.execute {
                 start.await()
                 repeat(perThread) {
-                    sequencer.send(DashCommands.heartbeat()) { pkt -> wire.add(seqByteOf(pkt)) }
+                    sequencer.send(K1GCodec.encode(DashCommand.Heartbeat())) { pkt -> wire.add(seqByteOf(pkt)) }
                 }
             }
         }

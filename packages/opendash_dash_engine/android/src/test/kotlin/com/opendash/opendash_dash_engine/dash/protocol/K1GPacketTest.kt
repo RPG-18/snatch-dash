@@ -89,7 +89,7 @@ class K1GPacketTest {
 
     @Test
     fun `patchSeq writes offset 16 and leaves every other byte alone`() {
-        val original = DashCommands.heartbeat()
+        val original = K1GCodec.encode(DashCommand.Heartbeat())
 
         val patched = K1GPacket.patchSeq(original, 0xC3)
 
@@ -103,7 +103,7 @@ class K1GPacketTest {
 
     @Test
     fun `patchSeq masks to a byte, so the counter can roll past 255`() {
-        val pkt = DashCommands.projectionFrame()
+        val pkt = K1GCodec.encode(DashCommand.ProjectionFrame)
 
         // DashSocket's TxSequencer hands out an ever-growing Int; the wire field is one byte.
         assertEquals(0x00, K1GPacket.patchSeq(pkt, 256)[SEQ_OFFSET].toInt() and 0xFF)
@@ -116,7 +116,7 @@ class K1GPacketTest {
         // A route card titled "K1G " puts the magic in the TLV value as well. The header's
         // copy comes first, and that is the one that must be patched — patching the payload
         // would corrupt the destination name and leave the dash's seq counter frozen at 0.
-        val pkt = DashCommands.routeCard("K1G K1G ", projectionOn = true)
+        val pkt = K1GCodec.encode(DashCommand.RouteCard("K1G K1G ", projectionOn = true))
         assertTrue(
             pkt.copyOfRange(OUTGOING_TLV_OFFSET, pkt.size).toHex().contains("4b314720"),
             "test setup: the title was expected to contain the magic",

@@ -57,7 +57,6 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlin.coroutines.EmptyCoroutineContext
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * Top-level orchestrator for the native dash engine — the Flutter-side
@@ -130,14 +129,6 @@ class DashEngineController(
          */
         private const val TICK_PUBLISH_INTERVAL_MS = 1_000L
 
-        /**
-         * How long [dispose] blocks the main thread for a clean teardown before giving up.
-         *
-         * Generous against the parts that are themselves bounded — the farewell waits at
-         * most `DashSession.FAREWELL_TIMEOUT_MS` (1 s) for two datagrams — and short enough
-         * that a detach never looks like a hang to the platform.
-         */
-        private const val DISPOSE_TIMEOUT_MS = 2_500L
     }
 
     private val dashConfig = DashConfig.get(context)
@@ -387,7 +378,22 @@ class DashEngineController(
                     // in the state collector below.
                     SessionEvent.DashSilent ->
                         RideDiagnostics.log("session", "dash went silent — reconnecting")
-                    SessionEvent.Ready -> {}
+                    // Persisted HERE and not when the Wi-Fi link came up, because this is
+                    // the first moment the name is known to be right: the dash checks the
+                    // SSID inside the encrypted handshake, so a session that reaches Ready
+                    // has had it accepted. A guess taken from scan results (see
+                    // DashWifiManager.resolvePrefixFromScan) is never written before this
+                    // point — otherwise one stale `RE_*` entry would be remembered across
+                    // restarts and would disable discovery for good.
+                    SessionEvent.Ready -> {
+                        val live = wifiManager.state.value.ssid
+                        if (dashConfig.needsDiscovery && live.isNotBlank() &&
+                            live != dashConfig.ssidPrefix
+                        ) {
+                            dashConfig.ssid = live
+                            RideDiagnostics.log("connect", "dash accepted SSID '$live' — remembered")
+                        }
+                    }
                 }
             }
         }
@@ -542,14 +548,19 @@ class DashEngineController(
      * No farewell: every caller here is reconnecting because the link or the handshake
      * failed, so the two farewell packets could only be written into a socket nobody reads.
      */
-    private suspend fun openSession(ssid: String) = sessionLock.withLock {
-        // On IO, not on the caller's thread. Every caller here is a collector on
-        // Dispatchers.Main, and [DashSession.open] runs the transport factory inline —
-        // three socket binds, three `Network.bindSocket` binder calls and the synchronous
-        // ride-file append in DashSocket.reportSocketOptions. Before stage 4 all of that
-        // happened inside a coroutine already on IO; putting it back is not a precaution,
-        // it is restoring where it used to run.
-        withContext(Dispatchers.IO) {
+    private suspend fun openSession(ssid: String) = withContext(Dispatchers.IO) {
+        // The whole thing on IO, and the lock INSIDE it — that order is what keeps
+        // [dispose] from deadlocking. Every caller here is a collector on
+        // Dispatchers.Main; if the lock were taken on Main, releasing it would need Main
+        // to be free, and `dispose`'s runBlocking parks Main for exactly as long as it is
+        // waiting for that lock. Acquired and released on IO, nothing in the chain needs
+        // the main thread at all.
+        //
+        // It also puts the transport back where it used to live. [DashSession.open] runs
+        // the factory inline — three socket binds, three `Network.bindSocket` binder calls
+        // and the synchronous ride-file append in DashSocket.reportSocketOptions — and
+        // before stage 4 all of that happened inside a coroutine already on IO.
+        sessionLock.withLock {
             closeCurrent(farewell = false)
             current.value = DashSession.open(
                 ssid = ssid,
@@ -567,8 +578,8 @@ class DashEngineController(
     }
 
     /** Ends the current session, if any, and waits for it. Safe to call with none. */
-    private suspend fun closeSession(farewell: Boolean) = sessionLock.withLock {
-        closeCurrent(farewell)
+    private suspend fun closeSession(farewell: Boolean) = withContext(Dispatchers.IO) {
+        sessionLock.withLock { closeCurrent(farewell) }
     }
 
     /**
@@ -903,23 +914,22 @@ class DashEngineController(
      * place `runBlocking` is the right tool: there is no coroutine left to hand the farewell
      * to.
      *
-     * It blocks the main thread, and that is why the wait is bounded rather than trusted.
-     * `runBlocking` here parks the Android Looper while running its own event loop, so any
-     * coroutine dispatched to [Dispatchers.Main] is frozen for the duration — including one
-     * already holding [sessionLock] inside [openSession]. Waiting on that lock from here
-     * would be a deadlock, not a delay: the holder cannot resume to release it. The timeout
-     * belongs to `runBlocking`'s own event loop, so it fires even with Main parked.
+     * It blocks the main thread, so what it waits on has to be incapable of needing Main
+     * back. That is a property of the code, not of a timer: [openSession] and
+     * [closeSession] take [sessionLock] inside `withContext(Dispatchers.IO)`, so the lock
+     * is acquired and released without a Main dispatch, and [DashSession] runs its own
+     * coroutines on IO too.
      *
-     * What the timeout costs in that race is the farewell — the dash then sits on its last
-     * frame until its own timeout. What it buys is that detaching the engine always
-     * finishes. Losing two packets beats an ANR, and the plugin cancels the scope on the
-     * next line either way.
+     * A `withTimeoutOrNull` stood here for exactly one review cycle and was removed as a
+     * lie: [disconnect] does its teardown inside `withContext(NonCancellable)`, which
+     * ignores cancellation by definition, so the timeout could not end the wait it claimed
+     * to bound. What actually bounds this is one layer down — `DashSession.close` gives the
+     * farewell `FAREWELL_TIMEOUT_MS` and then cancels regardless, and the transport closes
+     * as the scope cancels rather than after it (see the closer child there), so the join
+     * cannot sit on a blocking `receive`.
      */
     fun dispose() {
-        val finished = runBlocking { withTimeoutOrNull(DISPOSE_TIMEOUT_MS) { disconnect() } }
-        if (finished == null) {
-            RideDiagnostics.warn(TAG, "dispose: teardown did not finish in ${DISPOSE_TIMEOUT_MS}ms — detaching anyway")
-        }
+        runBlocking { disconnect() }
         runCatching { toneGenerator?.release() }
     }
 

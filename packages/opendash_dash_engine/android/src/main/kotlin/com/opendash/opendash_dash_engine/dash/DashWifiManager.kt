@@ -112,6 +112,17 @@ class DashWifiManager(
     private var resolvedSsid: String? = null
 
     /**
+     * The prefix this attempt came from, while it is running on a name guessed from a scan.
+     *
+     * A scan entry is a hypothesis, not a fact: the cache can be minutes old (six, on the
+     * phone this was written for) and can hold a network that is not this rider's dash. So
+     * the guess is used for ONE attempt and reverted the moment that attempt fails, and it
+     * is never written to the config — [DashEngineController] does that only once the dash
+     * has accepted the name inside the handshake.
+     */
+    private var scanGuessFrom: String? = null
+
+    /**
      * Session-level connection-quality counters, reset in [connect] and reported once in
      * [disconnect] — see spec/wifi_retry_policy.md's 2026-08-28 log analysis, where both
      * numbers had to be reconstructed by hand from timestamps across dozens of log lines.
@@ -231,12 +242,72 @@ class DashWifiManager(
     @SuppressLint("MissingPermission")
     fun findDashSsid(prefix: String): String? = try {
         val wifi = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
-        wifi.scanResults
-            .mapNotNull { it.SSID?.trim('"')?.takeIf { s -> s.isNotBlank() } }
-            .firstOrNull { it.startsWith(prefix) }
-            .also { DebugLog.i(TAG) { "Scan lookup for prefix '${maskSsid(prefix)}*' -> ${it?.let(::maskSsid) ?: "not found"}" } }
+        val candidates = dashSsidCandidates(wifi.scanResults.map { it.SSID }, prefix)
+        val pick = when (candidates.size) {
+            0 -> null
+            1 -> candidates.single()
+            // Two dashes in range is not a situation to resolve by picking the first one:
+            // the name we choose here is fed into the encrypted handshake AND persisted by
+            // [onSsidResolved], so a wrong guess is remembered. Refusing leaves the prefix
+            // path, which fails with a message telling the rider to name it themselves.
+            else -> null.also {
+                RideDiagnostics.warn(
+                    TAG,
+                    "${candidates.size} networks match '${maskSsid(prefix)}*' — refusing to guess which is the dash",
+                )
+            }
+        }
+        pick.also {
+            DebugLog.i(TAG) {
+                "Scan lookup for prefix '${maskSsid(prefix)}*' -> ${it?.let(::maskSsid) ?: "no single match"}"
+            }
+        }
     } catch (e: Exception) {
         RideDiagnostics.warn(TAG, "scan lookup failed: ${e.javaClass.simpleName}: ${e.message}"); null
+    }
+
+    /**
+     * Turn the prefix into the dash's exact SSID before asking for the network.
+     *
+     * This is the fix for "connects to the bike but streams nothing". Requesting by prefix
+     * makes Android join the network and then refuse to tell us its name (API 31+ redacts
+     * `WifiInfo.getSsid()` from `NetworkCapabilities`), and the exact name is not a nicety:
+     * the dash checks it inside the encrypted handshake, so `RE_` is rejected. Without a
+     * name we never reach [markConnected], the controller never opens a session, and the
+     * phone sits associated to the dash sending nothing at all — measured 2026-09-19 on
+     * Huawei: zero datagrams across two attempts, against 61 in eight seconds once the SSID
+     * was filled in by hand.
+     *
+     * Scan results are the way out because they are NOT redacted the way `WifiInfo` is.
+     * When they come up empty — a stale cache, no recent scan — nothing is lost: the prefix
+     * request proceeds exactly as before, and [armSsidResolveTimeout] bounds its failure.
+     */
+    private fun resolvePrefixFromScan() {
+        if (!pendingPrefix) return
+        val exact = findDashSsid(pendingSsid) ?: return
+        RideDiagnostics.log(
+            TAG,
+            "prefix '${maskSsid(pendingSsid)}*' resolved from scan results to " +
+                "'${maskSsid(exact)}' — requesting it by name",
+        )
+        scanGuessFrom = pendingSsid
+        pendingSsid = exact
+        pendingPrefix = false
+        // Deliberately NOT [onSsidResolved] and NOT [resolvedSsid]: both mean "this is the
+        // dash's name", and nothing has confirmed that yet. See [scanGuessFrom].
+    }
+
+    /** Put the prefix back after an attempt on a guessed name got nowhere. */
+    private fun revertScanGuess() {
+        val prefix = scanGuessFrom ?: return
+        scanGuessFrom = null
+        RideDiagnostics.warn(
+            TAG,
+            "the scanned name '${maskSsid(pendingSsid)}' led nowhere — back to discovery by " +
+                "'${maskSsid(prefix)}*'",
+        )
+        pendingSsid = prefix
+        pendingPrefix = true
     }
 
     fun disconnect() {
@@ -331,6 +402,9 @@ class DashWifiManager(
         // allowed to believe what it sees — read before [release] clears the field.
         val hadOwnRequest = networkCallback != null
         release()
+        // Before the request is built, so everything below — the specifier, the log line,
+        // the published state — deals with a name rather than a prefix.
+        resolvePrefixFromScan()
         DebugLog.i(TAG) {
             "Requesting WiFi: '${maskSsid(pendingSsid)}' " +
                 "(${if (pendingPrefix) "prefix" else "exact"}, password=${if (pendingPassword.isBlank()) "none" else "set"})"
@@ -388,6 +462,23 @@ class DashWifiManager(
                         markConnected(pendingSsid)
                     }
                     else -> {
+                        // Associated, but unnamed. One more look at the scan results: we are
+                        // ON this network, so its AP is certainly in range now, which is
+                        // exactly what the pre-request lookup could not count on — the cached
+                        // scan on this phone was six minutes old when it failed.
+                        //
+                        // The name is still only a guess — `WifiInfo.getBSSID()` is redacted
+                        // on these API levels too, so there is nothing to cross-check it
+                        // against. Using it beats the alternative, which is joining the dash
+                        // and sending it nothing at all; and being wrong costs one auth
+                        // timeout whose message names the SSID it tried. It is NOT persisted
+                        // here for the same reason — only a completed handshake earns that.
+                        val scanned = findDashSsid(pendingSsid)
+                        if (scanned != null) {
+                            DebugLog.i(TAG) { "SSID redacted, but the scan names it: '${maskSsid(scanned)}'" }
+                            markConnected(scanned)
+                            return
+                        }
                         RideDiagnostics.warn(
                             TAG,
                             "callback available but the SSID is redacted; waiting up to " +
@@ -443,6 +534,7 @@ class DashWifiManager(
                     // Never connected this session — likely wrong SSID/password. Don't
                     // spin forever on that; user must try again.
                     RideDiagnostics.warn(TAG, "unavailable and never connected this session — SSID not found or user declined; giving up")
+                    revertScanGuess()
                     _state.value = WifiState(
                         status = WifiConnStatus.ERROR,
                         ssid   = pendingSsid,
@@ -608,6 +700,7 @@ class DashWifiManager(
                     "${SSID_RESOLVE_TIMEOUT}ms (fallback polling ${if (ssidFallbackActive) "ran" else "not available above API 30"}) — " +
                     "cannot authenticate with a prefix, giving up",
             )
+            revertScanGuess()
             _state.value = WifiState(
                 status = WifiConnStatus.ERROR,
                 ssid   = pendingSsid,
@@ -715,4 +808,24 @@ class DashWifiManager(
         networkCallback = null
         network = null
     }
+}
+
+/**
+ * Which scanned networks could be the dash.
+ *
+ * Pure, and separate from [DashWifiManager] so it can be tested: the class itself needs a
+ * live `WifiManager` and `ConnectivityManager`, which a JVM test has no way to provide.
+ *
+ * Quotes are stripped because `ScanResult.SSID` sometimes carries them and sometimes does
+ * not, duplicates are dropped because one AP appears once per band, and a blank prefix
+ * matches NOTHING rather than everything — a rider who clears the prefix field must not
+ * have the app join whichever network happens to be nearest.
+ */
+internal fun dashSsidCandidates(scanned: List<String?>, prefix: String): List<String> {
+    if (prefix.isBlank()) return emptyList()
+    return scanned.asSequence()
+        .mapNotNull { it?.trim('"')?.takeIf { s -> s.isNotBlank() } }
+        .filter { it.startsWith(prefix) }
+        .distinct()
+        .toList()
 }

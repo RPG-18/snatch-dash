@@ -107,6 +107,19 @@ internal sealed interface Effect {
 
     /** One line for the rider and the ride file. */
     data class Report(val reason: String) : Effect
+
+    /**
+     * The connection is over for good — let go of everything that is not the session or the
+     * link: the foreground service and its wake locks, GPS, media forwarding, the per-minute
+     * memory probe, and the ride file.
+     *
+     * Emitted only on the two give-up paths. Before the reducer existed, the give-up timer
+     * called `disconnect()` and got all of this for free; moving the decision here without
+     * moving the work left a phone that had stopped trying still holding a PARTIAL_WAKE_LOCK
+     * and a GPS fix — indefinitely, which is the battery cut-off RECONNECT_GIVEUP_MS exists
+     * to be.
+     */
+    data object StandDown : Effect
 }
 
 /**
@@ -232,14 +245,6 @@ internal object ConnectionFsm {
     }
 
     /**
-     * Ending it deliberately: stop the session first, then let the link go.
-     *
-     * The order is the point, and it is scenario D. `StopSession` carries the farewell —
-     * two packets that have to reach the dash before its socket closes, or it sits on the
-     * last frame until its own timeout — and releasing the Wi-Fi first takes the network
-     * those packets travel on.
-     */
-    /**
      * Start the whole cycle again, from wherever we were.
      *
      * [Effect.CancelGiveUp] before [Effect.ArmGiveUp] because arming is idempotent — it
@@ -248,19 +253,45 @@ internal object ConnectionFsm {
      * killed five seconds later, which is the defect the controller's own
      * `cancelGiveupTimer()` used to prevent before that call moved in here.
      *
-     * [Effect.ReleaseWifi] and [Effect.StopSession] are harmless when there is nothing to
-     * release or stop, and necessary when there is: this is also the path that clears the
-     * wreck of a session whose link died.
+     * **No [Effect.ReleaseWifi], and that is the whole of the 2026-09-20 Huawei finding.**
+     * It stood here for one day and had to go: releasing unregisters the `NetworkCallback`,
+     * and re-registering one is what makes Android raise
+     * `NetworkRequestDialogActivity` — confirmed in the field 2026-08-27, where it appeared
+     * in exactly the one reconnect of nineteen that went through a release, and nowhere
+     * else (spec/wifi_retry_policy.md, scenario D). With the release in place every tap of
+     * "Подключить" took that path, so the rider got a system dialog in the case they hit
+     * most often: dash restarted, session dead, Wi-Fi still up.
+     *
+     * Nothing is lost by leaving it out. `DashWifiManager.connect` decides for itself
+     * whether to reuse the live request or build a new one, and its "keeping the live
+     * request" branch is the only thing that avoids the dialog — a release beforehand makes
+     * that branch unreachable by construction.
+     *
+     * **What that branch costs, and why it still works.** Reusing the request returns
+     * without touching the Wi-Fi layer's `StateFlow`, so no `WifiUp` is emitted for it. The
+     * restart would sit in [ConnState.WaitingForWifi] for ever if the state were the only
+     * source — it is not: `DashEngineController.connect` relaunches the Wi-Fi feed, and a
+     * fresh `StateFlow` collector is handed the current CONNECTED value. That holds only
+     * because the controller queues `UserConnect` before either feed coroutine can run,
+     * which is true while `connect()` is called on the main thread and the scope is
+     * `Dispatchers.Main` rather than `.immediate`.
      */
     private fun restart(ssid: String) = ConnState.WaitingForWifi(ssid) to listOf(
         Effect.StopSession(farewell = false),
-        Effect.ReleaseWifi,
         Effect.CancelAuthRetry,
         Effect.CancelGiveUp,
         Effect.RequestWifi(ssid),
         Effect.ArmGiveUp,
     )
 
+    /**
+     * Ending it deliberately: stop the session first, then let the link go.
+     *
+     * The order is the point, and it is scenario D. `StopSession` carries the farewell —
+     * two packets that have to reach the dash before its socket closes, or it sits on the
+     * last frame until its own timeout — and releasing the Wi-Fi first would take the
+     * network those packets travel on.
+     */
     private fun disconnect(farewell: Boolean) = ConnState.Idle to listOf(
         Effect.StopSession(farewell),
         Effect.ReleaseWifi,
@@ -281,6 +312,7 @@ internal object ConnectionFsm {
         Effect.CancelGiveUp,
         Effect.CancelAuthRetry,
         Effect.Report(reason),
+        Effect.StandDown,
     )
 
     private fun giveUp(reason: String) = ConnState.GaveUp(reason) to listOf(
@@ -288,6 +320,7 @@ internal object ConnectionFsm {
         Effect.ReleaseWifi,
         Effect.CancelAuthRetry,
         Effect.Report(reason),
+        Effect.StandDown,
     )
 
     private const val GIVE_UP_REASON = "gave up — too long without reaching STREAMING"

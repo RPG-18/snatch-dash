@@ -2,6 +2,7 @@ package com.opendash.opendash_dash_engine.dash
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
 
@@ -54,7 +55,7 @@ class ConnectionFsmTest {
         assertEquals(ConnState.Streaming(ssid), state)
         assertEquals(
             listOf(
-                Effect.StopSession(farewell = false), Effect.ReleaseWifi,
+                Effect.StopSession(farewell = false),
                 Effect.CancelAuthRetry, Effect.CancelGiveUp,
                 Effect.RequestWifi(ssid), Effect.ArmGiveUp,
                 Effect.OpenSession(ssid),
@@ -100,7 +101,7 @@ class ConnectionFsmTest {
         assertEquals("2 attempts and never connected", gaveUp.reason)
         assertEquals(
             listOf(
-                Effect.StopSession(farewell = false), Effect.ReleaseWifi,
+                Effect.StopSession(farewell = false),
                 Effect.CancelAuthRetry, Effect.CancelGiveUp,
                 Effect.RequestWifi(ssid), Effect.ArmGiveUp,
                 Effect.StopSession(farewell = false),
@@ -108,6 +109,7 @@ class ConnectionFsmTest {
                 Effect.CancelGiveUp,
                 Effect.CancelAuthRetry,
                 Effect.Report("2 attempts and never connected"),
+                Effect.StandDown,
             ),
             effects,
         )
@@ -131,7 +133,7 @@ class ConnectionFsmTest {
         assertEquals(ConnState.WaitingForWifi(ssid), state)
         assertEquals(
             listOf(
-                Effect.StopSession(farewell = false), Effect.ReleaseWifi,
+                Effect.StopSession(farewell = false),
                 Effect.CancelAuthRetry, Effect.CancelGiveUp,
                 Effect.RequestWifi(ssid), Effect.ArmGiveUp,
             ),
@@ -191,6 +193,7 @@ class ConnectionFsmTest {
                 Effect.ReleaseWifi,
                 Effect.CancelAuthRetry,
                 Effect.Report((state as ConnState.GaveUp).reason),
+                Effect.StandDown,
             ),
             effects,
         )
@@ -242,7 +245,7 @@ class ConnectionFsmTest {
             listOf(
                 Effect.StopSession(farewell = true), Effect.ReleaseWifi,
                 Effect.CancelGiveUp, Effect.CancelAuthRetry,
-                Effect.StopSession(farewell = false), Effect.ReleaseWifi,
+                Effect.StopSession(farewell = false),
                 Effect.CancelAuthRetry, Effect.CancelGiveUp,
                 Effect.RequestWifi(ssid), Effect.ArmGiveUp,
             ),
@@ -288,7 +291,7 @@ class ConnectionFsmTest {
         // rider pressing the button into that would get two minutes of silence — while the
         // controller had already opened a fresh ride file on their behalf.
         val restart = listOf(
-                Effect.StopSession(farewell = false), Effect.ReleaseWifi,
+                Effect.StopSession(farewell = false),
                 Effect.CancelAuthRetry, Effect.CancelGiveUp,
                 Effect.RequestWifi(ssid), Effect.ArmGiveUp,
         )
@@ -297,6 +300,49 @@ class ConnectionFsmTest {
             restart,
             effectsOf(ConnState.Handshaking(ssid, authRetries = 4), ConnEvent.UserConnect(ssid)),
         )
+    }
+
+    @Test
+    fun `giving up lets go of the phone, not just of the dash`() {
+        // The give-up timer used to call disconnect() and got this for free. With the
+        // decision in the reducer the work had to come too, or a phone that has stopped
+        // trying keeps a PARTIAL_WAKE_LOCK, a GPS fix, media forwarding and an open ride
+        // file for as long as the app lives — the exact battery cut-off the 120 s exists
+        // to be.
+        for (event in listOf(ConnEvent.GiveUpDue, ConnEvent.WifiGaveUp("no dash"))) {
+            assertTrue(
+                Effect.StandDown in effectsOf(ConnState.Handshaking(ssid, 0), event),
+                "$event",
+            )
+        }
+        // Not on the ordinary paths: a reconnect in progress still needs GPS and the
+        // service, and a deliberate disconnect has its own teardown.
+        assertFalse(Effect.StandDown in effectsOf(ConnState.Streaming(ssid), ConnEvent.UserDisconnect))
+        assertFalse(Effect.StandDown in effectsOf(ConnState.Streaming(ssid), ConnEvent.WifiDown))
+    }
+
+    @Test
+    fun `a restart never releases the WiFi request`() {
+        // Releasing unregisters the NetworkCallback, and re-registering one is what makes
+        // Android raise its "connect to this network?" dialog — in the field it appeared in
+        // exactly the one reconnect of nineteen that went through a release (2026-08-27,
+        // spec/wifi_retry_policy.md scenario D). This effect stood in `restart` for one day
+        // and cost the rider a dialog on every tap of "Подключить"; DashWifiManager.connect
+        // decides for itself whether the live request can be reused, and it cannot if we
+        // have just thrown it away.
+        for (state in listOf<ConnState>(
+            ConnState.Idle,
+            ConnState.WaitingForWifi(ssid),
+            ConnState.Handshaking(ssid, authRetries = 2),
+            ConnState.GaveUp("2 attempts and never connected"),
+        )) {
+            assertFalse(
+                Effect.ReleaseWifi in effectsOf(state, ConnEvent.UserConnect(ssid)),
+                "restart from $state released the request",
+            )
+        }
+        // The deliberate paths still do release: a disconnect is the rider saying stop.
+        assertTrue(Effect.ReleaseWifi in effectsOf(ConnState.Streaming(ssid), ConnEvent.UserDisconnect))
     }
 
     @Test

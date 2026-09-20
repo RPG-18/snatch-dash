@@ -481,6 +481,13 @@ class DashEngineController(
         }
 
         sessionFeedJob?.cancel()
+        // The session [connect] is replacing, if there is one. Its events must not be read
+        // as the new attempt's: `DashSession.events` is an UNLIMITED channel, so one it
+        // queued before this feed relaunched is still waiting — and a buffered
+        // `Failed(handshakeRefused)` arriving once the reducer has reached Handshaking on
+        // the FRESH link blacklists the SSID that link is using. The reducer cannot tell
+        // them apart; only this layer holds the identity.
+        val wreck = current.value
         sessionFeedJob = scope.launch {
             launch {
                 // The `[session] → …` line, and nothing else: the state flow is for the ride
@@ -493,7 +500,9 @@ class DashEngineController(
                         publishState()
                     }
             }
-            current.flatMapLatest { it?.events ?: emptyFlow() }.collect { ev ->
+            current
+                .flatMapLatest { s -> if (s == null || s === wreck) emptyFlow() else s.events }
+                .collect { ev ->
                 when (ev) {
                     is SessionEvent.Button -> onButton?.invoke(ev.code)
                     SessionEvent.Ready -> {
@@ -537,6 +546,7 @@ class DashEngineController(
             // A no-op unless the name came from a scan — only the Wi-Fi layer knows which.
             Effect.RejectSsidGuess -> if (wifiManager.usingScanGuess) wifiManager.rejectScanGuess()
             is Effect.Report -> RideDiagnostics.log("connect", effect.reason)
+            Effect.StandDown -> standDown()
         }
     }
 
@@ -579,6 +589,29 @@ class DashEngineController(
             closeSession(farewell = false)
             connEvents.trySend(ConnEvent.SessionEnded(handshakeRefused = false))
         }
+    }
+
+    /**
+     * Let go of everything that is not the session or the link.
+     *
+     * Shared by [teardown] and by [Effect.StandDown], because giving up and disconnecting
+     * leave the same things running: the foreground service with its wake locks, GPS, media
+     * forwarding, the memory probe, the snapshotter and the ride file. The give-up timer
+     * used to get all of this by calling `disconnect()`; when the decision moved into the
+     * reducer the work had to move with it, or a phone that had stopped trying would keep a
+     * PARTIAL_WAKE_LOCK and a GPS fix for as long as the app lived.
+     */
+    private fun standDown() {
+        memJob?.cancel(); memJob = null
+        stoppingDeliberately = true
+        streamJob?.cancel()
+        stopMediaForwarding()
+        chrome.update { it.copy(nav = null) }
+        locationTracker.stop()
+        snapshots.releaseNow(snapshotGeneration)
+        DashKeepAliveService.stop(context)
+        RideDiagnostics.stop("gave up")
+        publishState()
     }
 
     /** The re-handshake timer: one at a time, and it reports back as an event. */

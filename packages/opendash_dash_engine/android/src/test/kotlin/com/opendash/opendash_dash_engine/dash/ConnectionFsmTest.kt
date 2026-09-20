@@ -433,6 +433,38 @@ class ConnectionFsmTest {
         assertEquals(ConnState.Streaming(ssid), ConnectionFsm.reduce(ConnState.Streaming(ssid), ConnEvent.GiveUpDue).first)
     }
 
+    // ── The ride-file labels ──────────────────────────────────────────────
+
+    @Test
+    fun `labels carry the state and the retry budget, and never the SSID`() {
+        // The SSID is on the `[wifi]` line beside this one; a second copy is noise, and a
+        // label that grows a field every time the type does breaks a log a human greps.
+        assertEquals("Idle", ConnState.Idle.label)
+        assertEquals("WaitingForWifi", ConnState.WaitingForWifi(ssid).label)
+        assertEquals("Handshaking#3", ConnState.Handshaking(ssid, authRetries = 3).label)
+        assertEquals("Streaming", ConnState.Streaming(ssid).label)
+        assertEquals("GaveUp", ConnState.GaveUp("2 attempts and never connected").label)
+
+        for (state in listOf<ConnState>(
+            ConnState.WaitingForWifi(ssid),
+            ConnState.Handshaking(ssid, 1),
+            ConnState.Streaming(ssid),
+        )) {
+            assertFalse(state.label.contains(ssid), state.label)
+        }
+    }
+
+    @Test
+    fun `the one flag that decides a blacklisting is in the event label`() {
+        assertEquals("SessionEnded(refused)", ConnEvent.SessionEnded(handshakeRefused = true).label)
+        assertEquals("SessionEnded", ConnEvent.SessionEnded(handshakeRefused = false).label)
+        assertEquals("WifiUp", ConnEvent.WifiUp(ssid).label)
+        assertFalse(ConnEvent.WifiUp(ssid).label.contains(ssid))
+        // And the farewell, which is what tells a deliberate stop from a dropped link.
+        assertEquals("StopSession(farewell)", Effect.StopSession(farewell = true).label)
+        assertEquals("StopSession", Effect.StopSession(farewell = false).label)
+    }
+
     @Test
     fun `nothing at all happens in Idle except a connect`() {
         for (event in listOf(

@@ -325,3 +325,51 @@ internal object ConnectionFsm {
 
     private const val GIVE_UP_REASON = "gave up — too long without reaching STREAMING"
 }
+
+/**
+ * Short, stable names for the ride file.
+ *
+ * Separate from `toString()` on purpose. The generated one prints every field, which here
+ * means the SSID — already on the `[wifi]` line beside it, so a second copy is noise — and
+ * it changes shape whenever a field is added, which breaks a log a human greps. These
+ * labels carry exactly the part that is not visible anywhere else: which state, and for
+ * [ConnState.Handshaking] how much of the retry budget is spent.
+ */
+internal val ConnState.label: String
+    get() = when (this) {
+        is ConnState.Idle -> "Idle"
+        is ConnState.WaitingForWifi -> "WaitingForWifi"
+        is ConnState.Handshaking -> "Handshaking#$authRetries"
+        is ConnState.Streaming -> "Streaming"
+        is ConnState.GaveUp -> "GaveUp"
+    }
+
+internal val ConnEvent.label: String
+    get() = when (this) {
+        is ConnEvent.UserConnect -> "UserConnect"
+        is ConnEvent.UserDisconnect -> "UserDisconnect"
+        is ConnEvent.WifiUp -> "WifiUp"
+        is ConnEvent.WifiDown -> "WifiDown"
+        is ConnEvent.WifiGaveUp -> "WifiGaveUp"
+        is ConnEvent.SessionReady -> "SessionReady"
+        // The one flag worth carrying: it is what decides whether an SSID gets blacklisted.
+        is ConnEvent.SessionEnded -> if (handshakeRefused) "SessionEnded(refused)" else "SessionEnded"
+        is ConnEvent.AuthRetryDue -> "AuthRetryDue"
+        is ConnEvent.GiveUpDue -> "GiveUpDue"
+    }
+
+internal val Effect.label: String
+    get() = when (this) {
+        is Effect.RequestWifi -> "RequestWifi"
+        is Effect.ReleaseWifi -> "ReleaseWifi"
+        is Effect.OpenSession -> "OpenSession"
+        is Effect.StopSession -> if (farewell) "StopSession(farewell)" else "StopSession"
+        is Effect.StartStream -> "StartStream"
+        is Effect.ArmGiveUp -> "ArmGiveUp"
+        is Effect.CancelGiveUp -> "CancelGiveUp"
+        is Effect.ArmAuthRetry -> "ArmAuthRetry"
+        is Effect.CancelAuthRetry -> "CancelAuthRetry"
+        is Effect.RejectSsidGuess -> "RejectSsidGuess"
+        is Effect.Report -> "Report"
+        is Effect.StandDown -> "StandDown"
+    }

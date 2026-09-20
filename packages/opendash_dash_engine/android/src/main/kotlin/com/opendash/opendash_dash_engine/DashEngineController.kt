@@ -35,6 +35,7 @@ import com.opendash.opendash_dash_engine.dash.ConnState
 import com.opendash.opendash_dash_engine.dash.ConnectionFsm
 import com.opendash.opendash_dash_engine.dash.DashChrome
 import com.opendash.opendash_dash_engine.dash.Effect
+import com.opendash.opendash_dash_engine.dash.label
 import com.opendash.opendash_dash_engine.dash.DashSocket
 import com.opendash.opendash_dash_engine.dash.NavFigures
 import com.opendash.opendash_dash_engine.dash.NowPlaying
@@ -445,6 +446,27 @@ class DashEngineController(
         fsmJob = scope.launch {
             for (event in connEvents) {
                 val (next, effects) = ConnectionFsm.reduce(connState, event)
+                // The line задача 6.4 asks for, and the only window onto the machine
+                // itself: everything else in the ride file is a consequence — `[wifi]`,
+                // `[session] →`, the stream lines — and from those the decision has to be
+                // inferred. Here it is stated.
+                //
+                // **Every event, including the ones that change nothing.** A filter stood
+                // here for an hour, justified by "4 Hz of Wi-Fi re-emissions would bury the
+                // rest"; that was simply wrong — `DashWifiManager._state` is a conflated
+                // StateFlow of a data class, so an unchanged status never re-emits, and the
+                // events reaching this loop are taps, link transitions, session events and
+                // two timers. What the filter did instead was hide the two moments worth
+                // having most: `SessionEnded` once the retry budget is spent, where the
+                // machine stops trying and says nothing for two minutes, and `UserConnect`
+                // on a live stream, where the rider presses a button and nothing happens.
+                // "Nothing happened, and here is why" is the answer a ride file is for.
+                val did =
+                    if (effects.isEmpty()) "" else effects.joinToString(prefix = " : ") { it.label }
+                RideDiagnostics.log(
+                    "connect",
+                    "fsm ${connState.label} --${event.label}--> ${next.label}$did",
+                )
                 connState = next
                 for (effect in effects) execute(effect)
                 publishState()

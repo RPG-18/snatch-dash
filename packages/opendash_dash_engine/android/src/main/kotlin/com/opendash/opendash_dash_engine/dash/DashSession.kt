@@ -301,6 +301,18 @@ internal class DashSession private constructor(
      */
     fun startStreaming() {
         if (_state.value != DashState.READY) return
+        // [finished] and not just the state, because this is the one state write that comes
+        // from another thread: the controller calls it from its Main collector while
+        // [linkLost] or [fail] may be running on IO. Losing that race used to write
+        // STREAMING over a session that was already cancelled — and nothing could undo it,
+        // since `_state` is only written from in here and in here is gone. The wreck then
+        // read as live for ever: `openSession` refused to replace it, `scheduleAuthRetry`
+        // bailed, and the collector had already answered STREAMING by cancelling the
+        // give-up timer. A frozen dash for the rest of the ride, with no error anywhere.
+        if (finished.get()) {
+            DebugLog.w(TAG) { "startStreaming() on a session that has already ended" }
+            return
+        }
         setState(DashState.STREAMING)
     }
 

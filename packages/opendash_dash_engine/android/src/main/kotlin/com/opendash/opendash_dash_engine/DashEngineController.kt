@@ -382,8 +382,17 @@ class DashEngineController(
         }
         sessionEventJob?.cancel()
         sessionEventJob = scope.launch {
-            current.flatMapLatest { it?.events ?: emptyFlow() }.collect { ev ->
-                when (ev) {
+            // The same wreck guard the state collector has, and for the same reason: this
+            // job is started while [current] still holds the session `connect()` decided to
+            // replace, so without it the wreck's dying `Failed(handshakeRefused)` can
+            // blacklist the SSID and fire a stray `requestNetwork()` underneath the connect
+            // that is already in flight. A verdict from a session the rider abandoned.
+            current
+                .flatMapLatest { session ->
+                    if (session == null || session === wreck) emptyFlow() else session.events
+                }
+                .collect { ev ->
+                    when (ev) {
                     is SessionEvent.Button -> onButton?.invoke(ev.code)
                     is SessionEvent.Failed -> {
                         publishState(errorMessage = ev.reason)
@@ -725,6 +734,13 @@ class DashEngineController(
         wifiWatchJob?.cancel(); wifiWatchJob = null
         sessionStarted = false
         stopMediaForwarding()
+        // The one reset that moving the cards out of the session dropped: the old
+        // DashSession.disconnect() did `navActive = false`. Without it a rider who taps
+        // «Отключить» while navigating and «Подключить» later — neither of which touches
+        // the destination — gets the PREVIOUS route's maneuver glyph, distance and ETA
+        // repeated at 1 Hz for the whole next ride, with no NavLoop running to correct
+        // them. The destination itself stays: it is the rider's, not the session's.
+        chrome.update { it.copy(nav = null) }
         // NonCancellable because this method is reachable FROM the collectors it cancels two
         // lines above — the READY branch's failure path and the give-up timer both call it —
         // and a farewell that is cancelled halfway is the exact failure it exists to prevent.
@@ -788,10 +804,18 @@ class DashEngineController(
             // Counted only when a session was actually opened: [openSession] refuses while
             // the previous attempt is still alive, and a retry that cost nothing must not
             // spend one of the four.
+            // Counted BEFORE the attempt, and rolled back only if it was refused. The
+            // obvious order — `if (openSession(...)) authRetries++` — puts the increment on
+            // a resumption that [openSession] itself can cancel: publishing the new session
+            // moves the state off IDLE, the state collector answers that by cancelling this
+            // very job, and the `++` never runs. The counter is the only bound below the
+            // 120 s give-up, so losing it turns four retries into eighty.
+            //
             // [settled], not the name captured before the wait: prefix discovery can
             // resolve the exact SSID during those 1.5 s, and retrying with the stale prefix
             // would hand the handshake a name the dash refuses.
-            if (openSession(settled.ssid)) authRetries++
+            authRetries++
+            if (!openSession(settled.ssid)) authRetries--
         }
     }
 

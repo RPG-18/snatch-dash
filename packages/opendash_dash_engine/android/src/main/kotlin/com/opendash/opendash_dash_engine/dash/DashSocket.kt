@@ -127,18 +127,28 @@ class DashSocket(private val network: android.net.Network? = null) : DashTranspo
             // built (DashEngineController.openSession awaits the close), so a BindException
             // here now means a real leak, and it should stop the session rather than be
             // papered over.
-            tx = DatagramSocket(null).also {
-                it.broadcast = true
-                it.bind(InetSocketAddress(CTRL_PORT))
-                network?.bindSocket(it)
-            }
-            rx = DatagramSocket(null).also {
-                // No soTimeout: [receive] blocks until a datagram or until [close]. See
-                // DashTransport.receive for why the polled 500 ms timeout went away.
-                it.bind(InetSocketAddress(RX_PORT))
-                network?.bindSocket(it)
-            }
-            rtp = DatagramSocket().also { network?.bindSocket(it) }
+            // Assigned BEFORE being configured, every time, and that is the whole reason
+            // these three lines are not `.also { … }` chains. Inside an `.also` the socket
+            // exists but the variable does not yet, so a throw from `bind` or from
+            // `Network.bindSocket` — routine, it raises IOException the moment the Wi-Fi
+            // network is gone — left the catch below with nothing to close. The fd stayed
+            // open and, worse, :2002 stayed BOUND with no reference to it. That was
+            // survivable while SO_REUSEADDR papered over it; with the option gone (see
+            // above) every later attempt dies with BindException instead, through the auth
+            // retries and on to the 120 s give-up.
+            tx = DatagramSocket(null)
+            tx.broadcast = true
+            tx.bind(InetSocketAddress(CTRL_PORT))
+            network?.bindSocket(tx)
+
+            rx = DatagramSocket(null)
+            // No soTimeout: [receive] blocks until a datagram or until [close]. See
+            // DashTransport.receive for why the polled 500 ms timeout went away.
+            rx.bind(InetSocketAddress(RX_PORT))
+            network?.bindSocket(rx)
+
+            rtp = DatagramSocket()
+            network?.bindSocket(rtp)
             DebugLog.i(TAG) { "Sockets open — TX :$CTRL_PORT→$BROADCAST:$CTRL_PORT (broadcast), RX :$RX_PORT, RTP→$DASH_IP:$RTP_PORT" }
             txSocket  = tx
             rxSocket  = rx
@@ -212,9 +222,15 @@ class DashSocket(private val network: android.net.Network? = null) : DashTranspo
     /**
      * Blocks until a datagram arrives, or throws when the socket is closed or the link dies.
      *
-     * An oversized datagram loops back for the next one rather than returning: it is
-     * discarded, but discarding is not the same as the link being silent, and only the
-     * caller's watchdog gets to decide what silence means.
+     * An oversized datagram is discarded and this loops back for the next one, so the
+     * caller never sees that anything arrived. **That is a known limitation, not a
+     * contract:** `DashSession` refreshes its idle watchdog only on a datagram this returns,
+     * so a peer that sent nothing but oversized datagrams would be torn down as "silent"
+     * while the link carried traffic. Nothing has ever sent one — the dash's largest is a
+     * 269-byte restart blob — and the single ride-file warning below is what would say
+     * otherwise. Reported here rather than fixed because the fix is a contract change
+     * ([receive] would have to return something for "arrived but unusable"), and there is
+     * no evidence to design it against.
      */
     override suspend fun receive(): ByteArray = withContext(Dispatchers.IO) {
         val buf = DatagramPacket(rxBuffer, rxBuffer.size)

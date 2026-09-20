@@ -35,8 +35,18 @@ internal sealed interface Decision {
  * @param baseMs first backoff ceiling, doubling per attempt.
  * @param capMs ceiling the doubling stops at. 30 s because the rider is on the bike and
  *   the dash is a metre away: beyond that a retry is indistinguishable from giving up.
- * @param giveUpAfterMs total time from the first attempt after which retrying stops,
- *   whatever the attempt count. Moved here from `DashEngineController.RECONNECT_GIVEUP_MS`.
+ * @param giveUpAfterMs how long the current outage may last before retrying stops,
+ *   whatever the attempt count.
+ *
+ *   **A backstop behind a backstop, and rarely the one that fires.** An earlier version of
+ *   this doc said the value was moved here from `DashEngineController.RECONNECT_GIVEUP_MS`;
+ *   it was not — that timer is still live and still calls `disconnect()` at exactly 120 s
+ *   from leaving STREAMING. This deadline is only consulted when a decision is made, i.e.
+ *   once per failed attempt, `CONNECT_TIMEOUT` (30 s) plus jitter apart — so the first
+ *   decision that can see 120 s is the fifth, and the controller's timer has almost always
+ *   won by then. Both are kept deliberately: the controller's covers "never reached
+ *   STREAMING" whatever the reason, this one covers a Wi-Fi layer retrying on its own. They
+ *   collapse into one when stage 6 replaces the timer with the FSM.
  * @param coldRetries how many RETRIES a connection that has never succeeded gets — so the
  *   total is `1 + coldRetries` attempts, and at a 30 s `CONNECT_TIMEOUT` each that is about
  *   66 s to the error. One, because "never connected" almost always means the wrong SSID, a
@@ -59,7 +69,15 @@ internal class ReconnectPolicy(
 ) {
     /**
      * @param attempt how many attempts have already failed; 0 for the first decision.
-     * @param everConnected whether this connection reached the dash at least once.
+     * @param everConnected whether the Wi-Fi link has come up at least once this connection.
+ *
+ *   **Association, not a completed handshake** — the caller passes `hasConnectedOnce`,
+ *   which `markConnected` sets on link-up. The two differ exactly where it matters: a
+ *   foreign `RE_*` access point associates, resets the caller's counters, and never answers
+ *   the K1G handshake, so neither the cold budget nor the deadline ever arms and this layer
+ *   retries a network that cannot work. Narrowing it needs the session to report the
+ *   handshake back into the Wi-Fi layer, which is stage 6's FSM; until then the
+ *   controller's give-up timer is what ends that case.
      * @param elapsedMs since the first attempt of this connection.
      * @param random passed in, never taken from a global: a test that cannot fix the jitter
      *   can only assert that the delay is "somewhere in a range", which is not an assertion

@@ -133,9 +133,7 @@ internal object ConnectionFsm {
 
     fun reduce(state: ConnState, event: ConnEvent): Pair<ConnState, List<Effect>> = when (state) {
         is ConnState.Idle -> when (event) {
-            is ConnEvent.UserConnect ->
-                ConnState.WaitingForWifi(event.ssid) to
-                    listOf(Effect.RequestWifi(event.ssid), Effect.ArmGiveUp)
+            is ConnEvent.UserConnect -> restart(event.ssid)
             else -> state to emptyList()
         }
 
@@ -152,9 +150,7 @@ internal object ConnectionFsm {
             // is what the controller does today: its no-op guard wants a live session AND a
             // connected link, and here there is neither. A button that does nothing visible
             // is how "it hung" gets reported.
-            is ConnEvent.UserConnect ->
-                ConnState.WaitingForWifi(event.ssid) to
-                    listOf(Effect.ReleaseWifi, Effect.RequestWifi(event.ssid), Effect.ArmGiveUp)
+            is ConnEvent.UserConnect -> restart(event.ssid)
             // Still trying — the Wi-Fi layer's own business, and it has not stopped.
             else -> state to emptyList()
         }
@@ -195,6 +191,12 @@ internal object ConnectionFsm {
 
             is ConnEvent.GiveUpDue -> giveUp(GIVE_UP_REASON)
             is ConnEvent.UserDisconnect -> disconnect(farewell = true)
+            // NOT a no-op here, unlike [ConnState.Streaming]. Once the retry budget is
+            // spent this state does nothing at all until the give-up timer, and a rider
+            // pressing "connect" into that would get nothing for up to two minutes — while
+            // the controller had already opened a fresh ride file on their behalf. "Live
+            // connection" in spec/fsm.md means one that is working, not one that is trying.
+            is ConnEvent.UserConnect -> restart(event.ssid)
             else -> state to emptyList()
         }
 
@@ -220,9 +222,7 @@ internal object ConnectionFsm {
         }
 
         is ConnState.GaveUp -> when (event) {
-            is ConnEvent.UserConnect ->
-                ConnState.WaitingForWifi(event.ssid) to
-                    listOf(Effect.RequestWifi(event.ssid), Effect.ArmGiveUp)
+            is ConnEvent.UserConnect -> restart(event.ssid)
             // "Отключить" has to work here too. Giving up stops the retrying; it does not
             // undo the WifiNetworkSpecifier request, and while that is registered the phone
             // stays on the dash's no-internet network with nothing using it.
@@ -239,6 +239,28 @@ internal object ConnectionFsm {
      * last frame until its own timeout — and releasing the Wi-Fi first takes the network
      * those packets travel on.
      */
+    /**
+     * Start the whole cycle again, from wherever we were.
+     *
+     * [Effect.CancelGiveUp] before [Effect.ArmGiveUp] because arming is idempotent — it
+     * no-ops while a countdown is already running — so without the cancel a second tap
+     * inherits the remains of the first attempt's two minutes. A tap at t=115s would be
+     * killed five seconds later, which is the defect the controller's own
+     * `cancelGiveupTimer()` used to prevent before that call moved in here.
+     *
+     * [Effect.ReleaseWifi] and [Effect.StopSession] are harmless when there is nothing to
+     * release or stop, and necessary when there is: this is also the path that clears the
+     * wreck of a session whose link died.
+     */
+    private fun restart(ssid: String) = ConnState.WaitingForWifi(ssid) to listOf(
+        Effect.StopSession(farewell = false),
+        Effect.ReleaseWifi,
+        Effect.CancelAuthRetry,
+        Effect.CancelGiveUp,
+        Effect.RequestWifi(ssid),
+        Effect.ArmGiveUp,
+    )
+
     private fun disconnect(farewell: Boolean) = ConnState.Idle to listOf(
         Effect.StopSession(farewell),
         Effect.ReleaseWifi,

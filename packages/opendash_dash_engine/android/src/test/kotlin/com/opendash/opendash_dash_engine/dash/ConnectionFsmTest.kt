@@ -54,6 +54,8 @@ class ConnectionFsmTest {
         assertEquals(ConnState.Streaming(ssid), state)
         assertEquals(
             listOf(
+                Effect.StopSession(farewell = false), Effect.ReleaseWifi,
+                Effect.CancelAuthRetry, Effect.CancelGiveUp,
                 Effect.RequestWifi(ssid), Effect.ArmGiveUp,
                 Effect.OpenSession(ssid),
                 Effect.StartStream, Effect.CancelGiveUp, Effect.CancelAuthRetry,
@@ -98,6 +100,8 @@ class ConnectionFsmTest {
         assertEquals("2 attempts and never connected", gaveUp.reason)
         assertEquals(
             listOf(
+                Effect.StopSession(farewell = false), Effect.ReleaseWifi,
+                Effect.CancelAuthRetry, Effect.CancelGiveUp,
                 Effect.RequestWifi(ssid), Effect.ArmGiveUp,
                 Effect.StopSession(farewell = false),
                 Effect.ReleaseWifi,
@@ -125,7 +129,14 @@ class ConnectionFsmTest {
 
         val (state, effects) = run(stuck, ConnEvent.UserConnect(ssid))
         assertEquals(ConnState.WaitingForWifi(ssid), state)
-        assertEquals(listOf(Effect.RequestWifi(ssid), Effect.ArmGiveUp), effects)
+        assertEquals(
+            listOf(
+                Effect.StopSession(farewell = false), Effect.ReleaseWifi,
+                Effect.CancelAuthRetry, Effect.CancelGiveUp,
+                Effect.RequestWifi(ssid), Effect.ArmGiveUp,
+            ),
+            effects,
+        )
     }
 
     // ── Scenario C: the dash went quiet behind a healthy link ─────────────
@@ -231,6 +242,8 @@ class ConnectionFsmTest {
             listOf(
                 Effect.StopSession(farewell = true), Effect.ReleaseWifi,
                 Effect.CancelGiveUp, Effect.CancelAuthRetry,
+                Effect.StopSession(farewell = false), Effect.ReleaseWifi,
+                Effect.CancelAuthRetry, Effect.CancelGiveUp,
                 Effect.RequestWifi(ssid), Effect.ArmGiveUp,
             ),
             effects,
@@ -266,15 +279,36 @@ class ConnectionFsmTest {
             emptyList<Effect>(),
             effectsOf(ConnState.Streaming(ssid), ConnEvent.UserConnect(ssid)),
         )
-        assertEquals(
-            emptyList<Effect>(),
-            effectsOf(ConnState.Handshaking(ssid, authRetries = 1), ConnEvent.UserConnect(ssid)),
+    }
+
+    @Test
+    fun `connect while still trying starts the cycle over`() {
+        // Only a WORKING connection is left alone. Trying is not working: once the retry
+        // budget is spent, Handshaking does nothing at all until the give-up timer, and a
+        // rider pressing the button into that would get two minutes of silence — while the
+        // controller had already opened a fresh ride file on their behalf.
+        val restart = listOf(
+                Effect.StopSession(farewell = false), Effect.ReleaseWifi,
+                Effect.CancelAuthRetry, Effect.CancelGiveUp,
+                Effect.RequestWifi(ssid), Effect.ArmGiveUp,
         )
-        // NOT while it is still searching, though: there is no live connection to leave
-        // alone, and the controller restarts the request today for the same reason.
+        assertEquals(restart, effectsOf(ConnState.WaitingForWifi(ssid), ConnEvent.UserConnect(ssid)))
         assertEquals(
-            listOf(Effect.ReleaseWifi, Effect.RequestWifi(ssid), Effect.ArmGiveUp),
-            effectsOf(ConnState.WaitingForWifi(ssid), ConnEvent.UserConnect(ssid)),
+            restart,
+            effectsOf(ConnState.Handshaking(ssid, authRetries = 4), ConnEvent.UserConnect(ssid)),
+        )
+    }
+
+    @Test
+    fun `a second tap does not inherit the first attempt's countdown`() {
+        // ArmGiveUp is idempotent — it no-ops while a countdown runs — so a restart has to
+        // cancel first. Without it a tap at t=115s of a 120s window is killed five seconds
+        // later, which is exactly what the controller's own cancelGiveupTimer() prevented
+        // before that call moved into the reducer.
+        val effects = effectsOf(ConnState.WaitingForWifi(ssid), ConnEvent.UserConnect(ssid))
+        assertTrue(
+            effects.indexOf(Effect.CancelGiveUp) < effects.indexOf(Effect.ArmGiveUp),
+            "cancel must come first: $effects",
         )
     }
 

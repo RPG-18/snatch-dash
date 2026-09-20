@@ -4,6 +4,7 @@ import com.opendash.opendash_dash_engine.dash.protocol.DashCommand
 import com.opendash.opendash_dash_engine.dash.protocol.K1GCodec
 import com.opendash.opendash_dash_engine.dash.protocol.Scripts
 import com.opendash.opendash_dash_engine.dash.protocol.toHex
+import com.opendash.opendash_dash_engine.util.DebugLog
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -441,6 +442,85 @@ class DashSessionTest {
     // ── Watchdog ──────────────────────────────────────────────────────────
 
     @Test
+    fun `a gap the watchdog was awake for and let through is reported`() = runTest {
+        // The 2026-09-19 Xiaomi anomaly, staged. It works because the watchdog compares
+        // with `>`: its tick at exactly the threshold does not fire, so a packet arriving
+        // in the second after that lands on a session that is still alive with a gap past
+        // the threshold — which is the whole finding. `watchdogTicks` is what separates the
+        // two explanations: awake and wrong (ticks ≈ one a second, as here), or never
+        // scheduled at all (zero).
+        val lines = capture()
+        try {
+            val r = rig()
+            reachReady(r)                       // lastRx at 200 ms, watchdog armed there
+            advanceTimeBy(9_000)                // → 11 000 ms, i.e. a 10 800 ms gap
+            runCurrent()
+            r.wire.deliver(incoming(0x0C, 0x08, byteArrayOf(0x00, 0x00)))
+            runCurrent()
+
+            assertEquals(DashState.READY, r.session.state.value, "the session did live")
+            val line = lines.single { it.contains("passed the") }
+            assertTrue(line.contains("rx gap 10800ms"), line)
+            assertTrue(line.contains("state=READY"), line)
+            val ticks = Regex("watchdogTicks=(\\d+)").find(line)!!.groupValues[1].toInt()
+            assertTrue(ticks > 5, "the watchdog was awake through it: $line")
+            r.close()
+        } finally {
+            DebugLog.sink = null
+        }
+    }
+
+    @Test
+    fun `a long wait for the dash to answer the burst is not a watchdog finding`() = runTest {
+        // The false positive the first version actually had: `lastRxAtMs` is seeded at
+        // construction and the watchdog only arms after auth, so a dash taking 19 s to
+        // answer the burst — measured, 2026-09-18 — wrote a warning about a watchdog that
+        // was never running.
+        val lines = capture()
+        try {
+            val r = rig()
+            advanceTimeBy(11_000)
+            runCurrent()
+            offerPubKey(r)
+            runCurrent()
+
+            assertEquals(
+                0,
+                lines.count { it.contains("passed the") },
+                "nothing was passed: the watchdog waits for auth",
+            )
+            r.close()
+        } finally {
+            DebugLog.sink = null
+        }
+    }
+
+    @Test
+    fun `an ordinary gap is left to the minute summary`() = runTest {
+        val lines = capture()
+        try {
+            val r = rig()
+            advanceTimeBy(200)
+            runCurrent()
+            r.wire.deliver(incoming(0x0C, 0x08, byteArrayOf(0x00, 0x00)))
+            runCurrent()
+            lines.clear()
+
+            // Under the threshold — and the p95 of a healthy ride is around 510 ms, so a
+            // line per gap here would be a line per packet.
+            advanceTimeBy(9_000)
+            runCurrent()
+            r.wire.deliver(incoming(0x0C, 0x08, byteArrayOf(0x00, 0x00)))
+            runCurrent()
+
+            assertEquals(0, lines.count { it.contains("passed the") })
+            r.close()
+        } finally {
+            DebugLog.sink = null
+        }
+    }
+
+    @Test
     fun `ten seconds of silence after auth ends the session`() = runTest {
         val r = rig()
         reachReady(r)
@@ -601,6 +681,22 @@ class DashSessionTest {
             assertTrue(wire.closed, "and the sockets are released")
             parent.cancel()
         }
+
+    /**
+     * Listen to the ride file, which [com.opendash.opendash_dash_engine.util.RideDiagnostics]
+     * mirrors into [DebugLog].
+     *
+     * The empty sink first is not a formality: DebugLog buffers lines written while no sink
+     * exists and flushes them to whichever one is installed next, so without draining, a
+     * test inherits whatever an earlier test left behind — which is how this helper came to
+     * be written, after a `pre-attach` line from another test failed an assertion here.
+     */
+    private fun capture(): MutableList<String> {
+        DebugLog.sink = { _, _, _ -> }
+        val lines = mutableListOf<String>()
+        DebugLog.sink = { _, _, message -> lines += message }
+        return lines
+    }
 
     // ── Rig helpers ───────────────────────────────────────────────────────
 

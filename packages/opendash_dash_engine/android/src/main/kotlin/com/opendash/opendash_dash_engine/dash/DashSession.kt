@@ -254,6 +254,19 @@ internal class DashSession private constructor(
     @Volatile private var lastRxAtMs = clock()
 
     /**
+     * How many times [watchdog] has woken up and compared.
+     *
+     * Exists so that a gap longer than [RX_IDLE_TIMEOUT_MS] which the session SURVIVED can
+     * say why. Two explanations fit that outcome and they need opposite fixes: the watchdog
+     * never got the thread (zero ticks across a ten-second gap — a starved coroutine, and
+     * the threshold is innocent), or it ticked and its comparison did not fire (roughly one
+     * tick per second — and then the arithmetic or the clock is wrong). The 2026-09-19
+     * Xiaomi ride produced exactly this outcome and could not be told apart afterwards,
+     * because the per-packet arrivals live in the ring-buffered app_log.txt. Задача 5.8.
+     */
+    private val watchdogTicks = AtomicInteger(0)
+
+    /**
      * Counts the dash's own "I decoded a frame" notifies (09 06 55 IDR / 09 04 55 P-frame).
      * Added after a 2026-08-28 field session where the nav bubble kept updating correctly for
      * tens of minutes while these went quiet.
@@ -614,6 +627,7 @@ internal class DashSession private constructor(
         authConfirmed.await()
         while (currentCoroutineContext().isActive) {
             delay(TICK_MS * TICKS_PER_SECOND)
+            watchdogTicks.incrementAndGet()
             val silentMs = clock() - lastRxAtMs
             if (silentMs > RX_IDLE_TIMEOUT_MS) {
                 DebugLog.w(TAG) { "No data from dash for ${silentMs}ms" }
@@ -641,6 +655,7 @@ internal class DashSession private constructor(
         val rxGaps = Percentiles(capacity = 1024)
         var rxGapCount = 0
         var lastGapReportAtMs = clock()
+        var ticksAtLastRx = watchdogTicks.get()
 
         while (currentCoroutineContext().isActive) {
             val pkt = try {
@@ -668,7 +683,28 @@ internal class DashSession private constructor(
                 )
                 rxGapCount = 0
             }
-            rxGaps.add(nowMs - lastRxAtMs)
+            // A single gap past the watchdog's own threshold, reported the moment it ends
+            // rather than as a `max=` in a minute-wide summary an hour later. By the time
+            // that summary is read the evidence is gone: what the watchdog was doing during
+            // the gap lives only in per-packet timestamps, and those are in the ring buffer.
+            // See [watchdogTicks] for what the two numbers tell apart. Задача 5.8.
+            val gapMs = nowMs - lastRxAtMs
+            // Only once the watchdog is armed. Before auth there is nothing to have been
+            // passed: the watchdog waits for [authConfirmed] precisely because a dash may
+            // take 19 s to answer the burst (2026-09-18, Huawei), and `lastRxAtMs` is
+            // seeded at construction — so without this guard the FIRST packet of every
+            // slow-but-healthy handshake writes a warning about a watchdog that was never
+            // running.
+            if (gapMs > RX_IDLE_TIMEOUT_MS && authConfirmed.isCompleted) {
+                val ticks = watchdogTicks.get() - ticksAtLastRx
+                RideDiagnostics.warn(
+                    TAG,
+                    "rx gap ${gapMs}ms passed the ${RX_IDLE_TIMEOUT_MS}ms watchdog and the " +
+                        "session lived: state=${_state.value} watchdogTicks=$ticks",
+                )
+            }
+            ticksAtLastRx = watchdogTicks.get()
+            rxGaps.add(gapMs)
             rxGapCount++
             lastRxAtMs = nowMs
             // Nothing downstream may escape: a malformed or hostile datagram must fail this

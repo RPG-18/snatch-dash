@@ -23,6 +23,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlin.random.Random
 
 enum class WifiConnStatus { IDLE, REQUESTING, CONNECTED, ERROR }
 
@@ -57,7 +58,10 @@ class DashWifiManager(
     companion object {
         private const val TAG              = "DashWifiManager"
         private const val CONNECT_TIMEOUT  = 30_000  // ms — Android shows system dialog within this
-        private const val RECONNECT_DELAY  = 8_000L
+        // RECONNECT_DELAY (a flat 8 s) lived here until 2026-09-20. The wait is now
+        // [reconnectPolicy]'s: a fixed one has the property nobody wants on a bike — every
+        // retry after a dead zone lands at the same offset from the one before, so a phone
+        // that just missed the window keeps missing it.
         /**
          * How long a prefix-discovery connection may sit with an unreadable SSID before it
          * is called a failure.
@@ -85,6 +89,26 @@ class DashWifiManager(
     }
 
     private val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+
+    /**
+     * How long to wait before the next Wi-Fi request, and when to stop asking.
+     *
+     * The arithmetic lives in [ReconnectPolicy] rather than here because this class cannot
+     * be tested — it needs a live `ConnectivityManager` — and until 2026-09-20 the decision
+     * was a constant plus two `if`s spread over three call sites.
+     */
+    private val reconnectPolicy = ReconnectPolicy()
+
+    /**
+     * Failed attempts within the CURRENT outage, reset by [markConnected].
+     *
+     * Separate from [reconnectCount], which counts every reconnect of the session and is
+     * what the ride file's `reconnect #N` means. Feeding that lifetime counter to the
+     * policy made the backoff ratchet: after four recovered drops, the first retry of a
+     * two-second dead zone would wait `random(0..30 s)` — worse than the flat 8 s this
+     * replaced, and the opposite of the policy's own "the first retry can be quick".
+     */
+    private var outageAttempts = 0
 
     private val _state = MutableStateFlow(WifiState())
     val state = _state.asStateFlow()
@@ -255,6 +279,7 @@ class DashWifiManager(
         pendingPassword  = password
         pendingPrefix    = prefixMatch
         resolvedSsid     = null
+        outageAttempts   = 0
         // A new connection starts with no hypotheses and no grudges: the guess belongs to
         // the attempt that made it, and "this network is not the dash" was a fact about one
         // attempt rather than about the network.
@@ -606,51 +631,23 @@ class DashWifiManager(
 
             override fun onUnavailable() {
                 this@DashWifiManager.network = null
-                if (wantConnected && hasConnectedOnce) {
-                    // We reached CONNECTED for this dash earlier in this session, so a
-                    // timed-out re-request is just another transient drop (rider briefly
-                    // out of range) — same as onLost below. Keep retrying instead of
-                    // giving up, matching this class's own "auto-reconnects on link loss
-                    // until disconnect()" contract.
-                    RideDiagnostics.warn(TAG, "still unavailable after ${CONNECT_TIMEOUT}ms — reconnect #${reconnectCount + 1} in ${RECONNECT_DELAY}ms")
-                    reconnectCount++
-                    if (downSinceMs == 0L) downSinceMs = monotonicMs()
-                    _state.value = WifiState(
-                        status = WifiConnStatus.REQUESTING,
-                        ssid   = pendingSsid,
-                        error  = "Link lost — reconnecting…",
-                    )
-                    scheduleReconnect()
-                } else {
-                    // Never connected this session — likely wrong SSID/password. Don't
-                    // spin forever on that; user must try again.
-                    RideDiagnostics.warn(TAG, "unavailable and never connected this session — SSID not found or user declined; giving up")
-                    revertScanGuess()
-                    _state.value = WifiState(
-                        status = WifiConnStatus.ERROR,
-                        ssid   = pendingSsid,
-                        error  = "Could not connect to '$pendingSsid' — network not found or wrong password",
-                    )
-                    wantConnected = false
-                }
+                // Both outcomes come from the policy now, including "never connected —
+                // give up". That branch used to quit after ONE 30 s timeout on the grounds
+                // that a cold link means a wrong SSID, a wrong password or a dash that is
+                // off; the policy gives it two, because there is a fourth case — a dash
+                // whose AP is simply slow to come up — and a second try costs seconds
+                // where quitting costs the rider the ride.
+                if (wantConnected) scheduleReconnect("still unavailable after ${CONNECT_TIMEOUT}ms")
             }
 
             override fun onLost(network: Network) {
-                RideDiagnostics.warn(TAG, "link lost — reconnect #${reconnectCount + 1} in ${RECONNECT_DELAY}ms")
-                reconnectCount++
-                if (downSinceMs == 0L) downSinceMs = monotonicMs()
                 // Last-known signal before the Network object goes stale — shows whether
                 // this was a fading signal (see the periodic "poll" samples leading up to
                 // it) or a clean step down (dash powered off, radio toggled, etc.).
                 logSignalInfo("last before loss", network)
                 stopRssiPolling()
                 this@DashWifiManager.network = null
-                _state.value = WifiState(
-                    status = WifiConnStatus.REQUESTING,
-                    ssid   = pendingSsid,
-                    error  = "Link lost — reconnecting…",
-                )
-                if (wantConnected) scheduleReconnect()
+                if (wantConnected) scheduleReconnect("link lost")
             }
         }
 
@@ -672,11 +669,78 @@ class DashWifiManager(
         }
     }
 
-    private fun scheduleReconnect() {
+    /**
+     * Ask [reconnectPolicy] what to do after a failed attempt, and do it.
+     *
+     * The one place that both decides and reports, so the ride file cannot disagree with
+     * the behaviour: the `reconnect #N in Xms` line is written from the same value the
+     * timer is then armed with. X is computed now — it used to be the constant, printed
+     * whether or not that is what happened.
+     *
+     * @param reason what failed, prefixed to the line. The existing wordings are kept
+     *   verbatim ("link lost", "still unavailable after …") so the file stays greppable —
+     *   инвариант 11.
+     */
+    private fun scheduleReconnect(reason: String) {
         reconnectJob?.cancel()
-        reconnectJob = scope.launch {
-            delay(RECONNECT_DELAY)
-            if (wantConnected) requestNetwork()
+        val outageMs = if (downSinceMs == 0L) 0L else monotonicMs() - downSinceMs
+        when (
+            val decision = reconnectPolicy.next(
+                attempt = outageAttempts,
+                everConnected = hasConnectedOnce,
+                elapsedMs = outageMs,
+                random = Random.Default,
+            )
+        ) {
+            is Decision.GiveUp -> {
+                RideDiagnostics.warn(TAG, "$reason — giving up: ${decision.reason}")
+                revertScanGuess()
+                _state.value = WifiState(
+                    status = WifiConnStatus.ERROR,
+                    ssid   = pendingSsid,
+                    // Two ways to give up, and they call for opposite things from the
+                    // rider. Telling someone whose dash authenticated five minutes ago to
+                    // check the password sends them to the settings screen for a link that
+                    // was merely out of range.
+                    error = if (hasConnectedOnce) {
+                        "Lost the dash's WiFi — ${decision.reason}"
+                    } else {
+                        "Could not connect to '$pendingSsid' — network not found or wrong password"
+                    },
+                )
+                wantConnected = false
+            }
+            is Decision.RetryIn -> {
+                // A link that never came up on a name taken from a scan tells us nothing
+                // except that the name did not work — so the retry must go back to
+                // discovery rather than ask for the same SSID again. Without this the two
+                // cold attempts are spent on one guess: [resolvePrefixFromScan] returns
+                // early once `pendingPrefix` is false, and the revert used to happen only
+                // on the way to GiveUp, one line before giving up.
+                if (!hasConnectedOnce) revertScanGuess()
+                RideDiagnostics.warn(
+                    TAG,
+                    "$reason — reconnect #${reconnectCount + 1} in ${decision.delayMs}ms",
+                )
+                reconnectCount++
+                outageAttempts++
+                if (downSinceMs == 0L) downSinceMs = monotonicMs()
+                _state.value = WifiState(
+                    status = WifiConnStatus.REQUESTING,
+                    ssid   = pendingSsid,
+                    // "Lost" only if there was something to lose: the cold path reaches
+                    // here too now, and a link that never came up has not been lost.
+                    error = if (hasConnectedOnce) {
+                        "Link lost — reconnecting…"
+                    } else {
+                        "Looking for the dash…"
+                    },
+                )
+                reconnectJob = scope.launch {
+                    delay(decision.delayMs)
+                    if (wantConnected) requestNetwork()
+                }
+            }
         }
     }
 
@@ -687,6 +751,8 @@ class DashWifiManager(
         ssidResolveJob = null
         announcedSsid = ssid
         hasConnectedOnce = true
+        // The outage is over, so the backoff starts from the bottom again next time.
+        outageAttempts = 0
         if (downSinceMs != 0L) {
             downtimeAccumMs += monotonicMs() - downSinceMs
             downSinceMs = 0L

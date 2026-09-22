@@ -636,6 +636,21 @@ class DashEngineController(
         publishState()
     }
 
+    /**
+     * The session and the link, stopped by hand in the order the reducer would have chosen.
+     *
+     * Two callers, both of which cannot use the reducer: [dispose], whose `runBlocking`
+     * parks the thread the loop runs on, and the timeout above, where the loop did not
+     * answer. Kept as one function so the duplication of `ConnEvent.UserDisconnect`'s
+     * effects is in a single place — if that branch ever grows a third effect, this is
+     * where it has to be mirrored.
+     */
+    private suspend fun stopEverythingDirectly() {
+        closeSession(farewell = true)
+        wifiManager.disconnect()
+        connState = ConnState.Idle
+    }
+
     /** The re-handshake timer: one at a time, and it reports back as an event. */
     private fun armAuthRetry() {
         if (authRetryJob?.isActive == true) return
@@ -788,8 +803,12 @@ class DashEngineController(
         // down, and a farewell cancelled halfway is the exact failure it exists to prevent.
         withContext(NonCancellable) {
             if (viaFsm) {
-                val done = CompletableDeferred<Unit>()
-                pendingDisconnect = done
+                // Shared, not replaced. Two overlapping disconnects — the button is not
+                // debounced — used to leave the first caller waiting out the whole timeout
+                // and writing the warning below, because the reducer completed only the
+                // second one's slot. Both now await the same signal.
+                val done = pendingDisconnect
+                    ?: CompletableDeferred<Unit>().also { pendingDisconnect = it }
                 connEvents.send(ConnEvent.UserDisconnect)
                 // Bounded: [DashSession.close] gives the farewell its own second and then
                 // cancels regardless, so anything past this is the reducer loop being
@@ -797,17 +816,23 @@ class DashEngineController(
                 if (withTimeoutOrNull(DISCONNECT_TIMEOUT_MS) { done.await() } == null) {
                     RideDiagnostics.warn(
                         "connect",
-                        "disconnect: the state machine did not answer in ${DISCONNECT_TIMEOUT_MS}ms",
+                        "disconnect: the state machine did not answer in ${DISCONNECT_TIMEOUT_MS}ms " +
+                            "— tearing the session and the link down directly",
                     )
                     pendingDisconnect = null
+                    // And then do it anyway. Everything AFTER this block — the keep-alive
+                    // service, GPS, the snapshotter, the ride file — is torn down
+                    // regardless, and publishState says `explicitDisconnect`. Leaving the
+                    // session and the Wi-Fi request standing behind all that is the worst
+                    // of both: the rider is told they are disconnected while the dash keeps
+                    // being streamed to over a link nothing will release.
+                    stopEverythingDirectly()
                 }
             } else {
                 // The same two steps in the same order the reducer would have chosen, by
                 // hand. Kept next to the branch above so the duplication is visible: if
                 // UserDisconnect ever grows a third effect, this is where it is mirrored.
-                closeSession(farewell = true)
-                wifiManager.disconnect()
-                connState = ConnState.Idle
+                stopEverythingDirectly()
             }
         }
         locationTracker.stop()

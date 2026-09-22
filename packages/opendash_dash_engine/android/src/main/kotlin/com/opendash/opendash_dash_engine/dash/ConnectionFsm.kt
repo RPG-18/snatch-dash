@@ -200,6 +200,23 @@ internal object ConnectionFsm {
                 ConnState.WaitingForWifi(state.ssid) to
                     listOf(Effect.StopSession(farewell = false), Effect.CancelAuthRetry)
 
+            // The link came up again under a name we are NOT handshaking with. That is
+            // prefix discovery correcting itself: a capabilities update names the network
+            // the platform would not name at `onAvailable`, and the dash checks that name
+            // inside the encrypted handshake — so the session in flight is talking to it
+            // under a name it will refuse. Restarting the session costs a second; ignoring
+            // the correction costs the full 15 s auth timeout first.
+            is ConnEvent.WifiUp ->
+                if (event.ssid == state.ssid) {
+                    state to emptyList()
+                } else {
+                    ConnState.Handshaking(event.ssid, authRetries = 0) to listOf(
+                        Effect.StopSession(farewell = false),
+                        Effect.CancelAuthRetry,
+                        Effect.OpenSession(event.ssid),
+                    )
+                }
+
             is ConnEvent.WifiGaveUp -> wifiGaveUp(event.reason)
 
             is ConnEvent.GiveUpDue -> giveUp(GIVE_UP_REASON)

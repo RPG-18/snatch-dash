@@ -72,7 +72,10 @@ The `0x0080` length on the auth TLV confirms the RSA ciphertext is 128 bytes
   `55`/`AA`/`BB`/`CC` (4-way).
 - `+runtime` in the table below means the constant is a *prefix* — type, sub
   and length only, with the value concatenated as hex at call time. Example
-  from `REForeGroundService`: `"06080001".concat(hex(volume))`.
+  from `REForeGroundService`: `"06040001".concat(hex(volume + 100))`.
+  (This example named `06 08` until 2026-09-22. That TLV is the **weather
+  code**, not volume — see the `0x06` table below; volume is `06 04`, as the
+  same table has always said.)
 
 ## Coverage
 
@@ -156,7 +159,7 @@ back to the APK; at most six are shown.
 | `03` | +runtime | 1 | yes | `v` | Media flag (bool) — `REForeGroundService` |
 | `04` | +runtime | 1 | yes | `u` | Media volume — value is `volume + 100`, `REForeGroundService` |
 | `05` | `55`, `AA` | 4 | yes | `w, x, y, z` |  |
-| `0C` | `10`, `20`, `30` | 3 |  | `M2, N2, O2` |  |
+| `0C` | `10`, `20`, `30` | 3 |  | `M2, N2, O2` | **Zoom limits**: `30` zoom applied, `20` upper bound reached, `10` lower bound. See "Buttons `09 00`" |
 | `0D` | `55`, `AA` | 2 |  | `i, j` |  |
 | `0E` | `55`, `AA` | 2 |  | `w0, x0` |  |
 | `0F` | +runtime | 1 | yes | `t` | Media flag (bool) — `REForeGroundService` |
@@ -171,7 +174,7 @@ back to the APK; at most six are shown.
 | `19` | +runtime | 1 |  | `a3` |  |
 | `1A` | +runtime | 1 |  | `b3` |  |
 | `1B` | +runtime | 1 |  | `c3` |  |
-| `80` | `03`, `04`, `05`, `06`, `07`, `08`, `09`, `0A`, `0B`, `12`… | 19 | yes | `A2, B2, C2, D2, E2, F2` |  |
+| `80` | `03`, `04`, `05`, `06`, `07`, `08`, `09`, `0A`, `0B`, `12`… | 19 | yes | `A2, B2, C2, D2, E2, F2` | **Button-code echo** in reply to `09 00`. See "Buttons `09 00`" |
 
 #### Type `0x08`
 
@@ -184,7 +187,7 @@ back to the APK; at most six are shown.
 
 | sub | values seen | n | in port | `hbg` fields | note |
 |---|---|---|---|---|---|
-| `00` | `05`, `06`, `07`, `09`, `0A`, `12`, `22` | 7 | yes | `Q2, b1, c1, d1, e1, f1` | Joystick / button event |
+| `00` | `05`, `06`, `07`, `09`, `0A`, `12`, `22` | 7 | yes | `Q2, b1, c1, d1, e1, f1` | Joystick / button event. Full 19-code map in "Buttons `09 00`" below; the constants cover only the six where the code is matched against a whole TLV |
 | `01` | `0055`, `00AA`, `00BB`, `00CC`, `0155`, `01AA`, `01BB`, `01CC`, `0255`, `02AA`… | 24 |  | `J1, K1, L1, M1, N1, O1` |  |
 | `03` | `0A01`, `1401`, `1E01` | 3 |  | `Y0, Z0, a1` |  |
 | `07` | `55`, `AA` | 2 |  | `A3, z3` |  |
@@ -230,9 +233,12 @@ Confidence is stated per row because it varies a lot.
 | `06 11` = `55` | IDR-frame-decoded ack | Identical to our working command | Confirmed |
 | `06 12` = `55` | P-frame-decoded ack | Identical to our working command | Confirmed |
 | `09 00` | Joystick / button event | Same codes we already handle | Confirmed |
+| `06 80` + code | **Button echo**: the app repeats the code of the `09 00` it received | 19 `hbg` constants, each sent from its own handler | Confirmed |
+| `06 0C` = `10`/`20`/`30` | **Zoom limits**: `30` zoom applied · `20` at the upper bound · `10` at the lower | `Z7`/`a8`/`h1` in `NavigationRootFragment` | Confirmed |
 | `04 01` = `55`/`AA` | Temperature unit (°C / °F) | Only TLV sent by `TemperatureActivity` | Likely |
 | `06 04` + value | Media volume, sent as `volume + 100` | `REForeGroundService` media callback | Likely |
-| `06 08` + value | Media, value from `t9k.y().p0()` | Same callback | Plausible |
+| `06 08` + value | **Weather code**, 1 byte: `01` cloudy · `02` thunder · `03` rain · `04` snow/ice · `05` clear · `FF` no data. ~40 AccuWeather codes collapse into these five in `c5r.java` | `REForeGroundService:281`, `WeatherEngine` (`f5r.java`) | Confirmed |
+| `06 10` + value | **Temperature**, 1 byte, `°C + 40`. With no reading the original drops the TLV entirely and adjusts seg count | Same packet | Confirmed |
 | `06 03`, `06 0F` | Media booleans | Same callback, `55`/`AA` args | Plausible |
 | `04 xx`, `03 xx` | Cluster settings family | Sent from `ui/settings/activity/*` | Plausible |
 
@@ -252,23 +258,29 @@ currency only.
 Only `04 01` (temperature) is pinned down so far; the rest of the `03`/`04`
 families are the obvious place to look next.
 
-### The 1 Hz heartbeat ships captured media state
+### The 1 Hz heartbeat ships captured state — media AND weather
 
 Decoding `06 04` has an immediate consequence for the port. Our heartbeat
-template in [`DashCommands.kt`](../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/protocol/DashCommands.kt)
-carries a media block that `heartbeat()` does not patch:
+in [`DashMessage.kt`](../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/protocol/DashMessage.kt)
+carries a block that `Heartbeat` only partly patches:
 
 ```
-06 08 0001 05      ← captured
+06 08 0001 05      ← captured — and it is the WEATHER code, meaning "clear"
 06 10 0001 39      ← patched at runtime (temperature, °C + 40)
 06 03 0001 55      ← captured, "on"
 06 04 0001 A2      ← captured
 06 0F 0001 AA      ← captured, "off"
 ```
 
-`heartbeat()` only rewrites the byte after the `06 10` marker. The other four
-retain whatever the original packet capture happened to contain — and they go
+`Heartbeat` only rewrites the byte after the `06 10` marker — and even that is
+a constant, +25 °C, because its one caller passes no argument. The other four
+retain whatever the original packet capture happened to contain, and they go
 out once a second for the entire session.
+
+**`06 08` is the worse of the two.** It is not media at all but the weather
+glyph, and the captured `05` means "clear" — so the dash has been showing sun
+all year round, in every weather, on every ride. Replacing both bytes with
+real data is what [`spec/weather.md`](../spec/weather.md) plans.
 
 Read through the official app's formula (`06 04` = `volume + 100`), `0xA2` =
 162 → **volume 62**. That the arbitrary captured byte decodes to a plausible
@@ -282,6 +294,101 @@ a volume bar from `06 04`, it has been showing a stranger's volume level.
 
 Unverified on hardware, and harmless if the dash ignores these fields outside
 its media view. Worth a look either way.
+
+### Buttons `09 00`: the full code map and what goes back
+
+The dispatcher is `aaq.S(String)` ([`bluconnect/aaq.java`](../re_app/jadx_out/sources/bluconnect/aaq.java#L520),
+lines ~520-630): it takes the byte at hex offset 8-10 of the packet and calls a
+method on the `s05` interface, implemented by `NavigationRootFragment`. Every
+meaning below comes from the debug `println` inside the handler itself — the
+original prints "Testing - … command from joystick" throughout.
+
+| code | `s05` method | what it does | `06 80` echo | other packets |
+|---|---|---|---|---|
+| `03` | `P1()` | call volume up (`adjustStreamVolume(STREAM_VOICE_CALL, +1)`) | `03` | |
+| `04` | `o0()` | call volume down | `04` | |
+| `05` | `c0()` → `igi.I()` | media play/pause | `05` | |
+| `06` | `D()` → `igi.N()` | media volume up (`MediaControllerCompat`) | `06` | |
+| `07` | `E()` → `igi.M()` | media volume down | `07` | |
+| `08` | `z()` | mute toggle (`STREAM_MUSIC`) | `08` | |
+| `09` | `F()` → `igi.s()` | next track | `09` | |
+| `0A` | `d0()` → `igi.n()` | previous track | `0A` | |
+| `0B` | `x0()` | start navigation | `0B` | |
+| `12` | `X()` | stop navigation | `12` | |
+| `13` | `E2()` | zoom in | `13` | `06 0C` |
+| `14` | `A0()` | zoom out | `14` | `06 0C` |
+| `15` | `h1()` | recenter, zoom set to `16.0` | `15` | `06 0C 30` |
+| `16` | `L()` | establish call | **none** | |
+| `18` | `W()` | start music | **none** | |
+| `19` | `l2()` | navigation notification | `19` | |
+| `20` | `F()` | remove waypoint | `20` | |
+| `21` | `y()` | RSA call | `21` | |
+| `22` | `u()` → `J(true)` | compass | `22` | |
+
+Several things only the whole table shows.
+
+**There are two volumes, on different buttons.** `03`/`04` drive
+`STREAM_VOICE_CALL` through `AudioManager`; `06`/`07` drive the media session's
+volume through `MediaControllerCompat`. They are not interchangeable.
+
+**Two codes get no echo.** The constants `hbg.E2` (`…16`) and `hbg.F2` (`…18`)
+exist in the APK but are never used: "establish call" and "start music" run
+silently. That reads as an oversight in the original, not a protocol rule.
+
+**The media branches send nothing at all when no media service is bound.**
+`c0`, `D`, `E`, `F(str)` and `d0` all start with a `t9k.y().V() == null` check —
+with `null` there is neither an action nor an echo. From the dash's side,
+silence cannot distinguish "no such button" from "nothing is playing".
+
+#### Zoom sends up to three packets
+
+```java
+public void E2() {                                  // code 13, zoom in
+    activity.runOnUiThread(() -> Z7(this));         // camera work, async
+    t9k.y().L().o(pbh.a.f(hbg.B2));                 // 06 80 0001 13 — echo
+}
+```
+
+Then, on the UI thread (`NavigationRootFragment.Z7`; `a8` mirrors it for zoom out):
+
+```java
+double d2 = currentZoom + 2.0;                                    // step is two levels
+if (d2 > 8.0f && d2 < maxZoom) { applyZoom(d2); send(hbg.O2); }   // 06 0C 0001 30
+if (maxZoom - d2 < 2.0)        { send(hbg.N2); }                  // 06 0C 0001 20
+```
+
+Zoom out uses a different threshold: `06 0C 0001 10` (`hbg.M2`) once less than
+three levels remain above the `8.0` floor. The two conditions are independent, so
+a press near a bound emits **two** `06 0C` in a row — `30` first, then `20` or
+`10`. If the new zoom falls outside the range the camera does not move and `30`
+is not sent: only the limit packet and the echo go out.
+
+`15` (recenter) works the same way but sends both packets from one thread and in
+the opposite order: `06 0C 30` first, then the echo.
+
+**Packet order for zoom.** The joystick parser lives on a plain UDP reader
+`Thread` (`jbg`), not on the main looper, so `runOnUiThread` really does *post*
+the work — and the `06 80` echo goes out **before** the `06 0C` packets.
+
+#### How the port differs
+
+- **We echo differently.** [`DashSession`](../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/DashSession.kt)
+  replies `06 80 <code>` to **every** incoming `09 00`, right at parse time. The
+  original echoes from specific handlers and only for codes it understands, so
+  ours is a superset. No harm seen on hardware, but it is a simplification, not
+  parity.
+- **We never send `06 0C`.** `DashCameraState.stepZoom` hits its ceiling
+  silently. The 2026-09-05 ride sent 110 zoom-out presses into the floor; the
+  original would have answered each with `06 0C 10`, and the dash would
+  presumably have greyed the icon out. That is exactly the feedback we lack.
+- **The zoom scales differ on purpose.** The original steps 2 whole levels with
+  a floor of `8.0`; ours is in hundredths — `1000…1500`, step `50` (half a level).
+- **Our code meanings come from `open-dash`, not from here.** The comment in
+  [`dash_button_controller.dart`](../lib/state/dash_button_controller.dart) cites
+  that port's `DashViewModel` constants. The table above is from the official
+  app, and they disagree on `05`/`06`/`07`: ours calls them "previous track" and
+  "answer/reject call", here they are play/pause and media volume. Hardware
+  settles that, not reading.
 
 ## Composite blocks
 

@@ -404,6 +404,36 @@ class ConnectionFsmTest {
     }
 
     @Test
+    fun `a name corrected mid-handshake restarts the session on the new one`() {
+        // Prefix discovery can name the network only after association, via a capabilities
+        // update — and the dash checks that name inside the encrypted handshake. A session
+        // already in flight under the old name will be refused, so ignoring the correction
+        // costs the full 15 s auth timeout before anything can recover.
+        val (state, effects) = ConnectionFsm.reduce(
+            ConnState.Handshaking("RE_", authRetries = 2),
+            ConnEvent.WifiUp("RE_9CP9_250218"),
+        )
+
+        assertEquals(ConnState.Handshaking("RE_9CP9_250218", authRetries = 0), state)
+        assertEquals(
+            listOf(
+                Effect.StopSession(farewell = false),
+                Effect.CancelAuthRetry,
+                Effect.OpenSession("RE_9CP9_250218"),
+            ),
+            effects,
+        )
+    }
+
+    @Test
+    fun `the same name arriving again changes nothing`() {
+        assertEquals(
+            emptyList<Effect>(),
+            effectsOf(ConnState.Handshaking(ssid, authRetries = 2), ConnEvent.WifiUp(ssid)),
+        )
+    }
+
+    @Test
     fun `a link lost during the handshake drops the session without a farewell`() {
         val (state, effects) =
             ConnectionFsm.reduce(ConnState.Handshaking(ssid, authRetries = 2), ConnEvent.WifiDown)

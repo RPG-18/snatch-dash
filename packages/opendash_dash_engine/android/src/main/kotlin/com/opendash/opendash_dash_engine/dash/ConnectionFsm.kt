@@ -26,8 +26,29 @@ internal sealed interface ConnState {
      */
     data class Handshaking(val ssid: String, val authRetries: Int) : ConnState
 
-    /** The session reached READY and the stream was started. */
-    data class Streaming(val ssid: String) : ConnState
+    /**
+     * The session reached READY and the stream was started.
+     *
+     * [settled] is the difference between "a stream started" and "a stream is working", and
+     * the two must not be confused: entering this state used to reset
+     * [Handshaking.authRetries] outright, so a session that reached READY and died a second
+     * later spent none of the budget. A dash that accepts the handshake and then drops the
+     * stream — the shape a restarting dash has — was retried for ever, `authRetries` never
+     * passing 1. So the budget travels THROUGH this state in [authRetries] and is reset only
+     * by [ConnEvent.StreamSettled], STREAM_SETTLE_MS after the stream began.
+     *
+     * The give-up countdown is still cancelled on entry, and deliberately: it is armed from
+     * the rider's tap, and the link can legitimately take most of its two minutes to come up
+     * (`CONNECT_TIMEOUT` is 30 s per attempt, and [ReconnectPolicy] backs off between them).
+     * A stream that starts at t=100 s must not be killed at t=120 s for being younger than
+     * its settle window. What bounds a flapping stream is the retry budget above, and what
+     * re-arms the countdown once that budget is spent is the [Handshaking] branch.
+     */
+    data class Streaming(
+        val ssid: String,
+        val settled: Boolean = false,
+        val authRetries: Int = 0,
+    ) : ConnState
 
     /** Stopped trying. Only a fresh [ConnEvent.UserConnect] leaves this state. */
     data class GaveUp(val reason: String) : ConnState
@@ -63,6 +84,19 @@ internal sealed interface ConnEvent {
     /** The re-handshake timer fired. */
     data object AuthRetryDue : ConnEvent
 
+    /**
+     * The stream has been up long enough to count as working — see [ConnState.Streaming].
+     *
+     * A timer, not evidence from the frame loop, and deliberately: the question it answers is
+     * "did this session last", which is a duration and nothing else. Wiring it to the first
+     * delivered frame would answer "did one frame go out", which a flapping session also
+     * manages.
+     *
+     * It has no effects of its own. All it does is clear the retry budget, which is the one
+     * thing a stream that lasted has earned and a stream that did not has not.
+     */
+    data object StreamSettled : ConnEvent
+
     /** The give-up timer fired: this long without reaching [ConnState.Streaming]. */
     data object GiveUpDue : ConnEvent
 }
@@ -76,7 +110,23 @@ internal sealed interface ConnEvent {
  */
 internal sealed interface Effect {
     data class RequestWifi(val ssid: String) : Effect
-    data object ReleaseWifi : Effect
+
+    /**
+     * Let the dash's network go.
+     *
+     * @param linger keep the platform request alive for a short while first — only the
+     *   rider's own «Отключить» asks for this, and it is the fix for 2026-09-22. Releasing
+     *   unregisters the `NetworkCallback`, and the next `connect()` therefore has to call
+     *   `requestNetwork()` again, which is what raises Android's network-picker dialog: the
+     *   guard in `DashWifiManager.connect` that avoids it needs a request that is still
+     *   held, and a release makes that branch unreachable by construction. Every one of the
+     *   four «Отключить → Подключить» cycles in the 2026-09-22 Huawei ride files went
+     *   through this effect, and the rider got a dialog each time.
+     *
+     *   Not on the give-up paths. "We have stopped trying" and "come straight back" are
+     *   opposite intentions, and [StandDown] beside them exists to let go of the phone.
+     */
+    data class ReleaseWifi(val linger: Boolean) : Effect
     data class OpenSession(val ssid: String) : Effect
 
     /** @param farewell send `projectionStop`/`projectionOff` first — see `DashSession.close`. */
@@ -85,6 +135,17 @@ internal sealed interface Effect {
     data object ArmGiveUp : Effect
     data object CancelGiveUp : Effect
     data object ArmAuthRetry : Effect
+
+    /** Start the countdown after which a stream counts as working — [ConnEvent.StreamSettled]. */
+    data object ArmSettle : Effect
+
+    /**
+     * Stand that countdown down. Every exit from [ConnState.Streaming] emits it.
+     *
+     * Without it a stream that ends at 19 s and a new one that starts at 20 s would be told
+     * "settled" by the first one's timer, which is exactly the case the timer exists to catch.
+     */
+    data object CancelSettle : Effect
 
     /**
      * Stand the re-handshake timer down.
@@ -118,6 +179,16 @@ internal sealed interface Effect {
      * moving the work left a phone that had stopped trying still holding a PARTIAL_WAKE_LOCK
      * and a GPS fix — indefinitely, which is the battery cut-off RECONNECT_GIVEUP_MS exists
      * to be.
+     *
+     * It carries no reason, and that is a finding rather than an omission. Review asked for
+     * one on the grounds that [ReleaseWifi] runs first and `DashWifiManager.disconnect` ends
+     * with `_state.value = WifiState()`, wiping `wifiError` before the rider could be told
+     * why. Both halves of that are true and it still changes nothing: `publishState` fires
+     * again immediately after the last effect, with no error on it, and — checked, 2026-09-22
+     * — NOTHING in `lib/` renders `DashEngineState.wifiError` or `.errorMessage` at all.
+     * There is no rider-facing message to preserve. The gap is real and is recorded in
+     * network-refactoring.md; inventing a banner here would be a different change.
+     * [Report] puts the reason in the ride file, which is where it can currently be read.
      */
     data object StandDown : Effect
 }
@@ -169,9 +240,18 @@ internal object ConnectionFsm {
         }
 
         is ConnState.Handshaking -> when (event) {
+            // The budget goes WITH us, which is the fix of 2026-09-22: it used to be
+            // dropped here, and a dash that accepts every handshake and drops every stream
+            // therefore had no bound at all. CancelGiveUp stays — see [ConnState.Streaming]
+            // for why the countdown must not outlive the rider's tap into a healthy stream.
             is ConnEvent.SessionReady ->
-                ConnState.Streaming(state.ssid) to
-                    listOf(Effect.StartStream, Effect.CancelGiveUp, Effect.CancelAuthRetry)
+                ConnState.Streaming(state.ssid, settled = false, authRetries = state.authRetries) to
+                    listOf(
+                        Effect.StartStream,
+                        Effect.CancelGiveUp,
+                        Effect.CancelAuthRetry,
+                        Effect.ArmSettle,
+                    )
 
             // The link is fine and the session is not — retry the handshake on the same
             // network, which is the only recovery scenario C has. Past the budget the state
@@ -187,12 +267,24 @@ internal object ConnectionFsm {
                 if (state.authRetries < MAX_AUTH_RETRIES) {
                     state to reject + Effect.ArmAuthRetry
                 } else {
-                    state to reject
+                    // ArmGiveUp, and it is not redundant. On the ordinary path the countdown
+                    // is already running and this is a no-op; on the path through a stream
+                    // that never settled it is NOT — [ConnState.Streaming] cancelled it on
+                    // the way in. Without this the machine would sit here in silence with
+                    // nothing left to end it.
+                    state to reject + Effect.ArmGiveUp
                 }
             }
 
+            // Guarded, so that the budget is a property of THIS function and not of the
+            // controller remembering not to arm a timer. Today nothing produces this event
+            // past the budget — [Effect.ArmAuthRetry] is the only source and the branch
+            // above stops emitting it — but "the bound holds because the caller behaves" is
+            // exactly the kind of invariant the reducer exists to stop having.
             is ConnEvent.AuthRetryDue ->
-                state.copy(authRetries = state.authRetries + 1) to listOf(Effect.OpenSession(state.ssid))
+                if (state.authRetries >= MAX_AUTH_RETRIES) state to emptyList()
+                else state.copy(authRetries = state.authRetries + 1) to
+                    listOf(Effect.OpenSession(state.ssid))
 
             // The network went away under a half-open session. No farewell: the packets
             // could only go into a socket nobody reads.
@@ -231,16 +323,25 @@ internal object ConnectionFsm {
         }
 
         is ConnState.Streaming -> when (event) {
+            // The stream lasted, so the budget it spent getting here is forgiven. No
+            // effects: the countdown was cancelled on the way in, and nothing else is owed.
+            is ConnEvent.StreamSettled -> state.copy(settled = true, authRetries = 0) to emptyList()
+
             // Scenario C: the dash stopped answering behind a Wi-Fi link that is still up.
-            // Nothing below notices, so the retry budget starts here and the give-up timer
-            // is re-armed — it was cancelled when this state was entered.
-            is ConnEvent.SessionEnded ->
-                ConnState.Handshaking(state.ssid, authRetries = 0) to
-                    listOf(Effect.ArmGiveUp, Effect.ArmAuthRetry)
+            // Nothing below notices, so the retry budget continues here — unspent if this
+            // stream lasted, carried if it did not, which is the whole difference between a
+            // connection that broke and one that never worked. ArmGiveUp because entering
+            // Streaming cancelled the countdown and something has to end this.
+            is ConnEvent.SessionEnded -> {
+                val budget = if (state.settled) 0 else state.authRetries
+                val base = listOf(Effect.CancelSettle, Effect.ArmGiveUp)
+                ConnState.Handshaking(state.ssid, budget) to
+                    if (budget < MAX_AUTH_RETRIES) base + Effect.ArmAuthRetry else base
+            }
 
             is ConnEvent.WifiDown ->
                 ConnState.WaitingForWifi(state.ssid) to
-                    listOf(Effect.StopSession(farewell = false), Effect.ArmGiveUp)
+                    listOf(Effect.StopSession(farewell = false), Effect.CancelSettle, Effect.ArmGiveUp)
 
             is ConnEvent.WifiGaveUp -> wifiGaveUp(event.reason)
 
@@ -256,7 +357,7 @@ internal object ConnectionFsm {
             // "Отключить" has to work here too. Giving up stops the retrying; it does not
             // undo the WifiNetworkSpecifier request, and while that is registered the phone
             // stays on the dash's no-internet network with nothing using it.
-            is ConnEvent.UserDisconnect -> ConnState.Idle to listOf(Effect.ReleaseWifi)
+            is ConnEvent.UserDisconnect -> ConnState.Idle to listOf(Effect.ReleaseWifi(linger = false))
             else -> state to emptyList()
         }
     }
@@ -311,9 +412,10 @@ internal object ConnectionFsm {
      */
     private fun disconnect(farewell: Boolean) = ConnState.Idle to listOf(
         Effect.StopSession(farewell),
-        Effect.ReleaseWifi,
+        Effect.ReleaseWifi(linger = true),
         Effect.CancelGiveUp,
         Effect.CancelAuthRetry,
+        Effect.CancelSettle,
     )
 
     /**
@@ -325,22 +427,34 @@ internal object ConnectionFsm {
      */
     private fun wifiGaveUp(reason: String) = ConnState.GaveUp(reason) to listOf(
         Effect.StopSession(farewell = false),
-        Effect.ReleaseWifi,
+        Effect.ReleaseWifi(linger = false),
         Effect.CancelGiveUp,
         Effect.CancelAuthRetry,
+        Effect.CancelSettle,
         Effect.Report(reason),
         Effect.StandDown,
     )
 
     private fun giveUp(reason: String) = ConnState.GaveUp(reason) to listOf(
         Effect.StopSession(farewell = false),
-        Effect.ReleaseWifi,
+        Effect.ReleaseWifi(linger = false),
         Effect.CancelAuthRetry,
+        Effect.CancelSettle,
         Effect.Report(reason),
         Effect.StandDown,
     )
 
-    private const val GIVE_UP_REASON = "gave up — too long without reaching STREAMING"
+    /**
+     * "Working", not "reached STREAMING", and the difference is a statement that has to stay
+     * true of every ride this line can appear on.
+     *
+     * The countdown is cancelled on entry to [ConnState.Streaming] and re-armed by the
+     * spent-budget branch of [ConnState.Handshaking], so it can now end a ride where the dash
+     * accepted five handshakes and every stream died inside its settle window. "Never reached
+     * STREAMING" would be false about that ride, and it was already false about a real one:
+     * the 2026-09-22 Huawei log carries this line after twenty-four minutes of streaming.
+     */
+    private const val GIVE_UP_REASON = "gave up — too long without a working stream"
 }
 
 /**
@@ -349,15 +463,20 @@ internal object ConnectionFsm {
  * Separate from `toString()` on purpose. The generated one prints every field, which here
  * means the SSID — already on the `[wifi]` line beside it, so a second copy is noise — and
  * it changes shape whenever a field is added, which breaks a log a human greps. These
- * labels carry exactly the part that is not visible anywhere else: which state, and for
- * [ConnState.Handshaking] how much of the retry budget is spent.
+ * labels carry exactly the part that is not visible anywhere else: which state, for
+ * [ConnState.Handshaking] how much of the retry budget is spent, and for
+ * [ConnState.Streaming] whether the stream has outlived its settle window and how much of
+ * the budget it inherited. `Streaming?#3` is a stream that has not lasted yet, started on the
+ * fourth handshake of this link — the shape a flap loop has, and the one thing the rest of
+ * the ride file cannot show, since every other line about it looks like a healthy stream.
+ * `grep Streaming` still finds both.
  */
 internal val ConnState.label: String
     get() = when (this) {
         is ConnState.Idle -> "Idle"
         is ConnState.WaitingForWifi -> "WaitingForWifi"
         is ConnState.Handshaking -> "Handshaking#$authRetries"
-        is ConnState.Streaming -> "Streaming"
+        is ConnState.Streaming -> if (settled) "Streaming" else "Streaming?#$authRetries"
         is ConnState.GaveUp -> "GaveUp"
     }
 
@@ -372,19 +491,22 @@ internal val ConnEvent.label: String
         // The one flag worth carrying: it is what decides whether an SSID gets blacklisted.
         is ConnEvent.SessionEnded -> if (handshakeRefused) "SessionEnded(refused)" else "SessionEnded"
         is ConnEvent.AuthRetryDue -> "AuthRetryDue"
+        is ConnEvent.StreamSettled -> "StreamSettled"
         is ConnEvent.GiveUpDue -> "GiveUpDue"
     }
 
 internal val Effect.label: String
     get() = when (this) {
         is Effect.RequestWifi -> "RequestWifi"
-        is Effect.ReleaseWifi -> "ReleaseWifi"
+        is Effect.ReleaseWifi -> if (linger) "ReleaseWifi(linger)" else "ReleaseWifi"
         is Effect.OpenSession -> "OpenSession"
         is Effect.StopSession -> if (farewell) "StopSession(farewell)" else "StopSession"
         is Effect.StartStream -> "StartStream"
         is Effect.ArmGiveUp -> "ArmGiveUp"
         is Effect.CancelGiveUp -> "CancelGiveUp"
         is Effect.ArmAuthRetry -> "ArmAuthRetry"
+        is Effect.ArmSettle -> "ArmSettle"
+        is Effect.CancelSettle -> "CancelSettle"
         is Effect.CancelAuthRetry -> "CancelAuthRetry"
         is Effect.RejectSsidGuess -> "RejectSsidGuess"
         is Effect.Report -> "Report"

@@ -193,7 +193,12 @@ class K1GGoldenTest {
 
     @Test
     fun `heartbeat is 25C by default — the value DashSession actually sends`() {
-        assertEquals(heartbeat(25).toHex(), heartbeat().toHex())
+        // Against `DashCommand.Heartbeat()` itself, not against a default re-declared in
+        // this file: `DashSession.heartbeat()` calls the no-argument constructor, so the
+        // sealed type's own default is what goes on the wire. A helper with its own copy of
+        // `= 25` turns this into `25 == 25` and lets the production default be changed with
+        // all forty goldens still green. Review, 2026-09-22.
+        assertEquals(heartbeat(25).toHex(), K1GCodec.encode(DashCommand.Heartbeat()).toHex())
     }
 
     @Test
@@ -484,7 +489,7 @@ class K1GGoldenTest {
             "003b000900000000020100054b31472000" +
                 "0502000109" + "0504000201f4" + "0506000130" + "0509000201f4" +
                 "0546000130" + "050a000155" + "0605000155" + "060d0001aa",
-            activeNavPacket().toHex(),
+            K1GCodec.encode(DashCommand.ActiveNav()).toHex(),
             "seg_count 0009 = header segment + eight TLVs",
         )
     }
@@ -495,7 +500,7 @@ class K1GGoldenTest {
             "003b000900000000020100054b31472000" +
                 "0502000109" + "05040002ffff" + "0506000130" + "0509000201f4" +
                 "0546000130" + "050a000155" + "0605000155" + "060d0001aa",
-            activeNavPacket(primaryDist = 0xFFFF).toHex(),
+            K1GCodec.encode(DashCommand.ActiveNav(primaryDist = 0xFFFF)).toHex(),
         )
     }
 
@@ -619,7 +624,7 @@ private fun projectionOff() = K1GCodec.encode(DashCommand.ProjectionOff)
 private fun frameDecodedIdr() = K1GCodec.encode(DashCommand.DecoderOpenedAck(keyFrame = true))
 private fun frameDecodedP() = K1GCodec.encode(DashCommand.DecoderOpenedAck(keyFrame = false))
 private fun buttonAck(code: Byte) = K1GCodec.encode(DashCommand.ButtonAck(code.toInt() and 0xFF))
-private fun heartbeat(tempC: Int = 25) = K1GCodec.encode(DashCommand.Heartbeat(tempC))
+private fun heartbeat(tempC: Int) = K1GCodec.encode(DashCommand.Heartbeat(tempC))
 private fun callNotify(name: String) = K1GCodec.encode(DashCommand.CallNotify(name))
 private fun callClear() = K1GCodec.encode(DashCommand.CallClear)
 private fun nowPlaying(title: String, album: String, artist: String) =
@@ -637,13 +642,21 @@ private fun routeCard(
     DashCommand.RouteCard(title, projectionOn, maneuver, primaryUnit, totalDist, totalUnit, etaHHMM),
 )
 
+/**
+ * No default for [projectionOn], deliberately.
+ *
+ * `DashSession.activeNav()` omits the argument and rides on `DashCommand.ActiveNav`'s own
+ * default, so a copy of that default here would pin nothing: flipping the production one to
+ * `false` would leave all forty goldens green while the live session sent `06 05 = AA` at
+ * 1 Hz during guidance and dropped the dash out of projection mid-ride. Review, 2026-09-22.
+ */
 private fun activeNavPacket(
     maneuver: Int = DashGlyphs.NAV_MANEUVER_STRAIGHT,
     primaryDist: Int = 500,
     primaryUnit: Int = DashGlyphs.NAV_UNIT_METERS,
     totalDist: Int = 500,
     totalUnit: Int = DashGlyphs.NAV_UNIT_METERS,
-    projectionOn: Boolean = true,
+    projectionOn: Boolean,
 ) = K1GCodec.encode(
     DashCommand.ActiveNav(maneuver, primaryDist, primaryUnit, totalDist, totalUnit, projectionOn),
 )

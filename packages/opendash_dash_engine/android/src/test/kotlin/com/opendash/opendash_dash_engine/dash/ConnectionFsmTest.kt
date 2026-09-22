@@ -59,10 +59,10 @@ class ConnectionFsmTest {
                 Effect.CancelAuthRetry, Effect.CancelGiveUp,
                 Effect.RequestWifi(ssid), Effect.ArmGiveUp,
                 Effect.OpenSession(ssid),
-                Effect.StartStream, Effect.CancelGiveUp, Effect.CancelAuthRetry,
-                Effect.StopSession(farewell = false), Effect.ArmGiveUp,
+                Effect.StartStream, Effect.CancelGiveUp, Effect.CancelAuthRetry, Effect.ArmSettle,
+                Effect.StopSession(farewell = false), Effect.CancelSettle, Effect.ArmGiveUp,
                 Effect.OpenSession(ssid),
-                Effect.StartStream, Effect.CancelGiveUp, Effect.CancelAuthRetry,
+                Effect.StartStream, Effect.CancelGiveUp, Effect.CancelAuthRetry, Effect.ArmSettle,
             ),
             effects,
         )
@@ -105,9 +105,10 @@ class ConnectionFsmTest {
                 Effect.CancelAuthRetry, Effect.CancelGiveUp,
                 Effect.RequestWifi(ssid), Effect.ArmGiveUp,
                 Effect.StopSession(farewell = false),
-                Effect.ReleaseWifi,
+                Effect.ReleaseWifi(linger = false),
                 Effect.CancelGiveUp,
                 Effect.CancelAuthRetry,
+                Effect.CancelSettle,
                 Effect.Report("2 attempts and never connected"),
                 Effect.StandDown,
             ),
@@ -124,6 +125,7 @@ class ConnectionFsmTest {
             ConnEvent.SessionReady,
             ConnEvent.SessionEnded(handshakeRefused = false),
             ConnEvent.AuthRetryDue,
+            ConnEvent.StreamSettled,
             ConnEvent.GiveUpDue,
         )) {
             assertEquals(stuck to emptyList<Effect>(), ConnectionFsm.reduce(stuck, event), "$event")
@@ -151,7 +153,12 @@ class ConnectionFsmTest {
         // First failure comes from Streaming, the rest from Handshaking.
         val (next, fx) = ConnectionFsm.reduce(state, ConnEvent.SessionEnded(handshakeRefused = false))
         state = next
-        assertEquals(listOf(Effect.ArmGiveUp, Effect.ArmAuthRetry), fx, "the timer was cancelled on Streaming")
+        assertEquals(
+            listOf(Effect.CancelSettle, Effect.ArmGiveUp, Effect.ArmAuthRetry),
+            fx,
+            "leaving Streaming stands the settle timer down and re-arms the countdown " +
+                "cancelled on the way in",
+        )
 
         repeat(ConnectionFsm.MAX_AUTH_RETRIES) {
             val (afterRetry, retryFx) = ConnectionFsm.reduce(state, ConnEvent.AuthRetryDue)
@@ -164,7 +171,9 @@ class ConnectionFsmTest {
                 if ((state as ConnState.Handshaking).authRetries < ConnectionFsm.MAX_AUTH_RETRIES) {
                     listOf(Effect.ArmAuthRetry)
                 } else {
-                    emptyList()
+                    // No retry left, so the countdown is what ends this — and it has to be
+                    // re-armed here, because a stream that started and died cancelled it.
+                    listOf(Effect.ArmGiveUp)
                 }
             assertEquals(expected, endFx, "after retry #${(state as ConnState.Handshaking).authRetries}")
         }
@@ -180,8 +189,10 @@ class ConnectionFsmTest {
     fun `C - the budget spent, the give-up timer is what ends it`() {
         val spent = ConnState.Handshaking(ssid, ConnectionFsm.MAX_AUTH_RETRIES)
 
+        // ArmGiveUp and nothing else: no retry is left, and the countdown may have been
+        // cancelled by a stream that started and died — something has to end this state.
         assertEquals(
-            emptyList<Effect>(),
+            listOf(Effect.ArmGiveUp),
             effectsOf(spent, ConnEvent.SessionEnded(handshakeRefused = false)),
         )
 
@@ -190,8 +201,9 @@ class ConnectionFsmTest {
         assertEquals(
             listOf(
                 Effect.StopSession(farewell = false),
-                Effect.ReleaseWifi,
+                Effect.ReleaseWifi(linger = false),
                 Effect.CancelAuthRetry,
+                Effect.CancelSettle,
                 Effect.Report((state as ConnState.GaveUp).reason),
                 Effect.StandDown,
             ),
@@ -200,13 +212,22 @@ class ConnectionFsmTest {
     }
 
     @Test
-    fun `C - reaching the stream clears the budget`() {
+    fun `C - a stream that LASTS clears the budget, and one that flickers does not`() {
         // Otherwise a ride with five separate dash restarts would end on the fifth, having
-        // recovered from the first four.
+        // recovered from the first four — and, the other way round, a dash that accepts
+        // every handshake and drops every stream would never spend the budget at all.
         val recovered = ConnState.Handshaking(ssid, authRetries = 3)
         val (streaming, _) = ConnectionFsm.reduce(recovered, ConnEvent.SessionReady)
-        val (again, _) = ConnectionFsm.reduce(streaming, ConnEvent.SessionEnded(handshakeRefused = false))
+        assertEquals(ConnState.Streaming(ssid, settled = false, authRetries = 3), streaming)
 
+        val (flickered, _) = ConnectionFsm.reduce(streaming, ConnEvent.SessionEnded(handshakeRefused = false))
+        assertEquals(ConnState.Handshaking(ssid, authRetries = 3), flickered, "a flicker spends nothing")
+
+        val (lasted, settleFx) = ConnectionFsm.reduce(streaming, ConnEvent.StreamSettled)
+        assertEquals(ConnState.Streaming(ssid, settled = true, authRetries = 0), lasted)
+        assertEquals(emptyList<Effect>(), settleFx, "the countdown was already cancelled on entry")
+
+        val (again, _) = ConnectionFsm.reduce(lasted, ConnEvent.SessionEnded(handshakeRefused = false))
         assertEquals(ConnState.Handshaking(ssid, authRetries = 0), again)
     }
 
@@ -224,9 +245,10 @@ class ConnectionFsmTest {
         assertEquals(
             listOf(
                 Effect.StopSession(farewell = true),
-                Effect.ReleaseWifi,
+                Effect.ReleaseWifi(linger = true),
                 Effect.CancelGiveUp,
                 Effect.CancelAuthRetry,
+                Effect.CancelSettle,
             ),
             effects,
         )
@@ -243,8 +265,8 @@ class ConnectionFsmTest {
         assertEquals(ConnState.WaitingForWifi(ssid), state)
         assertEquals(
             listOf(
-                Effect.StopSession(farewell = true), Effect.ReleaseWifi,
-                Effect.CancelGiveUp, Effect.CancelAuthRetry,
+                Effect.StopSession(farewell = true), Effect.ReleaseWifi(linger = true),
+                Effect.CancelGiveUp, Effect.CancelAuthRetry, Effect.CancelSettle,
                 Effect.StopSession(farewell = false),
                 Effect.CancelAuthRetry, Effect.CancelGiveUp,
                 Effect.RequestWifi(ssid), Effect.ArmGiveUp,
@@ -263,9 +285,10 @@ class ConnectionFsmTest {
         assertEquals(
             listOf(
                 Effect.StopSession(farewell = false),
-                Effect.ReleaseWifi,
+                Effect.ReleaseWifi(linger = true),
                 Effect.CancelGiveUp,
                 Effect.CancelAuthRetry,
+                Effect.CancelSettle,
             ),
             effects,
         )
@@ -311,10 +334,15 @@ class ConnectionFsmTest {
         // to be.
         for (event in listOf(ConnEvent.GiveUpDue, ConnEvent.WifiGaveUp("no dash"))) {
             assertTrue(
-                Effect.StandDown in effectsOf(ConnState.Handshaking(ssid, 0), event),
+                    Effect.StandDown in effectsOf(ConnState.Handshaking(ssid, 0), event),
                 "$event",
             )
         }
+        // The reason travels on Effect.Report, not on this one — see its KDoc for why it
+        // cannot travel to the rider at all today.
+        assertTrue(
+            Effect.Report("no dash") in effectsOf(ConnState.Handshaking(ssid, 0), ConnEvent.WifiGaveUp("no dash")),
+        )
         // Not on the ordinary paths: a reconnect in progress still needs GPS and the
         // service, and a deliberate disconnect has its own teardown.
         assertFalse(Effect.StandDown in effectsOf(ConnState.Streaming(ssid), ConnEvent.UserDisconnect))
@@ -337,12 +365,52 @@ class ConnectionFsmTest {
             ConnState.GaveUp("2 attempts and never connected"),
         )) {
             assertFalse(
-                Effect.ReleaseWifi in effectsOf(state, ConnEvent.UserConnect(ssid)),
+                effectsOf(state, ConnEvent.UserConnect(ssid)).any { it is Effect.ReleaseWifi },
                 "restart from $state released the request",
             )
         }
         // The deliberate paths still do release: a disconnect is the rider saying stop.
-        assertTrue(Effect.ReleaseWifi in effectsOf(ConnState.Streaming(ssid), ConnEvent.UserDisconnect))
+        assertTrue(
+            Effect.ReleaseWifi(linger = true) in
+                effectsOf(ConnState.Streaming(ssid), ConnEvent.UserDisconnect),
+            "the rider's own disconnect is the one release that keeps the request for a while",
+        )
+    }
+
+    @Test
+    fun `only the rider's own disconnect keeps the WiFi request warm`() {
+        // The 2026-09-22 dialog finding. Releasing unregisters the NetworkCallback, and the
+        // next connect() therefore has to call requestNetwork() again — which is what makes
+        // Android raise its network picker. All four «Отключить → Подключить» cycles in that
+        // day's Huawei ride files went through this effect and cost the rider a dialog.
+        //
+        // The linger is asked for only where coming straight back is the expected thing.
+        for (state in listOf<ConnState>(
+            ConnState.Streaming(ssid),
+            ConnState.Streaming(ssid, settled = true),
+            ConnState.Handshaking(ssid, authRetries = 1),
+            ConnState.WaitingForWifi(ssid),
+        )) {
+            assertEquals(
+                listOf(Effect.ReleaseWifi(linger = true)),
+                effectsOf(state, ConnEvent.UserDisconnect).filterIsInstance<Effect.ReleaseWifi>(),
+                "$state",
+            )
+        }
+        // And never on the two ways of giving up, where it would contradict the StandDown
+        // standing beside it: that effect exists to let go of the phone.
+        for ((state, event) in listOf<Pair<ConnState, ConnEvent>>(
+            ConnState.Handshaking(ssid, 0) to ConnEvent.GiveUpDue,
+            ConnState.WaitingForWifi(ssid) to ConnEvent.GiveUpDue,
+            ConnState.Handshaking(ssid, 0) to ConnEvent.WifiGaveUp("no dash"),
+            ConnState.GaveUp("no dash") to ConnEvent.UserDisconnect,
+        )) {
+            assertEquals(
+                listOf(Effect.ReleaseWifi(linger = false)),
+                effectsOf(state, event).filterIsInstance<Effect.ReleaseWifi>(),
+                "$state / $event",
+            )
+        }
     }
 
     @Test
@@ -400,7 +468,10 @@ class ConnectionFsmTest {
             ConnectionFsm.reduce(ConnState.GaveUp("2 attempts and never connected"), ConnEvent.UserDisconnect)
 
         assertEquals(ConnState.Idle, state)
-        assertEquals(listOf(Effect.ReleaseWifi), effects)
+        // linger = false: nothing is being held to come back to. The link is down — that
+        // is why this state was reached — and "we have stopped trying" is the opposite of
+        // "keep the request warm in case they tap again".
+        assertEquals(listOf(Effect.ReleaseWifi(linger = false)), effects)
     }
 
     @Test
@@ -447,11 +518,15 @@ class ConnectionFsmTest {
 
     @Test
     fun `the give-up timer runs until the stream starts, and not after`() {
-        // Armed on every path that leaves a working stream, cancelled the moment one
-        // starts. Leaving it armed ends a healthy ride at two minutes; forgetting to
-        // re-arm it leaves a dead connection with nothing to end it.
+        // Armed on every path that leaves a stream, cancelled the moment one starts.
+        // Cancelling later than that — when the stream has LASTED — was tried on
+        // 2026-09-22 and had to come out: the link may legitimately take most of the two
+        // minutes to come up, and a stream that starts at t=100s would be killed at t=120s
+        // for being younger than its settle window. What bounds a flapping stream is the
+        // retry budget, not this timer; see the tests below.
         assertTrue(Effect.ArmGiveUp in effectsOf(ConnState.Idle, ConnEvent.UserConnect(ssid)))
         assertTrue(Effect.CancelGiveUp in effectsOf(ConnState.Handshaking(ssid, 0), ConnEvent.SessionReady))
+        assertTrue(Effect.ArmSettle in effectsOf(ConnState.Handshaking(ssid, 0), ConnEvent.SessionReady))
         assertTrue(Effect.ArmGiveUp in effectsOf(ConnState.Streaming(ssid), ConnEvent.WifiDown))
         assertTrue(
             Effect.ArmGiveUp in effectsOf(ConnState.Streaming(ssid), ConnEvent.SessionEnded(false)),
@@ -460,7 +535,117 @@ class ConnectionFsmTest {
         assertIs<ConnState.GaveUp>(ConnectionFsm.reduce(ConnState.WaitingForWifi(ssid), ConnEvent.GiveUpDue).first)
         assertIs<ConnState.GaveUp>(ConnectionFsm.reduce(ConnState.Handshaking(ssid, 0), ConnEvent.GiveUpDue).first)
         // Not while streaming: there the timer is not running at all.
-        assertEquals(ConnState.Streaming(ssid), ConnectionFsm.reduce(ConnState.Streaming(ssid), ConnEvent.GiveUpDue).first)
+        val streaming = ConnState.Streaming(ssid)
+        assertEquals(streaming to emptyList<Effect>(), ConnectionFsm.reduce(streaming, ConnEvent.GiveUpDue))
+    }
+
+    @Test
+    fun `a stream that reaches READY late is not killed for being young`() {
+        // The regression the settle window nearly introduced, and the reason it does not
+        // own the give-up timer. ReconnectPolicy gives the link 30 s per attempt plus
+        // backoff, so linking up at t≈100 s of a 120 s budget is ordinary, not pathological.
+        // Reaching READY must stop the countdown there and then — twenty seconds later the
+        // stream is working and the rider is riding.
+        assertTrue(Effect.CancelGiveUp in effectsOf(ConnState.Handshaking(ssid, 2), ConnEvent.SessionReady))
+        val young = ConnState.Streaming(ssid, settled = false, authRetries = 2)
+        assertEquals(
+            young to emptyList<Effect>(),
+            ConnectionFsm.reduce(young, ConnEvent.GiveUpDue),
+            "nothing in Streaming may act on a countdown that was cancelled on the way in",
+        )
+    }
+
+    @Test
+    fun `a stream that keeps dying inside its settle window stops being retried`() {
+        // The defect this exists for: entering Streaming used to reset the retry budget, so
+        // a dash that accepts every handshake and drops every stream spent none of it —
+        // authRetries never passed 1, and the phone retried until its battery ran out.
+        // Now the budget travels through the stream and only a stream that LASTS forgives it.
+        var state: ConnState = ConnState.Idle
+        var opens = 0
+        val last = mutableListOf<Effect>()
+        fun step(event: ConnEvent) {
+            val (next, fx) = ConnectionFsm.reduce(state, event)
+            state = next
+            opens += fx.count { it is Effect.OpenSession }
+            last.clear(); last += fx
+        }
+
+        step(ConnEvent.UserConnect(ssid))
+        step(ConnEvent.WifiUp(ssid))
+        // Rounds of "handshake accepted, stream dead a second later". No StreamSettled in
+        // any of them — that is what "inside the settle window" means.
+        repeat(20) {
+            step(ConnEvent.SessionReady)
+            assertIs<ConnState.Streaming>(state)
+            step(ConnEvent.SessionEnded(handshakeRefused = false))
+            step(ConnEvent.AuthRetryDue)
+        }
+        // Four retries and no more, however many times the dash answers in between. The
+        // extra AuthRetryDue events land on a state that no longer arms the timer that
+        // produces them, so in the controller they are not produced at all.
+        // Five sessions for one link: the one WifiUp opened, plus the four the budget
+        // allows. The twenty AuthRetryDue events past that are driven here on purpose —
+        // the bound has to hold in the reducer, not merely because the controller stops
+        // arming the timer that produces them.
+        assertEquals(1 + ConnectionFsm.MAX_AUTH_RETRIES, opens, "the budget was refilled by a flicker")
+
+        // And something still ends it: the countdown Streaming cancelled on its way in is
+        // re-armed by the spent-budget branch.
+        val spent = assertIs<ConnState.Handshaking>(state)
+        assertEquals(ConnectionFsm.MAX_AUTH_RETRIES, spent.authRetries)
+        assertEquals(
+            listOf(Effect.ArmGiveUp),
+            effectsOf(spent, ConnEvent.SessionEnded(handshakeRefused = false)),
+        )
+        val (after, effects) = ConnectionFsm.reduce(spent, ConnEvent.GiveUpDue)
+        assertIs<ConnState.GaveUp>(after)
+        assertTrue(Effect.StandDown in effects)
+    }
+
+    @Test
+    fun `a stream that lasts is retried as freely as the first one was`() {
+        // The other half, and the reason the bound is a settle window rather than "never
+        // forgive": a connection that worked for an hour and then broke is not a flapping
+        // one, and must get the whole budget again rather than inherit a spent one.
+        val worked = ConnState.Streaming(ssid, settled = true, authRetries = ConnectionFsm.MAX_AUTH_RETRIES)
+        val (broken, effects) = ConnectionFsm.reduce(worked, ConnEvent.SessionEnded(handshakeRefused = false))
+        assertEquals(ConnState.Handshaking(ssid, authRetries = 0), broken)
+        assertEquals(
+            listOf(Effect.CancelSettle, Effect.ArmGiveUp, Effect.ArmAuthRetry),
+            effects,
+        )
+    }
+
+    @Test
+    fun `every exit from Streaming stands the settle timer down`() {
+        // A leftover timer from the previous stream would report THIS one as having
+        // lasted, seconds after it started — which is the one thing the window must not do.
+        for (event in listOf<ConnEvent>(
+            ConnEvent.SessionEnded(handshakeRefused = false),
+            ConnEvent.WifiDown,
+            ConnEvent.WifiGaveUp("no dash"),
+            ConnEvent.UserDisconnect,
+        )) {
+            val (next, fx) = ConnectionFsm.reduce(ConnState.Streaming(ssid), event)
+            assertFalse(next is ConnState.Streaming, "$event did not leave Streaming")
+            assertTrue(Effect.CancelSettle in fx, "$event: $fx")
+        }
+    }
+
+    @Test
+    fun `settling costs nothing and asks for nothing`() {
+        // It only forgives the budget. If it ever grows an effect, check first that the
+        // effect is safe to apply twice and safe to apply to a LATER attempt's timers —
+        // the controller re-arms the settle timer on every entry to Streaming.
+        val settled = ConnState.Streaming(ssid, settled = true, authRetries = 0)
+        assertEquals(
+            settled to emptyList<Effect>(),
+            ConnectionFsm.reduce(settled, ConnEvent.StreamSettled),
+        )
+        assertFalse(
+            Effect.ArmSettle in effectsOf(ConnState.Streaming(ssid), ConnEvent.StreamSettled),
+        )
     }
 
     // ── The ride-file labels ──────────────────────────────────────────────
@@ -472,7 +657,10 @@ class ConnectionFsmTest {
         assertEquals("Idle", ConnState.Idle.label)
         assertEquals("WaitingForWifi", ConnState.WaitingForWifi(ssid).label)
         assertEquals("Handshaking#3", ConnState.Handshaking(ssid, authRetries = 3).label)
-        assertEquals("Streaming", ConnState.Streaming(ssid).label)
+        // The `?` is the one thing about a streaming connection the rest of the ride file
+        // cannot show: a give-up countdown still running underneath a stream that looks fine.
+        assertEquals("Streaming?#2", ConnState.Streaming(ssid, settled = false, authRetries = 2).label)
+        assertEquals("Streaming", ConnState.Streaming(ssid, settled = true).label)
         assertEquals("GaveUp", ConnState.GaveUp("2 attempts and never connected").label)
 
         for (state in listOf<ConnState>(
@@ -493,6 +681,8 @@ class ConnectionFsmTest {
         // And the farewell, which is what tells a deliberate stop from a dropped link.
         assertEquals("StopSession(farewell)", Effect.StopSession(farewell = true).label)
         assertEquals("StopSession", Effect.StopSession(farewell = false).label)
+        assertEquals("StandDown", Effect.StandDown.label)
+        assertEquals("StreamSettled", ConnEvent.StreamSettled.label)
     }
 
     @Test
@@ -504,6 +694,7 @@ class ConnectionFsmTest {
             ConnEvent.SessionReady,
             ConnEvent.SessionEnded(handshakeRefused = true),
             ConnEvent.AuthRetryDue,
+            ConnEvent.StreamSettled,
             ConnEvent.GiveUpDue,
         )) {
             assertEquals(

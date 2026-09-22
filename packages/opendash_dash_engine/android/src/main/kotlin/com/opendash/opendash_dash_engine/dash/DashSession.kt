@@ -16,6 +16,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.awaitCancellation
@@ -33,6 +34,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import java.util.concurrent.atomic.AtomicBoolean
@@ -133,6 +135,17 @@ internal class DashSession private constructor(
          * whole window — in a window where we otherwise send nothing at all.
          */
         private const val AUTH_REASK_INTERVAL_MS = 2_000L
+
+        /**
+         * How long [close] waits for the session's coroutines after the transport is shut.
+         *
+         * Two seconds against what it is actually waiting for: every loop is cancelled and
+         * the one that could block is released by the socket closing a line earlier, so this
+         * is the margin on a dispatch, not on any work. It exists because [close] runs
+         * inside `NonCancellable` and one caller reaches it through a `runBlocking` on the
+         * main thread — an unbounded wait there is an ANR.
+         */
+        private const val JOIN_TIMEOUT_MS = 2_000L
 
         /**
          * While connected, a healthy dash keeps sending SOMETHING on :2002 — heartbeat
@@ -344,21 +357,56 @@ internal class DashSession private constructor(
      * Idempotent, and safe to call from any thread. Suspends until everything this session
      * started has stopped and the transport is closed — which is what makes "no two live
      * sessions" checkable instead of hoped for.
+     *
+     * **[NonCancellable], because half of this close is worse than none of it.** Most callers
+     * reach here from the reducer loop, and that loop is cancelled by `startFeeds()` on the
+     * next `connect()` and by `dispose()`. Cancelled in the farewell wait, this used to
+     * return without ever reaching `job.cancelAndJoin()`: [finished] was already true, so a
+     * later close skipped the farewell but — more to the point — nobody was left to call one.
+     * The session's coroutines kept running and :2000/:2002 stayed bound, which with
+     * SO_REUSEADDR gone makes the NEXT session's transport throw BindException instead of
+     * opening. The nesting is `withContext(NonCancellable) { withTimeoutOrNull { … } }` and
+     * not the reverse: a timeout OUTSIDE cannot bound a NonCancellable body, while one inside
+     * cancels its own child coroutine and works normally.
      */
-    suspend fun close(farewell: Boolean) = closeMutex.withLock {
-        if (finished.compareAndSet(false, true) && farewell) {
-            outbox.trySend(DashCommand.ProjectionStop)
-            outbox.trySend(DashCommand.ProjectionOff)
+    suspend fun close(farewell: Boolean) = withContext(NonCancellable) {
+        closeMutex.withLock {
+            if (finished.compareAndSet(false, true) && farewell) {
+                outbox.trySend(DashCommand.ProjectionStop)
+                outbox.trySend(DashCommand.ProjectionOff)
+                outbox.close()
+                // Bounded: the farewell is two datagrams to a link-local broadcast, so a
+                // second is four orders of magnitude of headroom. If the radio really is
+                // wedged, a disconnect must still return — the rider is waiting on it.
+                withTimeoutOrNull(FAREWELL_TIMEOUT_MS) { sendJob?.join() }
+            }
             outbox.close()
-            // Bounded: the farewell is two datagrams to a link-local broadcast, so a second
-            // is four orders of magnitude of headroom. If the radio really is wedged, a
-            // disconnect must still return — the rider is waiting on it.
-            withTimeoutOrNull(FAREWELL_TIMEOUT_MS) { sendJob?.join() }
+            // The transport, closed HERE and by name — after the farewell has had its
+            // second, before the join. It is what unblocks [receiveLoop], which is parked in
+            // a `DatagramSocket.receive()` with no timeout that cancellation cannot
+            // interrupt. Until 2026-09-22 the only thing that closed it was the
+            // `awaitCancellation` child's `finally`, i.e. a continuation that first has to be
+            // DISPATCHED onto Dispatchers.IO — the same dispatcher carrying the tile work and
+            // this session's own blocked reader. `dispose()` reaches here through a
+            // `runBlocking` on the main thread, so a late dispatch there is an ANR, and
+            // wrapping the whole method in NonCancellable removed the last thing that could
+            // have cut it short. The child stays: it is what covers a scope cancelled from
+            // outside, where nobody calls this method at all.
+            runCatching { transport?.close() }
+            // And still bounded, because "the socket is closed" and "the loop has noticed"
+            // are not the same instant, and only one of them is ours to guarantee. A close
+            // that returns late is a rider's button that never comes back; the session's
+            // coroutines are already cancelled by then and hold nothing but their own frames.
+            if (withTimeoutOrNull(JOIN_TIMEOUT_MS) { job.cancelAndJoin() } == null) {
+                RideDiagnostics.warn(
+                    TAG,
+                    "session coroutines did not finish in ${JOIN_TIMEOUT_MS}ms after the " +
+                        "transport was closed — ports may still be bound",
+                )
+            }
+            setState(DashState.IDLE)
+            DebugLog.i(TAG) { "Session closed" }
         }
-        outbox.close()
-        job.cancelAndJoin()
-        setState(DashState.IDLE)
-        DebugLog.i(TAG) { "Session closed" }
     }
 
     // ── Lifecycle ─────────────────────────────────────────────────────────

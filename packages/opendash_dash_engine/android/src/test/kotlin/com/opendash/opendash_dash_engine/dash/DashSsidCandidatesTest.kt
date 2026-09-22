@@ -7,9 +7,10 @@ import kotlin.test.assertEquals
  * Which scanned network the app is willing to call "the dash".
  *
  * The only part of the prefix-discovery path a JVM test can reach, and the part that
- * decides something: [DashWifiManager] feeds this list into the encrypted handshake AND
- * persists the winner through `onSsidResolved`, so a wrong pick is a wrong name remembered
- * across restarts.
+ * decides something: [DashWifiManager] feeds this list into the encrypted handshake, and a
+ * winner the dash then accepts is persisted by `DashEngineController.rememberAcceptedSsid`
+ * — so a wrong pick costs the attempt, and a wrong pick the dash somehow accepts would be
+ * remembered across restarts.
  */
 class DashSsidCandidatesTest {
 

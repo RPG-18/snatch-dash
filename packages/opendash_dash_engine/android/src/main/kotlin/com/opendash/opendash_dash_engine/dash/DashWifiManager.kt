@@ -89,6 +89,18 @@ class DashWifiManager(
     companion object {
         private const val TAG              = "DashWifiManager"
         private const val CONNECT_TIMEOUT  = 30_000  // ms — Android shows system dialog within this
+
+        /**
+         * How long the platform request outlives the rider's «Отключить» — see [disconnect].
+         *
+         * A minute, chosen against what the rider actually does: the four «Отключить →
+         * Подключить» cycles in the 2026-09-22 Huawei ride files were 2 s, 7 s, 20 s and
+         * (after a give-up) 2.5 min apart, so a minute covers the taps and not the walk
+         * away. What it costs while it runs is the association itself — the process default
+         * is already bound to cellular, so nothing the rider does needs the link back — and
+         * the phone lets go by itself at the end of it.
+         */
+        private const val LINGER_MS = 60_000L
         // RECONNECT_DELAY (a flat 8 s) lived here until 2026-09-20. The wait is now
         // [reconnectPolicy]'s: a fixed one has the property nobody wants on a bike — every
         // retry after a dead zone lands at the same offset from the one before, so a phone
@@ -177,6 +189,15 @@ class DashWifiManager(
     private var resolvedSsid: String? = null
 
     /**
+     * The pending release of a request that outlived «Отключить» — see [disconnect].
+     *
+     * Its being active is also the flag [connect] reads: while it runs the published state
+     * says IDLE, so "are we still holding a request for the dash" cannot be answered from
+     * [_state] alone.
+     */
+    private var lingerJob: Job? = null
+
+    /**
      * The name [markConnected] has already announced for the CURRENT request.
      *
      * Split out of [resolvedSsid] because the two want different lifetimes and sharing one
@@ -240,12 +261,25 @@ class DashWifiManager(
      */
     private var hasConnectedOnce = false
 
-    /**
-     * When we connect by prefix (any RE_* dash), the exact SSID is only known once the
-     * link is up. This callback reports it so the caller can persist it for direct
-     * reconnects next time. Null/blank if it can't be resolved.
+    /*
+     * There is deliberately no `onSsidResolved` callback here any more.
+     *
+     * It existed to hand the caller the exact name a prefix connection had landed on, so it
+     * could be persisted for direct reconnects — and it fired from all four places that reach
+     * [markConnected], every one of which is BEFORE the K1G handshake. Association is not
+     * identification: the dash checks the SSID inside the encrypted handshake, so until that
+     * completes the name is a hypothesis (see [ScanGuess]). Persisting it there had two
+     * consequences, and the second is why this is gone rather than merely guarded. The first:
+     * one stale `RE_*` in scan results was written into DashConfig and disabled discovery
+     * until the rider cleared the field by hand. The second: with a name in DashConfig, the
+     * controller's Effect.RequestWifi takes its exact-match branch for ever after, so
+     * [rejectScanGuess] — the whole mechanism for "that network associated but is not the
+     * dash" — could never be acted on. It withdrew a guess the next request re-made.
+     *
+     * The one caller persists from `DashEngineController.rememberAcceptedSsid` instead, on
+     * SessionEvent.Ready, reading [WifiState.ssid]. That is the first moment the name is
+     * known to be right rather than merely reachable. Review, 2026-09-22.
      */
-    var onSsidResolved: ((String) -> Unit)? = null
 
     // ── Public API ────────────────────────────────────────────────────────
 
@@ -274,18 +308,59 @@ class DashWifiManager(
         // Keeping the request in THAT case would invert this guard's intent — there is no
         // request to keep, and a re-request is the one thing that can still recover the link.
         val live = _state.value
-        if (live.status == WifiConnStatus.CONNECTED &&
+        // A request held past «Отключить» counts as live here — reclaiming it is the entire
+        // point of [LINGER_MS]. The published state says IDLE during that window, so the
+        // name has to come from a field that survives it.
+        //
+        // [announcedSsid] and NOT [resolvedSsid], which was the first attempt and would
+        // never have fired on the phone this was written for. `resolvedSsid` is set only
+        // where the PLATFORM named the network; the branch that runs when we asked for an
+        // exact SSID calls `markConnected(pendingSsid)` and leaves it null — and that is the
+        // branch the 2026-09-22 Huawei log took all twelve times ("WiFi callback available
+        // for exact SSID"). [announcedSsid] is written by [markConnected] on every one of the
+        // five routes to CONNECTED, and the linger path deliberately does not call [release],
+        // which is the only thing that clears it.
+        val lingering = lingerJob?.isActive == true
+        val heldSsid = if (lingering) announcedSsid.orEmpty() else live.ssid
+        // Stood down HERE, before either branch, and that is not tidiness. Reclaimed or not,
+        // this call ends with a request for the dash — either the held one or a fresh one —
+        // and a timer still armed from the previous «Отключить» would fire `release()` on
+        // whichever we end up with, up to a minute into the new ride: the NetworkCallback
+        // unregistered mid-stream, the link torn down with no `onLost` to notice it, and the
+        // process unbound from cellular. Cancelling only inside the reclaim branch left
+        // exactly that open on every fall-through.
+        lingerJob?.cancel()
+        lingerJob = null
+        if ((live.status == WifiConnStatus.CONNECTED || lingering) &&
             linkCallback != null &&
             network != null &&
-            (if (prefixMatch) live.ssid.startsWith(ssid) else live.ssid == ssid)
+            heldSsid.isNotBlank() &&
+            (if (prefixMatch) heldSsid.startsWith(ssid) else heldSsid == ssid)
         ) {
             // The session counters (hasConnectedOnce, reconnectCount, downtime) deliberately
-            // keep running: this is the same connection, not a new one.
+            // keep running on the CONNECTED path: it is the same connection, not a new one.
+            // Not on the reclaim path — there the rider did press «Отключить», the summary
+            // line for that session has already been written, and carrying the totals over
+            // would make the next ride file's first `link up` report the previous ride's.
+            if (lingering) {
+                reconnectCount = 0
+                downtimeAccumMs = 0
+                downSinceMs = 0
+            }
             wantConnected   = true
             pendingSsid     = ssid
             pendingPassword = password
             pendingPrefix   = prefixMatch
-            DebugLog.i(TAG) { "connect() — already on '${maskSsid(live.ssid)}', keeping the live request" }
+            if (lingering) {
+                DebugLog.i(TAG) { "connect() — reclaiming the lingering request for '${maskSsid(heldSsid)}'" }
+                // Republishes CONNECTED, which is what the controller's Wi-Fi feed turns
+                // into the `WifiUp` the reducer is sitting in WaitingForWifi waiting for.
+                // Without it the restart would wait out the give-up timer on a link that
+                // is already up — see ConnectionFsm.restart's note on this same mechanism.
+                markConnected(heldSsid)
+            } else {
+                DebugLog.i(TAG) { "connect() — already on '${maskSsid(heldSsid)}', keeping the live request" }
+            }
             return
         }
         // Whether this is a new target or the same one we are already chasing. The
@@ -298,10 +373,10 @@ class DashWifiManager(
         // A genuinely different SSID/prefix is a different dash, and starts clean.
         //
         // The second arm is prefix discovery, and without it this guard misses precisely the
-        // flow it was written for. We connect by prefix ('RE_'), resolve the exact SSID,
-        // [onSsidResolved] stores it in the config — and the NEXT connect() therefore arrives
-        // with the exact name and prefixMatch=false, while [pendingSsid] still holds the
-        // prefix. Comparing only the arguments calls that a different dash and clears the
+        // flow it was written for. We connect by prefix ('RE_'), the dash accepts the exact
+        // name, `DashEngineController.rememberAcceptedSsid` stores it in the config — and the
+        // NEXT connect() therefore arrives with the exact name and prefixMatch=false, while
+        // [pendingSsid] still holds the prefix. Comparing only the arguments calls that a different dash and clears the
         // counters, which is the mid-ride "Send to Dash" this branch exists to protect.
         val sameTarget = wantConnected && when {
             ssid == pendingSsid && prefixMatch == pendingPrefix -> true
@@ -359,9 +434,10 @@ class DashWifiManager(
             0 -> null
             1 -> candidates.single()
             // Two dashes in range is not a situation to resolve by picking the first one:
-            // the name we choose here is fed into the encrypted handshake AND persisted by
-            // [onSsidResolved], so a wrong guess is remembered. Refusing leaves the prefix
-            // path, which fails with a message telling the rider to name it themselves.
+            // the name we choose here is fed into the encrypted handshake, and if the dash
+            // accepts it it is persisted — so a wrong guess costs the whole attempt.
+            // Refusing leaves the prefix path, which fails with a message telling the rider
+            // to name it themselves.
             else -> null.also {
                 RideDiagnostics.warn(
                     TAG,
@@ -405,8 +481,8 @@ class DashWifiManager(
         scanGuess = ScanGuess(prefix = pendingSsid, ssid = exact)
         pendingSsid = exact
         pendingPrefix = false
-        // Deliberately NOT [onSsidResolved] and NOT [resolvedSsid]: both mean "this is the
-        // dash's name", and nothing has confirmed that yet. See [ScanGuess].
+        // Deliberately NOT [resolvedSsid] and not persisted anywhere: both would mean "this
+        // is the dash's name", and nothing has confirmed that yet. See [ScanGuess].
     }
 
     /** Put the prefix back after an attempt on a guessed name got nowhere. */
@@ -461,8 +537,30 @@ class DashWifiManager(
         if (wantConnected) requestNetwork()
     }
 
-    fun disconnect() {
-        DebugLog.i(TAG) { "Disconnect requested" }
+    /**
+     * Stop wanting the dash's network.
+     *
+     * @param allowLinger keep the platform request registered for [LINGER_MS] if the link is
+     *   up right now, instead of releasing it at once. **This is the whole of the 2026-09-22
+     *   dialog finding.** Releasing unregisters the `NetworkCallback`; the next `connect()`
+     *   then cannot take the "keeping the live request" branch below — it needs a request
+     *   that is still held — so it calls `requestNetwork()`, and Android raises its
+     *   network-picker. Every «Отключить → Подключить» the rider does went that way.
+     *
+     *   Holding the request means no new `requestNetwork()` at all on the way back, which is
+     *   what makes this immune to BOTH explanations of the dialog: the callback is not
+     *   re-registered, and the link is never torn down, so the dash's BSSID cannot change
+     *   under us either (spec/wifi_retry_policy.md, «Внешние находки»).
+     *
+     *   False from [dispose] and from `disconnect()`'s timeout fallback — the paths that are
+     *   tearing things down by hand because something is already wrong, and must not leave a
+     *   platform request behind them.
+     *
+     * The rider is told they are disconnected either way: [_state] goes to IDLE before the
+     * linger starts. Nothing about the linger is visible above this class.
+     */
+    fun disconnect(allowLinger: Boolean = true) {
+        DebugLog.i(TAG) { "Disconnect requested (allowLinger=$allowLinger)" }
         if (downSinceMs != 0L) {
             downtimeAccumMs += monotonicMs() - downSinceMs
             downSinceMs = 0L
@@ -476,9 +574,39 @@ class DashWifiManager(
         hasConnectedOnce = false
         scanGuess = null
         reconnectJob?.cancel()
+        lingerJob?.cancel()
+        lingerJob = null
+        // Only a link that is actually up is worth keeping. On the give-up paths there is
+        // nothing to hold — that is WHY they gave up — so this is false there without the
+        // reducer having to say so, and the caller's flag only has to veto, never to ask.
+        val worthKeeping = allowLinger &&
+            linkCallback != null &&
+            network != null &&
+            _state.value.status == WifiConnStatus.CONNECTED
+        // Published first, and unconditionally: the rider asked to be disconnected and is
+        // told so whether or not the platform request outlives the tap.
+        _state.value = WifiState()
+        if (worthKeeping) {
+            // The pollers go now, not in a minute: their lines would land in a ride file
+            // that [RideDiagnostics.stop] is about to close, or in the next ride's.
+            stopRssiPolling()
+            ssidPollJob?.cancel(); ssidPollJob = null
+            ssidResolveJob?.cancel(); ssidResolveJob = null
+            RideDiagnostics.log(
+                TAG,
+                "keeping the platform request for ${LINGER_MS / 1000}s — a reconnect inside " +
+                    "that window needs no new NetworkCallback, and so no system dialog",
+            )
+            lingerJob = scope.launch {
+                delay(LINGER_MS)
+                DebugLog.i(TAG) { "linger expired — letting the WiFi request go" }
+                release()
+                releaseCellularDefault()
+            }
+            return
+        }
         release()
         releaseCellularDefault()
-        _state.value = WifiState()
     }
 
     // ── Internal ──────────────────────────────────────────────────────────
@@ -580,7 +708,6 @@ class DashWifiManager(
                 network = activeNetwork
                 resolvedSsid = activeSsid
                 DebugLog.i(TAG) { "Using already-connected matching WiFi '${maskSsid(activeSsid)}'" }
-                onSsidResolved?.invoke(activeSsid)
                 markConnected(activeSsid)
                 return
             }
@@ -604,10 +731,9 @@ class DashWifiManager(
                 throw e
             } catch (e: RequestFailed) {
                 // Only the registration. This catch used to wrap the whole `collect`, so a
-                // throw from anything [handle] touches — `onSsidResolved` reaches into the
-                // controller and from there into DashConfig — was reported as
-                // "requestNetwork threw", unregistered the callback, and left
-                // `wantConnected = true` with nothing to reconnect it.
+                // throw from anything [handle] touches — it publishes state the controller
+                // collects — was reported as "requestNetwork threw", unregistered the
+                // callback, and left `wantConnected = true` with nothing to reconnect it.
                 //
                 // The type and message, not a stack trace: this comes from our own one-line
                 // call into ConnectivityManager, so the frames above say nothing the message
@@ -715,7 +841,6 @@ class DashWifiManager(
                     event.ssid != null -> {
                         resolvedSsid = event.ssid
                         DebugLog.i(TAG) { "WiFi callback available; resolved SSID '${maskSsid(event.ssid)}'" }
-                        onSsidResolved?.invoke(event.ssid)
                         markConnected(event.ssid)
                     }
                     !pendingPrefix -> {
@@ -731,7 +856,6 @@ class DashWifiManager(
                 resolvedSsid = event.ssid
                 network = event.network
                 DebugLog.i(TAG) { "Resolved dash SSID via capabilities: '${maskSsid(event.ssid)}'" }
-                onSsidResolved?.invoke(event.ssid)
                 markConnected(event.ssid)
             }
 
@@ -1032,7 +1156,6 @@ class DashWifiManager(
                     network = activeNetwork
                     resolvedSsid = activeSsid
                     DebugLog.i(TAG) { "Android 11 SSID fallback #${attempt + 1} resolved '${maskSsid(activeSsid)}'" }
-                    onSsidResolved?.invoke(activeSsid)
                     markConnected(activeSsid)
                     return@launch
                 }
@@ -1045,8 +1168,8 @@ class DashWifiManager(
     private fun findAlreadyConnectedDashNetwork(): Pair<Network, String>? {
         // `!in rejectedGuesses` as well as matching: a name this connection already found
         // not to be the dash must not come back through the "we are already on it"
-        // shortcut, where it would be announced and — via onSsidResolved — written into
-        // DashConfig, disabling discovery until the rider clears the field by hand.
+        // shortcut, where it would be announced as CONNECTED and a session opened against
+        // a network this connection has already ruled out.
         val activeSsid = readActiveWifiSsid()
             ?.takeIf { matchesPendingSsid(it) && it !in rejectedGuesses }
             ?: return null

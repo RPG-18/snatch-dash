@@ -103,6 +103,18 @@ class DashEngineController(
         private const val RECONNECT_GIVEUP_MS = 120_000L
 
         /**
+         * How long a stream has to last before it counts as working — [Effect.ArmSettle].
+         *
+         * Twenty seconds: twice the RX watchdog's RX_IDLE_TIMEOUT_MS, so a stream that gets
+         * here has exchanged heartbeats with the dash in both directions rather than merely
+         * having been started. Short against RECONNECT_GIVEUP_MS by an order of magnitude,
+         * which is the property that matters — a genuinely working stream must cancel the
+         * give-up countdown with most of it still unspent, or a late [ConnEvent.StreamSettled]
+         * would end a good ride.
+         */
+        private const val STREAM_SETTLE_MS = 20_000L
+
+        /**
          * How long [disconnect] waits for the reducer to finish acting on it.
          *
          * Generous against what it is actually waiting for — `DashSession.close` gives the
@@ -110,6 +122,9 @@ class DashEngineController(
          * loop cannot leave the rider's button spinning.
          */
         private const val DISCONNECT_TIMEOUT_MS = 3_000L
+
+        /** How long the teardown waits for a starved reducer loop to notice its cancellation. */
+        private const val FSM_JOIN_TIMEOUT_MS = 500L
 
         /**
          * How often the `[mem]` line is written.
@@ -249,8 +264,22 @@ class DashEngineController(
      * RECONNECT_GIVEUP_MS. Driven by [Effect.ArmGiveUp]/[Effect.CancelGiveUp], never by a
      * state read: the reducer knows which transitions leave a working stream, and it is the
      * only thing that does.
+     *
+     * It is NOT what bounds a stream that keeps starting and dying — it cannot be, because a
+     * link may legitimately take most of its two minutes to come up, and a stream that starts
+     * at t=100 s would then be killed at t=120 s for being new. That bound is the retry
+     * budget carried through [ConnState.Streaming], and this timer is re-armed by the
+     * reducer once the budget is spent.
      */
     private var giveupJob: Job? = null
+
+    /**
+     * Armed on entry to [ConnState.Streaming], cancelled on every exit from it — see
+     * [Effect.ArmSettle]. What it answers is "did this stream last", which is why it is a
+     * plain delay and not a subscription to anything the frame loop produces, and the only
+     * thing that answer decides is whether the retry budget is forgiven.
+     */
+    private var settleJob: Job? = null
 
     /**
      * Per-minute `[mem]` sampler, tied to the CONNECTION rather than to the stream.
@@ -421,9 +450,6 @@ class DashEngineController(
         startFeeds()
 
         val ssid = dashConfig.ssid
-        wifiManager.onSsidResolved = { resolved ->
-            if (dashConfig.needsDiscovery) dashConfig.ssid = resolved
-        }
         // The wreck, if there is one, is closed by the reducer's own StopSession — see the
         // UserConnect branch for WaitingForWifi. It is not closed here, and that is the
         // point of having one place decide.
@@ -509,7 +535,29 @@ class DashEngineController(
         // `Failed(handshakeRefused)` arriving once the reducer has reached Handshaking on
         // the FRESH link blacklists the SSID that link is using. The reducer cannot tell
         // them apart; only this layer holds the identity.
-        val wreck = current.value
+        //
+        // **But only a session the reducer has already abandoned is a wreck**, and getting
+        // that wrong wedged the machine for good. `connect()`'s guard lets a tap through
+        // once the session has gone to ERROR or IDLE — which is the ordinary "dash
+        // restarted" case — while the reducer is still in [ConnState.Streaming], because
+        // the `SessionEnded` that would move it is sitting in that very channel. Pinning
+        // that session as the wreck threw the event away; `UserConnect` is a no-op in
+        // Streaming; and the give-up timer was cancelled on the way in. The result was a
+        // rider tapping «Подключить» into a machine with no session, no timers and no
+        // remaining source of events — for ever, on every subsequent tap. Review,
+        // 2026-09-22.
+        //
+        // The read of [connState] is exact rather than merely cheap here: this method and
+        // the reducer loop both run on the scope's `Dispatchers.Main`, and nothing between
+        // the read and the `launch` below suspends.
+        // [ConnState.Streaming] and nothing else. Handshaking was in this list for an hour
+        // and had to come out: there `UserConnect` goes through `restart()`, which emits
+        // StopSession before the new RequestWifi, so the session IS closed and its buffered
+        // events must still be muted — a `Failed(handshakeRefused = true)` arriving after the
+        // reducer has reached Handshaking on the fresh link blacklists the SSID that link is
+        // using. Streaming is the only state where `UserConnect` is a no-op, and therefore
+        // the only one where muting the session leaves nothing to move the machine.
+        val wreck = if (connState is ConnState.Streaming) null else current.value
         sessionFeedJob = scope.launch {
             launch {
                 // The `[session] → …` line, and nothing else: the state flow is for the ride
@@ -557,7 +605,7 @@ class DashEngineController(
                 } else {
                     wifiManager.connect(effect.ssid, dashConfig.password, prefixMatch = true)
                 }
-            Effect.ReleaseWifi -> wifiManager.disconnect()
+            is Effect.ReleaseWifi -> wifiManager.disconnect(allowLinger = effect.linger)
             is Effect.OpenSession -> openSession(effect.ssid)
             is Effect.StopSession -> closeSession(effect.farewell)
             Effect.StartStream -> startStreamGuarded()
@@ -565,6 +613,8 @@ class DashEngineController(
             Effect.CancelGiveUp -> cancelGiveupTimer()
             Effect.ArmAuthRetry -> armAuthRetry()
             Effect.CancelAuthRetry -> { authRetryJob?.cancel(); authRetryJob = null }
+            Effect.ArmSettle -> armSettleTimer()
+            Effect.CancelSettle -> { settleJob?.cancel(); settleJob = null }
             // A no-op unless the name came from a scan — only the Wi-Fi layer knows which.
             Effect.RejectSsidGuess -> if (wifiManager.usingScanGuess) wifiManager.rejectScanGuess()
             is Effect.Report -> RideDiagnostics.log("connect", effect.reason)
@@ -625,6 +675,7 @@ class DashEngineController(
      */
     private fun standDown() {
         memJob?.cancel(); memJob = null
+        settleJob?.cancel(); settleJob = null
         stoppingDeliberately = true
         streamJob?.cancel()
         stopMediaForwarding()
@@ -633,6 +684,9 @@ class DashEngineController(
         snapshots.releaseNow(snapshotGeneration)
         DashKeepAliveService.stop(context)
         RideDiagnostics.stop("gave up")
+        // Without a reason on it, and not for want of trying — see [Effect.StandDown]. The
+        // reason reaches the ride file through [Effect.Report]; it reaches the rider nowhere,
+        // because nothing in `lib/` renders `wifiError` or `errorMessage`.
         publishState()
     }
 
@@ -644,10 +698,18 @@ class DashEngineController(
      * answer. Kept as one function so the duplication of `ConnEvent.UserDisconnect`'s
      * effects is in a single place — if that branch ever grows a third effect, this is
      * where it has to be mirrored.
+     *
+     * Both callers cancel [fsmJob] first, which is what makes the [connState] write below
+     * legal: that field's contract is "written only by the reducer loop", and the loop is
+     * gone by the time this runs.
      */
     private suspend fun stopEverythingDirectly() {
         closeSession(farewell = true)
-        wifiManager.disconnect()
+        // No linger: both callers are tearing things down by hand because the normal path
+        // did not work, and neither may leave a platform request registered behind them —
+        // [dispose] least of all, since its scope is about to be cancelled and the timer
+        // that would release it would never fire.
+        wifiManager.disconnect(allowLinger = false)
         connState = ConnState.Idle
     }
 
@@ -778,6 +840,7 @@ class DashEngineController(
         // connect() before anything is allocated again. Review, 2026-09-16.
         memJob?.cancel(); memJob = null
         giveupJob?.cancel(); giveupJob = null
+        settleJob?.cancel(); settleJob = null
         // Cancelled but deliberately NOT nulled, unlike every other job here. cancel() is
         // cooperative: the frame loop keeps running on its own `dash-frame` thread until its next
         // suspension point, and [FrameStreamer.run]'s finally releases the encoder. Dropping
@@ -820,6 +883,26 @@ class DashEngineController(
                             "— tearing the session and the link down directly",
                     )
                     pendingDisconnect = null
+                    // The loop is not answering, so take it out before touching what it
+                    // owns. [connState] is documented as written only by [fsmJob], and
+                    // [stopEverythingDirectly] writes it; a loop still mid-iteration would
+                    // otherwise finish that iteration afterwards — writing its own `next`
+                    // over the Idle below and arming timers on the controller's scope after
+                    // the rider has been told they are disconnected.
+                    //
+                    // Joined, but only briefly: cancellation is cooperative and this branch
+                    // exists precisely because the loop is not cooperating. Half a second
+                    // covers a loop suspended at an ordinary point and gives up on one that
+                    // is genuinely stuck, which is no worse than not joining at all.
+                    // `withTimeoutOrNull` INSIDE the enclosing NonCancellable, which is the
+                    // nesting that works.
+                    //
+                    // Events left in the UNLIMITED channel are not a problem: the next
+                    // [connect] drains them with [connState] at Idle, where everything but
+                    // UserConnect is a no-op.
+                    fsmJob?.cancel()
+                    withTimeoutOrNull(FSM_JOIN_TIMEOUT_MS) { fsmJob?.join() }
+                    fsmJob = null
                     // And then do it anyway. Everything AFTER this block — the keep-alive
                     // service, GPS, the snapshotter, the ride file — is torn down
                     // regardless, and publishState says `explicitDisconnect`. Leaving the
@@ -870,22 +953,42 @@ class DashEngineController(
      * Start the give-up countdown if it isn't already running — see RECONNECT_GIVEUP_MS.
      *
      * It reports, it does not decide: the `sessionState != STREAMING` re-check that used to
-     * stand here is gone because the timer no longer runs while streaming at all — the
-     * reducer cancels it on entry to [ConnState.Streaming] and re-arms it on every path that
-     * leaves one. A timer that has to re-check the state it was armed by is a timer whose
-     * arming nobody trusts.
+     * stand here is gone because the reducer owns both the arming and the cancelling. A
+     * timer that has to re-check the state it was armed by is a timer whose arming nobody
+     * trusts.
+     *
+     * Idempotent, and that is load-bearing rather than tidy: the reducer emits
+     * [Effect.ArmGiveUp] on every exit from a stream, and only the first of those after a
+     * [Effect.CancelGiveUp] is meant to start a countdown.
      */
     private fun armGiveupTimer() {
         if (giveupJob?.isActive == true) return
         giveupJob = scope.launch {
             delay(RECONNECT_GIVEUP_MS)
-            DebugLog.w(TAG) { "Giving up — ${RECONNECT_GIVEUP_MS}ms without reaching STREAMING" }
-            RideDiagnostics.log("error", "gave up — ${RECONNECT_GIVEUP_MS}ms without reaching STREAMING")
+            DebugLog.w(TAG) { "Giving up — ${RECONNECT_GIVEUP_MS}ms without a working stream" }
+            RideDiagnostics.log("error", "gave up — ${RECONNECT_GIVEUP_MS}ms without a working stream")
             connEvents.trySend(ConnEvent.GiveUpDue)
         }
     }
 
     private fun cancelGiveupTimer() { giveupJob?.cancel(); giveupJob = null }
+
+    /**
+     * The settle countdown — see STREAM_SETTLE_MS and [ConnState.Streaming].
+     *
+     * Replaced rather than kept, unlike [armGiveupTimer]: every arming here belongs to one
+     * particular stream, and a leftover timer from the previous one would tell the reducer
+     * that THIS stream has lasted when it has only just started. The reducer stands it down
+     * on every exit from Streaming as well, so this is the second of two guards — cheap, and
+     * the one that holds if an exit is ever added without its [Effect.CancelSettle].
+     */
+    private fun armSettleTimer() {
+        settleJob?.cancel()
+        settleJob = scope.launch {
+            delay(STREAM_SETTLE_MS)
+            connEvents.trySend(ConnEvent.StreamSettled)
+        }
+    }
 
     /**
      * Forwards the phone's now-playing/incoming-call state to the dash via

@@ -58,6 +58,24 @@ internal sealed interface DashCommand {
     /** Echo of a button code, sent BEFORE any other work (invariant 7). */
     data class ButtonAck(val code: Int) : DashCommand
 
+    /**
+     * What the zoom buttons did to the camera — `06 0C`, the dash's only feedback channel
+     * for a control that has bottomed out.
+     *
+     * **Until 2026-09-25 we never sent this at all**, and the cost is on the record: the
+     * 2026-09-05 ride put 110 zoom-out presses into the floor, and from the rider's seat a
+     * control that has hit its limit is indistinguishable from one that is broken — nothing
+     * moves and the dash says nothing. The original answers every press
+     * (`docs/k1g_commands.md`, «Zoom sends up to three packets»).
+     *
+     * A press can produce TWO of these, and that is the original's shape rather than a
+     * mistake: its two conditions are independent, so a press that moves the camera AND
+     * lands on the bound sends [ZoomState.Applied] first and the bound second. A press that
+     * moves nothing sends only the bound — [ZoomState.Applied] means "the camera moved",
+     * not "the button was received", and the `06 80` echo already covers the latter.
+     */
+    data class ZoomLimit(val state: ZoomState) : DashCommand
+
     // ── Periodic ──
     /** 1 Hz status. On-wire temperature byte is `°C + 40`. */
     data class Heartbeat(val tempC: Int = 25) : DashCommand
@@ -107,6 +125,31 @@ internal sealed interface DashCommand {
         val seq: Int,
         val segCount: Int = 1 + tlvs.size,
     ) : DashCommand
+}
+
+/**
+ * The three values `06 0C` carries, named.
+ *
+ * Wire values are the original's and are not ours to choose. The THRESHOLDS are ours: the
+ * scales differ on purpose — the original steps two whole zoom levels above a floor of 8.0,
+ * `DashCameraState` works in hundredths over `floor..ZOOM_MAX` with a step of 50 — so its
+ * conditions cannot be ported, only its vocabulary.
+ *
+ * One asymmetry of the original is deliberately NOT copied: it warns about the upper bound
+ * one step early and about the lower bound *three* levels early, with a two-level step. That
+ * reads as an accident rather than a rule, and on a scale where the camera clamps instead of
+ * refusing to move it would mean greying an icon that still works. Ours fires the bound when
+ * the camera is actually ON the bound, which is the statement the dash can act on.
+ */
+enum class ZoomState(val wire: Int) {
+    /** The camera moved. */
+    Applied(0x30),
+
+    /** The camera is at `ZOOM_MAX` and a further zoom-in cannot move it. */
+    AtMax(0x20),
+
+    /** The camera is at its floor — the dynamic one the installed packs set, not `ZOOM_MIN`. */
+    AtMin(0x10),
 }
 
 /**

@@ -22,6 +22,7 @@ import com.opendash.opendash_dash_engine.dash.map.MapStyleAssembler
 import com.opendash.opendash_dash_engine.dash.map.MapTheme
 import com.opendash.opendash_dash_engine.dash.map.OverlayRenderer
 import com.opendash.opendash_dash_engine.dash.protocol.DashGlyphs
+import com.opendash.opendash_dash_engine.dash.protocol.ZoomState
 import com.opendash.opendash_dash_engine.dash.video.DashEncoder
 import com.opendash.opendash_dash_engine.media.CallController
 import com.opendash.opendash_dash_engine.media.CallInfoProvider
@@ -1123,13 +1124,41 @@ class DashEngineController(
     fun panBy(dx: Float, dy: Float) = cameraState.panBy(dx, dy)
 
     fun zoomIn() {
-        cameraState.zoomIn()
+        reportZoom(cameraState.zoomIn())
         publishState()
     }
 
     fun zoomOut() {
-        cameraState.zoomOut()
+        reportZoom(cameraState.zoomOut())
         publishState()
+    }
+
+    /**
+     * Tell the dash what the zoom button actually did — `06 0C`, задача 7.11.
+     *
+     * Up to two packets, and the order is the original's: [ZoomState.Applied] first, the
+     * bound second. A press that moved nothing sends only the bound, because `Applied`
+     * means "the camera moved" — the fact that the button arrived is already covered by the
+     * `06 80` echo, which `DashSession` sends at parse time, i.e. before any of this.
+     *
+     * Silently dropped with no session, like every other command: [DashSession.send] is a
+     * `trySend` into a closed channel, and a zoom press with nothing to tell is not an error
+     * worth a line in the ride file at thumb rate.
+     *
+     * **Gated on READY/STREAMING, same as [setRouteCard].** Not tidiness: `sendLoop` starts
+     * before either `sendScript`, so a zoom press during a mid-ride reconnect would slip up
+     * to two datagrams into the initial burst or the nav-entry script — sequences whose
+     * pauses are the protocol (invariant 4) and which were captured, not designed. And the
+     * packet would be pointless there anyway: it describes a camera the dash is not showing
+     * yet. Review, 2026-09-25.
+     */
+    private fun reportZoom(step: DashCameraState.ZoomStep) {
+        val live = current.value ?: return
+        val st = live.state.value
+        if (st != DashState.READY && st != DashState.STREAMING) return
+        if (step.moved) live.send(DashCommand.ZoomLimit(ZoomState.Applied))
+        if (step.atMax) live.send(DashCommand.ZoomLimit(ZoomState.AtMax))
+        if (step.atMin) live.send(DashCommand.ZoomLimit(ZoomState.AtMin))
     }
 
     fun toggleHeadingUp() {

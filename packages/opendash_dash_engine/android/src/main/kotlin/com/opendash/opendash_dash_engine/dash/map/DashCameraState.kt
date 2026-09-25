@@ -223,6 +223,21 @@ internal class DashCameraState(
     fun zoomOut() = stepZoom(-ZOOM_STEP, "zoomOut")
 
     /**
+     * What one zoom step did, for the caller that has to tell the dash — see
+     * `DashCommand.ZoomLimit`.
+     *
+     * Returned rather than sent from here on purpose: this class is the camera, and it has
+     * no business knowing that a protocol exists. The two facts it does own are whether the
+     * camera moved and whether it is now against a stop; turning that into `06 0C` is the
+     * controller's job.
+     *
+     * [atMin] is against the DYNAMIC [floor], not [ZOOM_MIN]: installed packs raise it, and
+     * a rider whose packs bottom out at 12.00 is at the stop there, whatever the constant
+     * says.
+     */
+    data class ZoomStep(val moved: Boolean, val atMax: Boolean, val atMin: Boolean)
+
+    /**
      * One zoom step, and a line saying whether it moved anything.
      *
      * The clamp is the point. `zoomOut` at [ZOOM_MIN] and `zoomIn` at [ZOOM_MAX]
@@ -232,7 +247,7 @@ internal class DashCameraState(
      * to say about any of them. Saying "ignored, already at the floor" costs one
      * line per press at a rate a thumb sets.
      */
-    private fun stepZoom(delta: Int, action: String) {
+    private fun stepZoom(delta: Int, action: String): ZoomStep {
         // Logged on the calling (Flutter platform) thread, unlike [panBy], and that
         // is the deliberate half of the asymmetry: this arrives at thumb rate from a
         // physical button — 110 presses across the whole 2026-09-05 ride — where
@@ -245,6 +260,17 @@ internal class DashCameraState(
             "camera",
             if (zoom != before) "$action ${zoomText(before)}→${zoomText(zoom)}"
             else "$action ignored — already at ${if (delta > 0) "ZOOM_MAX" else "ZOOM_MIN"} (${zoomText(before)})",
+        )
+        // Each bound belongs to the direction that can reach it, which is also how the
+        // original splits it — one handler per button. Without that the ladder's degenerate
+        // case reports nonsense: a pack whose header claims minzoom >= 15 puts [floor] AT
+        // [ZOOM_MAX] (see [applyPackFloor] — the byte is 0..255, not "something sensible"),
+        // and then every press is simultaneously at the ceiling and at the floor, telling
+        // the dash both. Review, 2026-09-25.
+        return ZoomStep(
+            moved = zoom != before,
+            atMax = delta > 0 && zoom >= ZOOM_MAX,
+            atMin = delta < 0 && zoom <= floor,
         )
     }
 

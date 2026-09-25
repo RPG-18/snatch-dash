@@ -201,6 +201,31 @@ class K1GGoldenTest {
         assertEquals(heartbeat(25).toHex(), K1GCodec.encode(DashCommand.Heartbeat()).toHex())
     }
 
+    // ── 06 0C: what the zoom buttons did (задача 7.11) ───────────────────
+
+    @Test
+    fun `zoom limits are three one-byte TLVs on 06 0C`() {
+        // Wire values are the original's, read out of the decompiled app
+        // (docs/k1g_commands.md): 30 applied, 20 at the upper bound, 10 at the lower.
+        // Not ours to choose, so they are spelled out here rather than read from the enum —
+        // a test that quotes the constant it is guarding proves nothing.
+        val head = "0016000200000000020100054b31472000"
+        assertEquals(head + "060c000130", zoomLimit(ZoomState.Applied).toHex())
+        assertEquals(head + "060c000120", zoomLimit(ZoomState.AtMax).toHex())
+        assertEquals(head + "060c000110", zoomLimit(ZoomState.AtMin).toHex())
+    }
+
+    @Test
+    fun `a zoom limit is the same shape as the button echo beside it`() {
+        // Both are one-byte 06-family TLVs and travel together on every press: the echo
+        // first (DashSession answers at parse time), then up to two of these. Same header,
+        // same length — if one ever grows a field, this is where the pair stops matching.
+        assertEquals(
+            buttonAck(0x13).toHex().length,
+            zoomLimit(ZoomState.Applied).toHex().length,
+        )
+    }
+
     @Test
     fun `the temperature offset puts -40C at 00 and 215C at FF`() {
         assertEquals(0x00, tempByteOf(heartbeat(-40)))
@@ -624,6 +649,7 @@ private fun projectionOff() = K1GCodec.encode(DashCommand.ProjectionOff)
 private fun frameDecodedIdr() = K1GCodec.encode(DashCommand.DecoderOpenedAck(keyFrame = true))
 private fun frameDecodedP() = K1GCodec.encode(DashCommand.DecoderOpenedAck(keyFrame = false))
 private fun buttonAck(code: Byte) = K1GCodec.encode(DashCommand.ButtonAck(code.toInt() and 0xFF))
+private fun zoomLimit(state: ZoomState) = K1GCodec.encode(DashCommand.ZoomLimit(state))
 private fun heartbeat(tempC: Int) = K1GCodec.encode(DashCommand.Heartbeat(tempC))
 private fun callNotify(name: String) = K1GCodec.encode(DashCommand.CallNotify(name))
 private fun callClear() = K1GCodec.encode(DashCommand.CallClear)

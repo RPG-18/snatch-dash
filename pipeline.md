@@ -14,7 +14,7 @@
 которых всё это исполняется. Код в `DashEngineController.kt`,
 `dash/map/`, `dash/video/`, спецификации в `spec/drawing_from_local_tiles.md`
 и `spec/video.md`. Сетевой слой (сокеты, K1G, Wi-Fi) разобран отдельно в
-`improvemen-dash-protocol.md` — здесь он затрагивается только там, где
+[`plans/done/2026-09-09-improvement-dash-protocol.md`](plans/done/2026-09-09-improvement-dash-protocol.md) — здесь он затрагивается только там, где
 конвейер кадра в него упирается.
 
 Документ самодостаточен: в него сведены три прохода. Чтение кода «кто на
@@ -569,7 +569,7 @@ Wi-Fi-локи в сетевом плане; их судья — строка `t
 | [dash/map/MapFrameRenderer.kt](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/map/MapFrameRenderer.kt) | 581 | Камера, сигнатура перерисовки, MapLibre, оверлеи, превью (новое, 16.09) |
 | [dash/map/DashCameraState.kt](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/map/DashCameraState.kt) | 300 | Зум/пан/follow/heading-up и лестница зумов (новое, 16.09) |
 | [DashSession.kt](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/DashSession.kt) | 1065 | Сессия; для конвейера — `rtpSender()` и RX-вотчдог с `rxGaps` |
-| [DashWifiManager.kt](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/DashWifiManager.kt) | 624 | Линк до дэша; вне области, см. `improvemen-dash-protocol.md` |
+| [DashWifiManager.kt](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/DashWifiManager.kt) | 624 | Линк до дэша; вне области, см. [`plans/done/2026-09-09-improvement-dash-protocol.md`](plans/done/2026-09-09-improvement-dash-protocol.md) |
 | [MapSnapshotProvider.kt](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/map/MapSnapshotProvider.kt) | 609 | MapLibre offscreen: снапшот с дедлайном, детекция зависания, пересоздание |
 | [DashEncoder.kt](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/video/DashEncoder.kt) | 418 | `MediaCodec` H.264, Surface-вход, CBR 200/100 kbps, синхронный `drain()` — теперь возвращает число выданных кадров (гейт 0) |
 | [PositionQuality.kt](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/map/PositionQuality.kt) | 363 | Доверие к позиции, кросс-проверка провайдеров (13.09), часы — обязательный параметр |
@@ -1373,7 +1373,7 @@ data class DashInputs(
 - **Как `DashInputs` ляжет на `publishState()`** и обратный путь состояния в
   Flutter — не оценивалось.
 - `DashSession` целиком, Wi-Fi-слой, K1G — вне области; см.
-  `improvemen-dash-protocol.md`.
+  [`plans/done/2026-09-09-improvement-dash-protocol.md`](plans/done/2026-09-09-improvement-dash-protocol.md).
 
 Отдельно: код-находки этого отчёта перепроверены трижды — независимой
 рецензией по редакции 11.09, повторным чтением кода 14.09 после влития

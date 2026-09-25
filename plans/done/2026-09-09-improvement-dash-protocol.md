@@ -2,6 +2,42 @@
 
 Дата: 2026-09-09. Ветка `fix/need-to-fix-native-engine`, HEAD `d8068db`.
 
+> ## Архив, 2026-09-25. Действовать по этому документу не нужно.
+>
+> Он сделал свою работу: из него вырос [`network-refactoring.md`](../../network-refactoring.md),
+> и этапы 1-6 того плана плюс задачи 7.4-7.5 закрыты (PR #12, тег `v1.0.1`).
+> Здесь он остаётся как **снимок «как было»** — восемь полей `Job`,
+> 26 `@Volatile`, 14 ручных `cancel()` в трёх путях teardown'а, размеры
+> файлов. После рефакторинга эту картину уже не восстановить, а без неё не
+> видно, от чего ушли.
+>
+> **Куда что уехало.**
+>
+> | Раздел | Судьба |
+> |---|---|
+> | §4.2 протокол, hex-шаблоны → типы | сделано, этап 3 (`K1GCodec`) |
+> | §4.3 сессия, `sessionSeq`/`farewellSocket`/`sendIfCurrent` | сделано, этап 4 |
+> | §4.4 Wi-Fi, `Flow<LinkEvent>` + `ReconnectPolicy` | сделано, этап 5 |
+> | §4.5 координатор, редьюсер | сделано, этап 6 |
+> | §4.8 Lua-диссектор, pcapng-writer | сделано, задачи 7.4 и 7.5 |
+> | RX-буфер, блокирующий приём, RTP на своём потоке, `IOException` в `send`, счётчик malformed, `CompletableDeferred` auth, один тикер, backoff с джиттером, снятый `SO_REUSEADDR` | сделано |
+> | §4.1 DSCP, `SO_SNDBUF`, пейсинг IDR | **опровергнуто полем**, см. шапку ниже |
+> | §4.1 адреса из `LinkProperties` | открыто, задача 7.1 |
+> | §4.7 `security-crypto`, Toast в слое данных | открыто, задача 7.3 |
+> | §4.9 Pigeon | открыто, задача 7.6 |
+> | §4.2 входящий seq-байт | открыто, **задача 7.8** — вынесено отсюда 25.09 |
+> | §4.6 `MAX_PAYLOAD = 1380` | открыто, **задача 7.9** — вынесено отсюда 25.09 |
+> | §4.6 выбор профиля: дистанция vs `camMoving` | открыто, **задача 7.10**, описание в [`spec/video.md`](../../spec/video.md) |
+> | §4.4 `WifiNetworkSuggestion` отвергнут | перенесено в план, раздел «Отвергнуто, чтобы не выводили заново» |
+> | §4.7 SSID и адреса в hex-дампах | перенесено в план как открытый вопрос гигиены |
+> | §4.4 Wi-Fi-лок на Android 14+ | живёт в KDoc `DashKeepAliveService` — там подробнее, чем здесь |
+>
+> Ссылки на `DashCommands.kt` внутри текста намеренно не ведут никуда: файл
+> удалён этапом 3, его место занял `K1GCodec`. Остальные ссылки на код
+> рабочие, но указывают на нынешние файлы, а не на состояние 09.09.
+>
+> Ничего действующего здесь не осталось. Читать — ради истории и ради §2.
+
 Объект аудита — всё, что лежит между экраном телефона и приборкой мотоцикла:
 Wi-Fi-линк, UDP-сокеты, протокол K1G (хендшейк, карточки, keep-alive, события
 дэша), RTP-поток H.264 и координатор, который всё это сводит. Код в
@@ -14,7 +50,7 @@ Wi-Fi-линк, UDP-сокеты, протокол K1G (хендшейк, кар
 > HBN-LX9 — 4 МиБ, а не «200 КБ+», так что предложенные 256 КиБ урезали бы буфер.
 > **DSCP** и **пейсинг IDR-всплеска** приехали сборкой 10.09 и сделали артефакты
 > ЧАЩЕ, а не реже (заезд 20:38–21:07); оба откачены 11.09. Причины и механизмы —
-> в [network-refactoring.md](network-refactoring.md), §0.1 и задачи 2.1, 2.2, 2.6.
+> в [network-refactoring.md](../../network-refactoring.md), §0.1 и задачи 2.1, 2.2, 2.6.
 > Аудит оставлен как есть, потому что это исторический документ; читать его
 > разделы 2.4, 4 и 6 нужно вместе с этой пометкой, иначе они выглядят как живой
 > план работ.
@@ -78,20 +114,20 @@ Wi-Fi-линк, UDP-сокеты, протокол K1G (хендшейк, кар
 
 | Файл | Строк | Роль |
 |---|---:|---|
-| [DashSocket.kt](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/DashSocket.kt) | 165 | Три `DatagramSocket` + `TxSequencer` (seq-байт под локом) |
-| [K1GPacket.kt](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/protocol/K1GPacket.kt) | 107 | Сборка/разбор TLV-пакета, `patchSeq` |
-| [DashCommands.kt](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/protocol/DashCommands.kt) | 380 | Все исходящие команды: hex-шаблоны + патчи по маркеру |
-| [DashAuth.kt](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/DashAuth.kt) | 90 | RSA-1024 → AES-256 хендшейк |
-| [DashSession.kt](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/DashSession.kt) | 913 | Сессия: RX-цикл, auth, вход в nav, 5 периодических отправителей, 3 пути teardown |
-| [DashWifiManager.kt](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/DashWifiManager.kt) | 620 | `WifiNetworkSpecifier`, реконнект, RSSI, привязка процесса к сотовой сети |
-| [DashEngineController.kt](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt) | 1513 | Координатор Wi-Fi + сессия + рендер/энкод/RTP цикл + камера |
-| [RtpPacketizer.kt](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/video/RtpPacketizer.kt) | 103 | RFC 6184, single NAL + FU-A |
-| [NalProcessor.kt](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/video/NalProcessor.kt) | 137 | Annex-B → NAL, склейка SPS/PPS/IDR, фильтр SEI/AUD |
-| [DashEncoder.kt](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/video/DashEncoder.kt) | 398 | MediaCodec, CBR 200/100 kbps, IDR каждые 8 кадров |
-| [DashKeepAliveService.kt](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/DashKeepAliveService.kt) | 161 | Foreground service, wake lock, Wi-Fi lock |
+| [DashSocket.kt](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/DashSocket.kt) | 165 | Три `DatagramSocket` + `TxSequencer` (seq-байт под локом) |
+| [K1GPacket.kt](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/protocol/K1GPacket.kt) | 107 | Сборка/разбор TLV-пакета, `patchSeq` |
+| `DashCommands.kt` | 380 | Все исходящие команды: hex-шаблоны + патчи по маркеру |
+| [DashAuth.kt](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/DashAuth.kt) | 90 | RSA-1024 → AES-256 хендшейк |
+| [DashSession.kt](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/DashSession.kt) | 913 | Сессия: RX-цикл, auth, вход в nav, 5 периодических отправителей, 3 пути teardown |
+| [DashWifiManager.kt](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/DashWifiManager.kt) | 620 | `WifiNetworkSpecifier`, реконнект, RSSI, привязка процесса к сотовой сети |
+| [DashEngineController.kt](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt) | 1513 | Координатор Wi-Fi + сессия + рендер/энкод/RTP цикл + камера |
+| [RtpPacketizer.kt](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/video/RtpPacketizer.kt) | 103 | RFC 6184, single NAL + FU-A |
+| [NalProcessor.kt](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/video/NalProcessor.kt) | 137 | Annex-B → NAL, склейка SPS/PPS/IDR, фильтр SEI/AUD |
+| [DashEncoder.kt](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/video/DashEncoder.kt) | 398 | MediaCodec, CBR 200/100 kbps, IDR каждые 8 кадров |
+| [DashKeepAliveService.kt](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/DashKeepAliveService.kt) | 161 | Foreground service, wake lock, Wi-Fi lock |
 
 Тестов на сетевой слой: один —
-[DashSocketOrderingTest.kt](packages/opendash_dash_engine/android/src/test/kotlin/com/opendash/opendash_dash_engine/dash/DashSocketOrderingTest.kt).
+[DashSocketOrderingTest.kt](../../packages/opendash_dash_engine/android/src/test/kotlin/com/opendash/opendash_dash_engine/dash/DashSocketOrderingTest.kt).
 
 ### 2.2 Порты и потоки данных
 
@@ -113,19 +149,19 @@ flowchart LR
 
 Исходящий трафик в `STREAMING` — шесть независимых корутин, пишущих в один
 сокет: heartbeat 1 Гц + time sync раз в 30 с
-([DashSession.kt:740](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/DashSession.kt#L740)),
+([DashSession.kt:740](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/DashSession.kt#L740)),
 projection frame 4 Гц
-([:795](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/DashSession.kt#L795)),
+([:795](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/DashSession.kt#L795)),
 route card 1 Гц
-([:805](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/DashSession.kt#L805)),
+([:805](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/DashSession.kt#L805)),
 nav info 1 Гц
-([:815](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/DashSession.kt#L815)),
+([:815](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/DashSession.kt#L815)),
 media/call 1 Гц
-([:836](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/DashSession.kt#L836)),
+([:836](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/DashSession.kt#L836)),
 плюс RX-цикл с ack'ами и эхом кнопок
-([:622](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/DashSession.kt#L622))
+([:622](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/DashSession.kt#L622))
 и внеочередной `updateRouteCard`
-([:315](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/DashSession.kt#L315)),
+([:315](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/DashSession.kt#L315)),
 который идёт мимо `sendIfCurrent`.
 
 ### 2.3 Жизненный цикл соединения
@@ -161,7 +197,7 @@ sequenceDiagram
 
 - **Порядок открытия сокетов** (RX до первого TX, чтобы не ловить ICMP
   port-unreachable) зафиксирован и объяснён —
-  [DashSocket.kt:16](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/DashSocket.kt#L16).
+  [DashSocket.kt:16](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/DashSocket.kt#L16).
 - **Seq-байт и отправка под одним локом** — верное решение, с тестом на 10
   потоков.
 - **Прощальные пакеты** `projectionStop`/`projectionOff` при разрыве, чтобы
@@ -185,8 +221,8 @@ sequenceDiagram
 
 **Приём.** `receive()` выделяет `ByteArray(65535)` на каждый вызов и
 блокируется на 500 мс
-([DashSocket.kt:57](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/DashSocket.kt#L57),
-[:103](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/DashSocket.kt#L103)).
+([DashSocket.kt:57](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/DashSocket.kt#L57),
+[:103](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/DashSocket.kt#L103)).
 Таймаут нужен только как «точка опроса отмены», потому что
 `DatagramSocket.receive` не прерывается корутинной отменой. Это два
 пробуждения CPU в секунду и 128 КБ мусора в секунду в простое — при
@@ -199,8 +235,8 @@ sequenceDiagram
 
 **Отправка RTP с CPU-пула.** `RtpPacketizer` вызывает `session.sendRtp`
 синхронно из кадрового цикла, который запущен на `Dispatchers.Default`
-([DashEngineController.kt:867](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L867),
-[:969](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L969)).
+([DashEngineController.kt:867](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L867),
+[:969](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L969)).
 `DatagramSocket.send` — syscall, который может блокироваться, когда
 переполнена очередь Wi-Fi-драйвера. Один IDR в 39,7 КБ (число из логов
 2026-09-09) — это ~30 датаграмм подряд без пауз. Правильно: отправитель RTP
@@ -226,7 +262,7 @@ Wi-Fi-стек телефона — да, особенно при одновре
 разборе «картинка замерла».
 
 **`SO_REUSEADDR` на :2000 и :2002** прячет утечки: комментарий в
-[DashSession.kt:400](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/DashSession.kt#L400)
+[DashSession.kt:400](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/DashSession.kt#L400)
 сам описывает, что утёкший сокет продолжает получать часть трафика дэша
 («дэш замолчал» вместо ошибки). При владении сокетом строго одной сессией
 (раздел 5) флаг можно снять — тогда утечка станет `BindException`, то есть
@@ -240,7 +276,7 @@ Wi-Fi-стек телефона — да, особенно при одновре
 **Catch-all `Exception` в `send`** глушит всё, включая
 `NetworkOnMainThreadException` — именно так были потеряны прощальные пакеты
 (комментарий в
-[DashSession.kt:341](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/DashSession.kt#L341)).
+[DashSession.kt:341](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/DashSession.kt#L341)).
 Ловить надо `IOException`; остальное — баг, который должен быть виден.
 
 ### 4.2 Протокол K1G
@@ -249,11 +285,11 @@ Wi-Fi-стек телефона — да, особенно при одновре
 почти всегда внутри строкового литерала с полным заголовком. Значения
 патчатся поиском маркера: `heartbeat` ищет `06 10 00 01` и пишет байт после
 него
-([DashCommands.kt:118](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/protocol/DashCommands.kt#L118)),
+(`DashCommands.kt:118`),
 `routeCard` ищет `05 09 00 02` и ещё шесть маркеров с конца
-([:186](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/protocol/DashCommands.kt#L186)),
+(`:186`),
 `patchSeq` ищет магию `K1G ` с начала пакета
-([K1GPacket.kt:58](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/protocol/K1GPacket.kt#L58)).
+([K1GPacket.kt:58](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/protocol/K1GPacket.kt#L58)).
 
 Перепроверка показала, что **сегодня всё это корректно**: магия в заголовке
 стоит на фиксированном смещении 12 и всегда находится раньше любой
@@ -268,12 +304,12 @@ Wi-Fi-стек телефона — да, особенно при одновре
 
 `activeNavPacket` собирает пакет через `StringBuilder` из hex и обратно в
 байты
-([:324](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/protocol/DashCommands.kt#L324))
+(`:324`)
 — раз в секунду, не страшно, но это признак, что типизированного пути
 сборки нет и каждая команда изобретает свой.
 
 **Разбор входящих** лоялен к мусору
-([K1GPacket.kt:74](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/protocol/K1GPacket.kt#L74)):
+([K1GPacket.kt:74](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/protocol/K1GPacket.kt#L74)):
 `outer_len` не сверяется с размером датаграммы, обрезанный TLV принимается
 молча. Для RE-протокола лояльность правильна, но отсутствие счётчика
 «malformed» лишает сигнала.
@@ -284,7 +320,7 @@ dash→phone и дубли — бесплатная метрика качест�
 
 **Диспетчеризация** — цепочка `if (tlv.type == 0x09 && tlv.sub == 0x06 &&
 value[0] == 0x55)`
-([DashSession.kt:633](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/DashSession.kt#L633)).
+([DashSession.kt:633](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/DashSession.kt#L633)).
 Знания о протоколе (что значит 09 06 55, 0F 05 — BSSID, 0C — телеметрия)
 живут в комментариях, а не в типах.
 
@@ -341,20 +377,20 @@ Route card перестаёт быть «шаблоном с патчами» и
 
 | Механизм | Где | Что защищает |
 |---|---|---|
-| `sessionSeq` токен | [:108](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/DashSession.kt#L108) | `fail`/`endLink` устаревшей сессии не трогают живую |
-| `farewellSocket` клейм | [:75](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/DashSession.kt#L75) | `finally` в `runSession` не закрывает сокет под прощальными пакетами |
-| `sendIfCurrent` по идентичности | [:287](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/DashSession.kt#L287) | тик старого отправителя не пишет в новый сокет |
-| `handedOff` | [:404](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/DashSession.kt#L404) | кто закрывает сокет — `runSession` или сессия |
-| `staleSends`/`supersededTeardowns` | [:305](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/DashSession.kt#L305) | считают, сработало ли всё вышеперечисленное |
+| `sessionSeq` токен | [:108](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/DashSession.kt#L108) | `fail`/`endLink` устаревшей сессии не трогают живую |
+| `farewellSocket` клейм | [:75](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/DashSession.kt#L75) | `finally` в `runSession` не закрывает сокет под прощальными пакетами |
+| `sendIfCurrent` по идентичности | [:287](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/DashSession.kt#L287) | тик старого отправителя не пишет в новый сокет |
+| `handedOff` | [:404](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/DashSession.kt#L404) | кто закрывает сокет — `runSession` или сессия |
+| `staleSends`/`supersededTeardowns` | [:305](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/DashSession.kt#L305) | считают, сработало ли всё вышеперечисленное |
 | Три списка `cancel()` | `disconnect`, `endLink`, `fail` | ручная отмена семи job'ов |
 
 Дополнительно:
 
 - Ожидание аутентификации — polling `while (!authConfirmed) delay(100)`
-  ([:439](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/DashSession.kt#L439)).
+  ([:439](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/DashSession.kt#L439)).
   Это `CompletableDeferred` + `withTimeout(AUTH_TIMEOUT)`.
 - `disconnect()` делает `runBlocking(Dispatchers.IO)` с main-потока
-  ([:361](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/DashSession.kt#L361)).
+  ([:361](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/DashSession.kt#L361)).
   Обоснование в комментарии верное (dispose отменяет scope на следующей
   строке), но это следствие того, что у прощания нет своего владельца.
 - Пять периодических отправителей — пять корутин с собственными `delay`.
@@ -367,7 +403,7 @@ Route card перестаёт быть «шаблоном с патчами» и
   «нет входящих N секунд → линк мёртв» должно быть одно для всех состояний
   после auth.
 - `heartbeat(tempC = 25)` — температура захардкожена
-  ([DashCommands.kt:118](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/protocol/DashCommands.kt#L118)).
+  (`DashCommands.kt:118`).
   Если дэш её показывает, это ложь на приборе; если нет — лишнее поле.
 
 **Целевая форма** — в разделе 5.1. Ключевая идея: `DashSession` создаётся на
@@ -384,13 +420,13 @@ Route card перестаёт быть «шаблоном с патчами» и
 сценарии из `spec/wifi_retry_policy.md` подтверждаются кодом:
 
 - Фиксированная пауза `RECONNECT_DELAY = 8 с`
-  ([DashWifiManager.kt:59](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/DashWifiManager.kt#L59))
+  ([DashWifiManager.kt:59](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/DashWifiManager.kt#L59))
   без эскалации и без джиттера. Стандарт — экспоненциальный backoff с
   полным джиттером и потолком (например 2 → 4 → 8 → 16 → 30 с), сброс при
   успешном линке.
 - `CONNECT_TIMEOUT = 30 с` + первая попытка без `hasConnectedOnce` →
   `ERROR` и `wantConnected = false`
-  ([:396](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/DashWifiManager.kt#L396)).
+  ([:396](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/DashWifiManager.kt#L396)).
   Спека уже предлагает вариант оригинального приложения — `requestNetwork`
   без таймаута; поддерживаю: ОС сама ждёт появления сети, и «дэшу нужно
   больше 30 с, чтобы подняться» перестаёт быть ошибкой.
@@ -400,14 +436,14 @@ Route card перестаёт быть «шаблоном с патчами» и
   и отдавать наверх как `Flow<LinkEvent>` (`Available(network, ssid?)`,
   `Lost`, `Unavailable`, `SsidResolved`).
 - Привязка процесса к сотовой сети
-  ([:257](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/DashWifiManager.kt#L257))
+  ([:257](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/DashWifiManager.kt#L257))
   — верное решение для MapKit, но это глобальный побочный эффект на весь
   процесс (включая Flutter HTTP и загрузку паков). Он должен быть явно
   описан в спеке настроек/офлайн-карт, чтобы «скачивание идёт по мобильной
   сети, пока подключён дэш» не стало сюрпризом.
 - **Wi-Fi-лок на Android 14+ не работает с выключенным экраном.**
   `WIFI_MODE_FULL_HIGH_PERF` в keep-alive-сервисе
-  ([DashKeepAliveService.kt:112](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/DashKeepAliveService.kt#L112))
+  ([DashKeepAliveService.kt:112](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/DashKeepAliveService.kt#L112))
   выбран потому, что «активен даже при выключенном экране и в фоне». Так и
   есть до Android 13. Начиная с 14 (`SdkLevel.isAtLeastU()` и флаг
   `high_perf_lock_deprecated`, по умолчанию `true`) `WifiLockManager.
@@ -437,12 +473,12 @@ Route card перестаёт быть «шаблоном с патчами» и
 ### 4.5 Координатор
 
 `DashEngineController.connect()`
-([:340](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L340))
+([:340](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L340))
 — два коллектора `StateFlow`, флаг `sessionStarted`, счётчик `authRetries`,
 `giveupJob`, и ветка «сессия жива, а линк нет — снести сначала». Каждая
 ветка объяснена полевой находкой, и вместе они — тот самый FSM, которого
 нет как объекта. Комментарий в
-[:484](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L484)
+[:484](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L484)
 про «StateFlow replays its current value to a brand-new collector» —
 характерный симптом: события выводятся из состояний, а не наоборот.
 
@@ -501,7 +537,7 @@ fun reduce(s: ConnState, e: ConnEvent): Pair<ConnState, List<Effect>>
   либо обычные `SharedPreferences` с честным комментарием, либо
   `KeyStore`-обёртка в 40 строк. Toast «using fallback storage» из
   конструктора конфига
-  ([DashConfig.kt:81](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/DashConfig.kt#L81))
+  ([DashConfig.kt:81](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/DashConfig.kt#L81))
   — UI из слоя данных, убрать.
 - RSA-1024 PKCS#1 v1.5 без OAEP и AES-ключ в открытом виде после расшифровки —
   диктует дэш, менять нельзя. Но AES-ключ сейчас используется только чтобы
@@ -550,7 +586,7 @@ JVM-код `K1GPacket`, `DashCommands`, `DashAuth`, `RtpPacketizer`,
 ### 4.9 Граница Dart ↔ native
 
 Состояние уходит в Dart как `Map<String, Any?>` с ~20 ключами
-([DashEngineController.kt:394](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L394)),
+([DashEngineController.kt:394](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L394)),
 парсится вручную в `DashEngineState.fromMap`. Pigeon (кодогенерация
 типизированных каналов) — стандарт для плагинов; ошибка в имени ключа
 перестаёт быть runtime-null. Не сетевой вопрос в узком смысле, но это

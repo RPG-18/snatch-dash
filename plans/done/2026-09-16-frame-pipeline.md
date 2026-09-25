@@ -1,5 +1,30 @@
 # Конвейер кадра дэша: аудит потоков и план переработки
 
+> ## Архив, 2026-09-25. Действовать по этому документу не нужно.
+>
+> **Он сам объявил себя закрытым 19.09** (§0.5, §6): гейт 0 и этапы 1-5 и 6a
+> сделаны, 6b снят по замеру, отложенный `requestSyncFrame` из 4.7 ждёт
+> первого ненулевого `dropIdr=` в поле. Из плана, начатого как «переработка
+> конвейера», не понадобилось ничего из того, что трогало живой энкодер.
+>
+> Живая спека того же предмета — [`spec/frame_pipeline.md`](../../spec/frame_pipeline.md).
+> Туда уехало всё, что действует: объекты и потоки, такт и дедлайн, очередь с
+> дропом, телеметрия, «что пробовали и отвергли по замеру», открытый
+> `requestSyncFrame` и — 25.09 — раздел «рассмотрено и намеренно не сделано»
+> из §7 этого файла.
+>
+> Здесь документ остаётся как **история и снимок «как было»**: контроллер на
+> 1997 строк с 23 `@Volatile` и ни одним тестом на кадровый цикл (после этапа
+> 5 — 845 строк, 3 `@Volatile`, двенадцать тестов). Плюс §0.4 и §0.8 — два
+> гейта, которые отменили половину собственного плана, и это самое полезное,
+> что в нём есть методически.
+>
+> **Осторожно при чтении.** Номера строк в ссылках — по HEAD `2a2e88f` от
+> 16.09 и давно съехали. §8 «быстрые победы» частично протух: пункт 4
+> помечен «не сделано», хотя этап 3 закрыл его 19.09. Ссылки на этот файл из
+> комментариев Kotlin (`pipeline.md §4.4` и подобные, пятнадцать штук) — по
+> имени и номеру раздела, не по пути, так что переезд их не сломал.
+
 Дата: 2026-09-16. Ветка `main`, HEAD `2a2e88f`: влиты обе ветки —
 `network-refactoring` (PR #9) и `pipeline-quick-wins` (PR #10). Отдельных
 веток у этого плана больше нет, следующий этап начинается от `main`.
@@ -14,7 +39,7 @@
 которых всё это исполняется. Код в `DashEngineController.kt`,
 `dash/map/`, `dash/video/`, спецификации в `spec/drawing_from_local_tiles.md`
 и `spec/video.md`. Сетевой слой (сокеты, K1G, Wi-Fi) разобран отдельно в
-`improvemen-dash-protocol.md` — здесь он затрагивается только там, где
+[`plans/done/2026-09-09-improvement-dash-protocol.md`](2026-09-09-improvement-dash-protocol.md) — здесь он затрагивается только там, где
 конвейер кадра в него упирается.
 
 Документ самодостаточен: в него сведены три прохода. Чтение кода «кто на
@@ -31,7 +56,7 @@ RFC 6184) с документацией; её результат вшит в с�
 в §9, и оттуда же видно, какие шаги требуют мотоцикла.
 
 **План закрыт 19.09.2026, и его выжимка переехала в
-[`spec/frame_pipeline.md`](spec/frame_pipeline.md)** — объекты и потоки, такт,
+[`spec/frame_pipeline.md`](../../spec/frame_pipeline.md)** — объекты и потоки, такт,
 очередь, владение, инварианты, инвентарь телеметрии и список отвергнутого по
 замеру. Этот файл остаётся как аудит: дневник §0.x с датами, числами заездов и
 обоснованием каждого шага. За «как устроено сейчас» идти в спеку, сюда — за
@@ -46,8 +71,8 @@ RFC 6184) с документацией; её результат вшит в с�
 **Закрыто полностью.**
 
 - **RX-вотчдог переехал на монотонные часы**
-  ([DashSession.kt:587](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/DashSession.kt#L587),
-  [:631](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/DashSession.kt#L631)),
+  ([DashSession.kt:587](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/DashSession.kt#L587),
+  [:631](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/DashSession.kt#L631)),
   причём с комментарием, формулирующим правило: «elapsedRealtime, not
   currentTimeMillis, for every duration below». Это была худшая строка
   таблицы 4.1 — ложный «dash silent → link lost» с полным реконнектом. Там
@@ -61,10 +86,10 @@ RFC 6184) с документацией; её результат вшит в с�
   говорят, что затора, ради которого пейсинг вводился, не существует. Для
   4.5 это значит, что окно «≤30 мс пакетов мёртвого стрима» схлопнулось, а
   вместо `delay()` внутрь цикла пакетов поставлен `ensureActive()`
-  ([:1308](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L1308))
+  ([:1308](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L1308))
   — ровно с той мотивировкой, которую описывала находка.
 - **Дропы ключевых кадров считаются отдельно** — `rtpDroppedIdr`
-  ([:1043](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L1043)),
+  ([:1043](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L1043)),
   и колбэк энкодера теперь отдаёт `isKey`/`isConfig`. Половина 4.7
   («различать типы AU») сделана; `requestSyncFrame` по-прежнему нет.
 
@@ -73,19 +98,19 @@ RFC 6184) с документацией; её результат вшит в с�
 - **Новый слой позиции принёс шесть новых стенных длительностей.**
   `LocationTracker` меряет возраст фикса, паузы между фиксами и окно
   отбраковки через `System.currentTimeMillis()`
-  ([:107](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/map/LocationTracker.kt#L107),
-  [:129](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/map/LocationTracker.kt#L129),
-  [:201](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/map/LocationTracker.kt#L201),
-  [:237](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/map/LocationTracker.kt#L237)),
+  ([:107](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/map/LocationTracker.kt#L107),
+  [:129](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/map/LocationTracker.kt#L129),
+  [:201](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/map/LocationTracker.kt#L201),
+  [:237](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/map/LocationTracker.kt#L237)),
   а `PositionTrust` берёт стенные часы значением по умолчанию
-  ([PositionQuality.kt:192](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/map/PositionQuality.kt#L192)).
+  ([PositionQuality.kt:192](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/map/PositionQuality.kt#L192)).
   То есть правило записано в `DashSession`, а свежий код уехал мимо него в
   тот же день. Это аргумент за то, чтобы этап 1 был не разовой правкой, а
   завершался общим `monotonicMs()`, мимо которого труднее пройти.
 
 **Полезное для целевой архитектуры.** `LocationTracker.location` — уже
 `StateFlow<Location?>`
-([:54](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/map/LocationTracker.kt#L54)),
+([:54](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/map/LocationTracker.kt#L54)),
 то есть половина сигнатуры `FrameStreamer` из §5.2 существует. А
 `PositionTrust` с инжектируемыми часами показывает, что в проекте уже
 принят стиль «часы — параметр», на который опирается §5.2.
@@ -149,13 +174,13 @@ RFC 6184) с документацией; её результат вшит в с�
 **2026-09-16. Всё влито в `main`** одним PR #10 (`2a2e88f`): `ac7e6d1` —
 гейт 0, часы и `rtpSender()`; `30fb944` — видимость памяти (§0.2);
 `38fefa9` — `DashInputs` (§0.3); `95fec35` — RTP-метка (§0.4); плюс
-`5161bf1` (правило метки в [`spec/video.md`](spec/video.md)) и `bc761e0`
-(каталог [`docs/devices/`](docs/devices/)).
+`5161bf1` (правило метки в [`spec/video.md`](../../spec/video.md)) и `bc761e0`
+(каталог [`docs/devices/`](../../docs/devices/)).
 
 **Пункт 6 §8 — ошибка отчёта, а не невыполненная работа.** Плоские счётчики
 `MapSnapshotProvider` (`timeouts`, `skipped`, `abandoned`, `errors`,
 `rebuilds`) объявлены `@Volatile` с `private set`
-([:109](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/map/MapSnapshotProvider.kt#L109))
+([:109](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/map/MapSnapshotProvider.kt#L109))
 с самого первого коммита MapLibre-рендера (`ca41c68`), а §4.9 утверждала
 обратное, не проверив. Писатель у них один (Main), читатель один (цикл) —
 ни гонки, ни повода для комментария. §4.9 исправлена.
@@ -248,7 +273,7 @@ MethodChannel-поток», и это была неправда.
 последствие. Доказательство слабое по своей природе: метку не проверяет ни один
 счётчик, так что подтвердить правку телеметрией нельзя, а правка была
 единственным изменением между заездами. Правило вынесено в
-[`spec/video.md`](spec/video.md), «RTP-метка — счётчик кадров, а не время».
+[`spec/video.md`](../../spec/video.md), «RTP-метка — счётчик кадров, а не время».
 
 **Что это меняет в плане.** Этап 6 наполовину не нужен: PTS из
 `presentationTimeUs` брать незачем — вопрос закрыт дешевле и без живого
@@ -289,7 +314,7 @@ MethodChannel-поток», и это была неправда.
 двенадцать из них — на сам кадровый цикл (§0.6), восемь — на камеру. До этапа 5
 на цикл не было ни одного.
 
-Базовые линии по железу с 16.09 живут в [`docs/devices/`](docs/devices/) — по
+Базовые линии по железу с 16.09 живут в [`docs/devices/`](../../docs/devices/) — по
 файлу на телефон; §0.4 и 4.2 читаются вместе с ними, потому что `drainMiss`
 у HiSilicon и у MediaTek — это разные нормы, а не разные состояния.
 
@@ -298,19 +323,19 @@ MethodChannel-поток», и это была неправда.
 **2026-09-16.** Цикл кадра вынесен из контроллера. Четыре новых файла и первый в
 проекте тест на сам цикл:
 
-- [`dash/FrameStreamer.kt`](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/FrameStreamer.kt) (629)
+- [`dash/FrameStreamer.kt`](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/FrameStreamer.kt) (629)
   — пейсинг, `drain()`, счётчики, очередь RTP и отправитель. Всё, что ему нужно
   снаружи, — параметры конструктора: часы, энкодер, источник кадров, сокет и
   предикат «сессия ещё стримит».
-- [`dash/map/MapFrameRenderer.kt`](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/map/MapFrameRenderer.kt) (581)
+- [`dash/map/MapFrameRenderer.kt`](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/map/MapFrameRenderer.kt) (581)
   — камера, сигнатура перерисовки, MapLibre, оверлеи. Всё, чему
   нужно устройство, по одну сторону шва `FrameSource`; всё, чему не нужно, — по
   другую.
-- [`dash/map/DashCameraState.kt`](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/map/DashCameraState.kt) (300)
+- [`dash/map/DashCameraState.kt`](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/map/DashCameraState.kt) (300)
   — зум, пан, follow, heading-up и их лестница констант. Тот самый «дом», которого
   просил комментарий §4.4: камеру пишут обе стороны, поэтому в `DashInputs` ей было
   нельзя, а в контроллере она держала цикл.
-- [`dash/video/FrameEncoder.kt`](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/video/FrameEncoder.kt) (30)
+- [`dash/video/FrameEncoder.kt`](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/video/FrameEncoder.kt) (30)
   — четыре метода `DashEncoder`, которые видит цикл. Публичный, а не `internal`,
   по механической причине: Kotlin не даёт публичному классу наследовать менее
   видимый супертип.
@@ -375,7 +400,7 @@ production-кода — метка за итерацию (регрессия, к
 **2026-09-16.** Выделенные потоки сделаны, асинхронный `MediaCodec` — НЕТ, и это
 решение, а не незаконченность.
 
-[`dash/StreamThreads.kt`](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/StreamThreads.kt): `dash-frame`
+[`dash/StreamThreads.kt`](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/StreamThreads.kt): `dash-frame`
 (HandlerThread + `Handler.asCoroutineDispatcher`) под кадровый цикл и `dash-rtp`
 (одиночный исполнитель) под отправителя. Оба создаются на стрим и умирают с ним —
 поток, переживший свой стрим, это утечка на каждый реконнект. Контроллер
@@ -499,7 +524,7 @@ Wi-Fi-локи в сетевом плане; их судья — строка `t
 и дают имя в трейсе вместо `DefaultDispatcher-worker-3` — ровно та половина §4.3,
 которая не зависела от замера.
 
-Числа по заездам разложены по [`docs/devices/`](docs/devices/).
+Числа по заездам разложены по [`docs/devices/`](../../docs/devices/).
 
 ## 1. Резюме
 
@@ -564,26 +589,26 @@ Wi-Fi-локи в сетевом плане; их судья — строка `t
 
 | Файл | Строк | Роль |
 |---|---:|---|
-| [DashEngineController.kt](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt) | 845 | Координатор Wi-Fi + сессия + фасад для Flutter. Цикл кадра уехал 16.09 (§0.6) |
-| [dash/FrameStreamer.kt](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/FrameStreamer.kt) | 629 | **Цикл кадра**: пейсинг, drain, метка RTP, очередь и отправитель (новое, 16.09) |
-| [dash/map/MapFrameRenderer.kt](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/map/MapFrameRenderer.kt) | 581 | Камера, сигнатура перерисовки, MapLibre, оверлеи, превью (новое, 16.09) |
-| [dash/map/DashCameraState.kt](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/map/DashCameraState.kt) | 300 | Зум/пан/follow/heading-up и лестница зумов (новое, 16.09) |
-| [DashSession.kt](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/DashSession.kt) | 1065 | Сессия; для конвейера — `rtpSender()` и RX-вотчдог с `rxGaps` |
-| [DashWifiManager.kt](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/DashWifiManager.kt) | 624 | Линк до дэша; вне области, см. `improvemen-dash-protocol.md` |
-| [MapSnapshotProvider.kt](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/map/MapSnapshotProvider.kt) | 609 | MapLibre offscreen: снапшот с дедлайном, детекция зависания, пересоздание |
-| [DashEncoder.kt](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/video/DashEncoder.kt) | 418 | `MediaCodec` H.264, Surface-вход, CBR 200/100 kbps, синхронный `drain()` — теперь возвращает число выданных кадров (гейт 0) |
-| [PositionQuality.kt](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/map/PositionQuality.kt) | 363 | Доверие к позиции, кросс-проверка провайдеров (13.09), часы — обязательный параметр |
-| [DashSocket.kt](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/DashSocket.kt) | 309 | UDP |
-| [OverlayRenderer.kt](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/map/OverlayRenderer.kt) | 294 | Маршрут с пробками, стрелка, пин, пилюли — `Canvas` поверх снапшота |
-| [LocationTracker.kt](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/map/LocationTracker.kt) | 290 | `StateFlow<Location?>`, отбраковка фиксов (13.09) |
-| [NalProcessor.kt](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/video/NalProcessor.kt) | 221 | Annex-B → NAL, склейка SPS/PPS/IDR, граница AU |
-| [RenderStats.kt](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/map/RenderStats.kt) | 167 | Телеметрия `[map]`: интервалы, `late=`, `blank=` |
-| [RtpPacketizer.kt](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/video/RtpPacketizer.kt) | 103 | RFC 6184, `ts = base + pts × 90` |
-| [FrameRatePolicy.kt](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/map/FrameRatePolicy.kt) | 88 | 2 ↔ 4 fps по скорости, с гистерезисом на `elapsedRealtime` |
-| [DashInputs.kt](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashInputs.kt) | 78 | Вход кадра одним снимком: `Destination`, `RouteGeometry`, медиа (новое, 14.09) |
-| [util/Clock.kt](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/util/Clock.kt) | 47 | `monotonicMs()` и `Location.ageMs()` — одно место на весь модуль (новое, 14.09) |
-| [util/MemoryProbe.kt](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/util/MemoryProbe.kt) | 59 | Строка тега `[mem]`: PSS с разбивкой + системные `avail`/`threshold` (новое, 14.09) |
-| [OpendashDashEnginePlugin.kt](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/OpendashDashEnginePlugin.kt) | 256 | Scope плагина (`Dispatchers.Main`), каналы в Dart |
+| [DashEngineController.kt](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt) | 845 | Координатор Wi-Fi + сессия + фасад для Flutter. Цикл кадра уехал 16.09 (§0.6) |
+| [dash/FrameStreamer.kt](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/FrameStreamer.kt) | 629 | **Цикл кадра**: пейсинг, drain, метка RTP, очередь и отправитель (новое, 16.09) |
+| [dash/map/MapFrameRenderer.kt](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/map/MapFrameRenderer.kt) | 581 | Камера, сигнатура перерисовки, MapLibre, оверлеи, превью (новое, 16.09) |
+| [dash/map/DashCameraState.kt](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/map/DashCameraState.kt) | 300 | Зум/пан/follow/heading-up и лестница зумов (новое, 16.09) |
+| [DashSession.kt](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/DashSession.kt) | 1065 | Сессия; для конвейера — `rtpSender()` и RX-вотчдог с `rxGaps` |
+| [DashWifiManager.kt](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/DashWifiManager.kt) | 624 | Линк до дэша; вне области, см. [`plans/done/2026-09-09-improvement-dash-protocol.md`](2026-09-09-improvement-dash-protocol.md) |
+| [MapSnapshotProvider.kt](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/map/MapSnapshotProvider.kt) | 609 | MapLibre offscreen: снапшот с дедлайном, детекция зависания, пересоздание |
+| [DashEncoder.kt](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/video/DashEncoder.kt) | 418 | `MediaCodec` H.264, Surface-вход, CBR 200/100 kbps, синхронный `drain()` — теперь возвращает число выданных кадров (гейт 0) |
+| [PositionQuality.kt](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/map/PositionQuality.kt) | 363 | Доверие к позиции, кросс-проверка провайдеров (13.09), часы — обязательный параметр |
+| [DashSocket.kt](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/DashSocket.kt) | 309 | UDP |
+| [OverlayRenderer.kt](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/map/OverlayRenderer.kt) | 294 | Маршрут с пробками, стрелка, пин, пилюли — `Canvas` поверх снапшота |
+| [LocationTracker.kt](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/map/LocationTracker.kt) | 290 | `StateFlow<Location?>`, отбраковка фиксов (13.09) |
+| [NalProcessor.kt](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/video/NalProcessor.kt) | 221 | Annex-B → NAL, склейка SPS/PPS/IDR, граница AU |
+| [RenderStats.kt](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/map/RenderStats.kt) | 167 | Телеметрия `[map]`: интервалы, `late=`, `blank=` |
+| [RtpPacketizer.kt](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/video/RtpPacketizer.kt) | 103 | RFC 6184, `ts = base + pts × 90` |
+| [FrameRatePolicy.kt](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/map/FrameRatePolicy.kt) | 88 | 2 ↔ 4 fps по скорости, с гистерезисом на `elapsedRealtime` |
+| [DashInputs.kt](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashInputs.kt) | 78 | Вход кадра одним снимком: `Destination`, `RouteGeometry`, медиа (новое, 14.09) |
+| [util/Clock.kt](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/util/Clock.kt) | 47 | `monotonicMs()` и `Location.ageMs()` — одно место на весь модуль (новое, 14.09) |
+| [util/MemoryProbe.kt](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/util/MemoryProbe.kt) | 59 | Строка тега `[mem]`: PSS с разбивкой + системные `avail`/`threshold` (новое, 14.09) |
+| [OpendashDashEnginePlugin.kt](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/OpendashDashEnginePlugin.kt) | 256 | Scope плагина (`Dispatchers.Main`), каналы в Dart |
 
 Тестов в модуле — **181 в 15 файлах** (после этапа 5):
 `FrameStreamerTest` (12) — первый тест на сам кадровый цикл, см. §0.6; `DashCommandsGoldenTest` (40),
@@ -643,7 +668,7 @@ sequenceDiagram
 ```
 
 Мотивировка развязки отправителя записана в
-[DashEngineController.kt:1109](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L1109):
+[DashEngineController.kt:1109](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L1109):
 `DatagramSocket.send` — syscall, который блокируется при забитой очереди
 Wi-Fi-драйвера, и в старой форме ставил дедлайн цикла в зависимость от радио.
 
@@ -654,31 +679,31 @@ Wi-Fi-драйвера, и в старой форме ставил дедлай�
 
 - **Дроп вместо ожидания, и дроп с разбором.** `trySend` в `Channel(4)`,
   `rtpDropped` и отдельный `rtpDroppedIdr`
-  ([:1043](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L1043))
+  ([:1043](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L1043))
   — правильная семантика для realtime-потока: забитая очередь стоит кадра,
   а не задержки, а два счётчика отличают «потеряли четверть секунды» от
   «потеряли GOP». AU кладётся целиком, частичный AU невозможен.
 - **Пейсинг убран по замеру, а не по вкусу.** Комментарий на
-  [:1270](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L1270)
+  [:1270](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L1270)
   — образец того, как здесь принимаются решения: гипотеза о заторе
   проверена `sndbuf=4096KiB` и `drop=0` во всех окнах, издержка (18 отдельных
   контенций вместо одного A-MPDU) названа, revert обоснован заездом.
 - **`ensureActive()` вместо исчезнувшего `delay()`**
-  ([:1308](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L1308))
+  ([:1308](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L1308))
   — точка отмены не пропала вместе с пейсингом, и в комментарии записано,
   зачем она тут.
 - **`cancel()`, не `close()`** на выходе
-  ([:1539](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L1539))
+  ([:1539](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L1539))
   — очередь мёртвого стрима не досылается в сокет следующей сессии.
 - **Confinement в `MapSnapshotProvider`.** Всё мутабельное состояние —
   только на Main; `snapshotterIssue` как токен против опоздавших колбэков
-  ([:348](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/map/MapSnapshotProvider.kt#L348));
+  ([:348](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/map/MapSnapshotProvider.kt#L348));
   `withTimeoutOrNull` корректно отделён от внешней отмены; поздний битмап
   освобождается, а не течёт. Заодно это единственно возможная форма:
   MapLibre требует главного потока (4.6).
 - **Владение энкодером через `finally` цикла** вместо `release()` из
   `disconnect()` — комментарий в
-  [:676](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L676)
+  [:676](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L676)
   описывает закрытую гонку (IllegalStateException-шторм, пересборка
   энкодера без владельца).
 - **`cancelAndJoin()` в `startStream`** — новый энкодер не ставится, пока
@@ -686,9 +711,9 @@ Wi-Fi-драйвера, и в старой форме ставил дедлай�
 - **Дедлайн итерации, а не сон поверх работы** — период `max(interval,
   latency)`, как просит спека.
 - **Монотонные часы там, где до них дошли руки**: `FrameRatePolicy`
-  ([:1641](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L1641)),
+  ([:1641](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L1641)),
   `nanoTime` для `dt` камеры
-  ([:1591](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L1591)),
+  ([:1591](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L1591)),
   и весь RX-вотчдог после 13.09.
 - **`logNegotiatedFormat`** — не перестраховка, а буквально та процедура,
   которую предписывает документация `KEY_LATENCY`: «use the output format to
@@ -733,13 +758,13 @@ recommended basis for general purpose interval timing**».
 
 | Место | Что меряется | Шаг часов вперёд | Шаг назад |
 |---|---|---|---|
-| [DashEngineController.kt:1324](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L1324) | пейсинг цикла: `delay(interval − (now − iterationStartMs))` | `delay(0)`, один быстрый кадр | на N с назад → **одна итерация спит `interval + N`**; `coerceAtLeast(0)` защищает только от первого случая |
-| [:1364](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L1364), [:1708](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L1708) | возраст фикса: `currentTimeMillis() − loc.time`, дважды | ложный `gpsLost`/`gpsWeak` | устаревший фикс считается свежим |
-| [:1355](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L1355) | `MANUAL_IDLE_MS = 8 с` — возврат в follow-режим | преждевременный возврат | ручной пан не истекает |
-| [:1198](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L1198)-[:1215](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L1215), [:1543](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L1543)-[:1600](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L1600) | `intervalMs`, `encodeMs`, `snapshotMs`, `overlayMs` в `RenderStats` | мусор в `[map]`-строке ровно в тот момент, когда её читают | то же |
-| [LocationTracker.kt:201](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/map/LocationTracker.kt#L201), [:237](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/map/LocationTracker.kt#L237) | возраст кандидата и пауза между фиксами | фикс объявлен протухшим, ложная «дыра» в `[gps]` | обратное |
-| [PositionQuality.kt:192](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/map/PositionQuality.kt#L192) | окно доверия в `PositionTrust` | недоверие к живой позиции | доверие к мёртвой |
-| [MapSnapshotProvider.kt:294](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/map/MapSnapshotProvider.kt#L294) | `WEDGED_MS = 5 с`, `REBUILD_COOLDOWN_MS = 2 с` | живой снапшоттер объявлен зависшим и пересоздан | зависший не замечается |
+| [DashEngineController.kt:1324](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L1324) | пейсинг цикла: `delay(interval − (now − iterationStartMs))` | `delay(0)`, один быстрый кадр | на N с назад → **одна итерация спит `interval + N`**; `coerceAtLeast(0)` защищает только от первого случая |
+| [:1364](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L1364), [:1708](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L1708) | возраст фикса: `currentTimeMillis() − loc.time`, дважды | ложный `gpsLost`/`gpsWeak` | устаревший фикс считается свежим |
+| [:1355](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L1355) | `MANUAL_IDLE_MS = 8 с` — возврат в follow-режим | преждевременный возврат | ручной пан не истекает |
+| [:1198](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L1198)-[:1215](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L1215), [:1543](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L1543)-[:1600](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L1600) | `intervalMs`, `encodeMs`, `snapshotMs`, `overlayMs` в `RenderStats` | мусор в `[map]`-строке ровно в тот момент, когда её читают | то же |
+| [LocationTracker.kt:201](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/map/LocationTracker.kt#L201), [:237](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/map/LocationTracker.kt#L237) | возраст кандидата и пауза между фиксами | фикс объявлен протухшим, ложная «дыра» в `[gps]` | обратное |
+| [PositionQuality.kt:192](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/map/PositionQuality.kt#L192) | окно доверия в `PositionTrust` | недоверие к живой позиции | доверие к мёртвой |
+| [MapSnapshotProvider.kt:294](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/map/MapSnapshotProvider.kt#L294) | `WEDGED_MS = 5 с`, `REBUILD_COOLDOWN_MS = 2 с` | живой снапшоттер объявлен зависшим и пересоздан | зависший не замечается |
 
 Строки про возраст фикса — худшие из списка, и стоит понимать почему.
 Сравниваются два **стенных** значения, `currentTimeMillis()` и `loc.time`,
@@ -754,7 +779,7 @@ monotonic».
 Контраст — в самом проекте: `FrameRatePolicy` получает `elapsedRealtime()`
 с комментарием «elapsedRealtime, not currentTimeMillis: this is a duration,
 and wall clock…»; RX-вотчдог
-([DashSession.kt:587](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/DashSession.kt#L587))
+([DashSession.kt:587](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/DashSession.kt#L587))
 формулирует то же как правило «for every duration below»; `CLAUDE.md`
 помнит ревью, поймавшее выдержку гистерезиса на стенных часах. Класс бага
 известен, назван и трижды исправлен точечно — и всё равно новый слой
@@ -780,10 +805,10 @@ sleep не наступает, а если бы наступил — дедла�
 
 ### 4.2 Синхронный `drain()` — где «нарисовать» и «отправить» всё ещё склеены
 
-[DashEncoder.drain()](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/video/DashEncoder.kt#L347):
+[DashEncoder.drain()](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/video/DashEncoder.kt#L347):
 `dequeueOutputBuffer(info, DRAIN_TIMEOUT_US = 10_000)` в цикле до
 `TRY_AGAIN_LATER`, вызывается сразу после `renderFrame`
-([:1367-1378](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L1367)).
+([:1367-1378](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L1367)).
 Семантика таймаута документирована и описана здесь верно: при
 `timeoutUs > 0` метод ждёт до указанного срока и возвращает
 `INFO_TRY_AGAIN_LATER`. Если аппаратный энкодер не отдал кадр за 10 мс,
@@ -798,11 +823,11 @@ sleep не наступает, а если бы наступил — дедла�
 один интервал: каждый кадр получает PTS следующего тика. На статичной карте
 526×300 такой сдвиг невидим, и тратить на него работу не надо.
 `KEY_LATENCY = 1`
-([DashEncoder.kt:219](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/video/DashEncoder.kt#L219))
+([DashEncoder.kt:219](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/video/DashEncoder.kt#L219))
 — подсказка кодеку; документация подтверждает, что ключ применим только к
 видеоэнкодерам, задаёт латентность в кадрах и **молча игнорируется**, если
 не поддержан. Это уже осознано в коде: комментарий на
-[:300](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/video/DashEncoder.kt#L300)
+[:300](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/video/DashEncoder.kt#L300)
 прямо говорит, что `KEY_PRIORITY`, `KEY_LATENCY` и `KEY_BITRATE_MODE` —
 подсказки, и `logNegotiatedFormat` заведён как единственный документированный
 способ узнать, приняты ли они.
@@ -812,9 +837,9 @@ sleep не наступает, а если бы наступил — дедла�
 потому что он описывает механику, а правка оказалась той самой «запасной»
 строчкой в конце абзаца «Что делать», а не асинхронным `MediaCodec`.
  `videoPtsMs` двигался **до** `drain()`
-(с 15.09 — в `onEncoded`, [:1146](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L1146)),
+(с 15.09 — в `onEncoded`, [:1146](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L1146)),
 а `packetize(nal, endOfAU, ptsMs = videoPtsMs)`
-([:1118](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L1118))
+([:1118](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L1118))
 читает счётчик в момент колбэка. Последовательность при одном промахе:
 
 ```
@@ -824,7 +849,7 @@ sleep не наступает, а если бы наступил — дедла�
 ```
 
 Два AU с одинаковым RTP-timestamp
-([RtpPacketizer.kt:45](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/video/RtpPacketizer.kt#L45):
+([RtpPacketizer.kt:45](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/video/RtpPacketizer.kt#L45):
 `ts = tsBase + ptsMs × 90`).
 
 Что об этом говорит RFC 6184 §5.1. Частота 90 кГц — «A 90 kHz clock rate
@@ -837,7 +862,7 @@ for the very last packet of the access unit»), а не по смене штам
 штампы», ради которого счётчик заведён вместо стенного клока, держится
 только если каждый кадр дренится в ту же итерацию, что отрисован, — и это
 условие нигде не проверяется и не считается. Сам комментарий у `videoPtsMs`
-([:1091](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L1091))
+([:1091](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L1091))
 честно говорит, что счётчик «не доказано, что чинит здесь что-то реальное» —
 тем более стоит знать, выполняется ли его предпосылка.
 
@@ -852,7 +877,7 @@ for the very last packet of the access unit»), а не по смене штам
 1. **Колбэк ставится до `configure()`** — «the preferred method is to process
    data asynchronously by setting a callback **before** calling `configure`».
    Энкодер в проекте пересобирается при `failures >= 3`
-   ([:1495](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L1495)),
+   ([:1495](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L1495)),
    значит `setCallback` должен жить внутри той же процедуры сборки, а не
    рядом с ней.
 2. **После `flush()` обязателен `start()`** — «you must call `start()` after
@@ -881,9 +906,9 @@ codec», а кто и по каким часам штампует сам буф�
 ### 4.3 Real-time путь живёт на общих пулах
 
 Цикл кадра —
-[`scope.launch(Dispatchers.Default)`](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L1259):
+[`scope.launch(Dispatchers.Default)`](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L1259):
 общий пул, nCPU потоков, обычный приоритет. Отправитель —
-[`launch(Dispatchers.IO)`](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L1262).
+[`launch(Dispatchers.IO)`](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L1262).
 Документация `Dispatchers.IO`: параллелизм «defaults to the limit of 64
 threads or the number of cores», и этот диспетчер «**shares threads with
 `Dispatchers.Default`**». То есть отправитель делит потоки с
@@ -892,7 +917,7 @@ ack-логгером — и с самим циклом кадра.
 
 **Приоритет.** Конвейер с дедлайном 250 мс при выключенном экране.
 Foreground-сервис с `CONNECTED_DEVICE | LOCATION`
-([DashKeepAliveService.kt:91](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/DashKeepAliveService.kt#L91))
+([DashKeepAliveService.kt:91](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/DashKeepAliveService.kt#L91))
 держит процесс живым, но не поднимает в `top-app`. Стандартный ход для
 фидера кодека — выделенный поток с приоритетом. На пуле это невозможно в
 принципе: потоки общие.
@@ -978,9 +1003,9 @@ MapLibre (4.6), — на Huawei стоял на 0, на Xiaomi на −8. Раз
 
 **Сделано в `38fefa9`** (§0.3): одиннадцать полей стали одним
 `MutableStateFlow<DashInputs>`
-([DashInputs.kt](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashInputs.kt)),
+([DashInputs.kt](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashInputs.kt)),
 `tick()` читает `inputs.value` ровно один раз
-([:1557](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L1557)).
+([:1557](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L1557)).
 Оба рваных чтения ниже закрыты по построению — половинчатый `Destination` и
 маршрут без своих пробок больше не представимы. `@Volatile` в контроллере:
 29 → 23; что осталось — камера (двусторонний поток данных, §0.3), владение
@@ -990,36 +1015,36 @@ MapLibre (4.6), — на Huawei стоял на 0, на Xiaomi на −8. Раз
 и читать их надо как историю, а не как навигацию.
 
 Поля пишутся с Main (method channel), читаются из цикла. Список —
-[DashEngineController.kt:263-398](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L263).
+[DashEngineController.kt:263-398](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L263).
 Подтверждённые рваные чтения:
 
 - `setNavState` пишет `routePoints` и `routeJam` двумя присваиваниями
-  ([:723](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L723),
-  [:726](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L726)),
+  ([:723](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L723),
+  [:726](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L726)),
   а цикл читает их парой при сборке `OverlayRenderer.Frame`
-  ([:1574-1577](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L1574)).
+  ([:1574-1577](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L1574)).
   Кадр между записями получает новый маршрут со старым массивом пробок.
   Крэша нет —
-  [OverlayRenderer.kt:203](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/map/OverlayRenderer.kt#L203)
+  [OverlayRenderer.kt:203](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/map/OverlayRenderer.kt#L203)
   проверяет `drawJam.size == segCount` и падает в сплошную синюю. Но защита
   **случайная**: проверка стоит там ради «нет данных о пробках», не ради
   гонки. Видимый эффект — мигание цвета маршрута на кадр.
 - `destLat` / `destLng`
-  ([:686-687](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L686)
+  ([:686-687](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L686)
   на запись,
-  [:697](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L697)
+  [:697](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L697)
   на сброс,
-  [:1383-1385](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L1383)
+  [:1383-1385](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L1383)
   и
-  [:1574](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L1574)
+  [:1574](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L1574)
   на чтение). Здесь fallback-а нет: рваное чтение ставит пин с новой широтой
   и старой долготой.
 
 Что рассуждение приходится проходить заново при каждой правке, видно по
-комментариям: [:258](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L258),
-[:327](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L327),
+комментариям: [:258](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L258),
+[:327](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L327),
 и особенно
-[`routeSignature()`:1509](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L1509)
+[`routeSignature()`:1509](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L1509)
 — «One read of each @Volatile field, not four: … re-reading between
 isEmpty() and first() would throw NoSuchElementException on the frame loop».
 Это ровно тот класс защиты, который `DashInputs` делает ненужным.
@@ -1035,28 +1060,28 @@ data-классом (dest, route + jam, nav, media, настройки каме�
 
 **Половина находки закрыта 11.09.** Вместе с пейсингом из цикла пакетов
 исчез `delay()`, и на его место поставлен `ensureActive()`
-([:1308](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L1308))
+([:1308](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L1308))
 именно затем, чтобы отмена продолжала быть видна внутри AU. Окно «до 30 мс
 пакетов мёртвого стрима» схлопнулось до времени отправки оставшихся
 датаграмм одного кадра — микросекунды.
 
 **Что осталось.** Корень не в цикле, а в
-[`DashSession.sendRtp`](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/DashSession.kt#L283):
+[`DashSession.sendRtp`](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/DashSession.kt#L283):
 `fun sendRtp(packet: ByteArray) { socket?.sendRtp(packet) }` — на 14.09 это
 был единственный путь на провод без identity-check, тогда как у управляющих сендеров он есть
-([`sendIfCurrent`:357](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/DashSession.kt#L357)
+([`sendIfCurrent`:357](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/DashSession.kt#L357)
 проверяет `socket === sock`). На выходе по потере Wi-Fi цикл завершается сам
 по условию `state != STREAMING`, внешнего cancel нет, `ensureActive()` не
 срабатывает, и остаток текущего AU уходит в тот сокет, который жив в этот
 момент. Сегодня это неисполнимо (реконнект не бывает настолько быстрым), но
 это единственная дырка, про которую комментарии в двух местах
-([:1131](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L1131),
-[:1333](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L1333))
+([:1131](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L1131),
+[:1333](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L1333))
 говорят «этого не должно быть», а код всё ещё допускает.
 
 **Сделано в `ac7e6d1`** (быстрая победа 3), и форма вышла чуть другая:
 не `sendRtp(sock, pkt)` на каждый пакет, а
-[`rtpSender()`](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/DashSession.kt#L304)
+[`rtpSender()`](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/DashSession.kt#L304)
 — он захватывает сокет один раз на старте стрима и возвращает замыкание,
 которое отказывает, если сокет уже не текущий. Проверка `socket === sock` та
 же, но делается там, где сокет и берётся, а не на горячем пути. Отказ пишется
@@ -1069,7 +1094,7 @@ data-классом (dest, route + jam, nav, media, настройки каме�
 ### 4.6 Снапшот на Main — это контракт MapLibre, а не случайность
 
 `capture()` целиком в `withContext(Dispatchers.Main)`
-([MapSnapshotProvider.kt:297](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/map/MapSnapshotProvider.kt#L297)),
+([MapSnapshotProvider.kt:297](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/map/MapSnapshotProvider.kt#L297)),
 потому что `MapSnapshotter` требует Looper. Значит кадр дэша конкурирует с
 platform thread Flutter. При выключенном экране там тихо, но любой
 обработчик method channel или GC-пауза на main прилетает прямо в бюджет
@@ -1089,10 +1114,10 @@ on», колбэк «will be fired on the calling thread». `HandlerThread("dash
 
 **Что остаётся чинить — петля через очередь главного потока.**
 `publishState()` вызывается **из `tick()`** на каждой итерации
-([:1581](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L1581))
+([:1581](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L1581))
 → `onState` → `scope.launch { eventSink.success(state) }` на scope плагина,
 а он — `Dispatchers.Main`
-([OpendashDashEnginePlugin.kt:110](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/OpendashDashEnginePlugin.kt#L110)).
+([OpendashDashEnginePlugin.kt:110](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/OpendashDashEnginePlugin.kt#L110)).
 Обычный `Dispatchers.Main` всегда идёт через очередь: `.immediate`
 документирован как то, что выполняет корутину на месте «without an
 additional re-dispatch», значит без него — всегда `Handler.post`. То есть
@@ -1107,11 +1132,11 @@ additional re-dispatch», значит без него — всегда `Handler
 ### 4.7 Дроп ключевого кадра стоит 2-4 секунды мусора
 
 Счётчик уже есть: `rtpDroppedIdr`
-([:1043](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L1043))
+([:1043](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L1043))
 отделяет потерянный GOP от потерянной четверти секунды, и колбэк энкодера
 отдаёт `isKey`. Чего нет — реакции. IDR идёт раз в 8 кадров
 (`IDR_INTERVAL_S = 2` при `FPS = 4`,
-[DashEncoder.kt:76](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/video/DashEncoder.kt#L76)):
+[DashEncoder.kt:76](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/video/DashEncoder.kt#L76)):
 2 с в движении, 4 с на стоянке. RTP по UDP без ретрансмита, поэтому
 дропнутый IDR оставляет дэш с кашей на весь этот срок.
 
@@ -1122,7 +1147,7 @@ additional re-dispatch», значит без него — всегда `Handler
 
 **Что делать.** После неудачного `trySend` для ключевого кадра дёрнуть
 `PARAMETER_KEY_REQUEST_SYNC_FRAME`; путь через `setParameters` уже проложен
-в [`requestBitrate`](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/video/DashEncoder.kt#L385).
+в [`requestBitrate`](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/video/DashEncoder.kt#L385).
 Ключ документирован буквально так: «Request that the encoder produce a sync
 frame "soon". Provide an Integer with the value 0» — больше параметров у
 него нет, `setParameters` доступен с API 19, то есть реализуется ровно как
@@ -1176,13 +1201,13 @@ frame "soon". Provide an Integer with the value 0» — больше парам�
   медленный снапшот удваивает период при 4 fps. Это осознанное
   `max(interval, latency)` из спеки, не ошибка. Рядом появился
   `FIRST_SNAPSHOT_DEADLINE_MS = 8 с`
-  ([:213](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L213))
+  ([:213](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L213))
   — отдельный бюджет первого снимка, он к такту кадра отношения не имеет.
 - ~~**Плоские счётчики `snapshots.timeouts / skipped / …`** без
   `@Volatile`~~ — **утверждение неверно, проверено 16.09.** Все пять
   (`timeouts`, `skipped`, `abandoned`, `errors`, `rebuilds`) объявлены
   `@Volatile` с `private set`
-  ([:109](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/map/MapSnapshotProvider.kt#L109))
+  ([:109](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/map/MapSnapshotProvider.kt#L109))
   с первого коммита MapLibre-рендера. Писатель один (Main), читатель один
   (цикл) — ни гонки, ни повода для комментария. Правка из §8 снята.
 
@@ -1323,7 +1348,7 @@ data class DashInputs(
   Surface). На 526×300 копейки, а `frameBitmap` держит «последний целый
   кадр» при провале снапшота.
 - **`Channel(capacity = 4)` с дропом.** Отлаженный компромисс с историей
-  в `CLAUDE.md` и в комментарии на [`:1019`](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L1019).
+  в `CLAUDE.md` и в комментарии на [`:1019`](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L1019).
 - **Дедлайн 500 мс на снапшот при интервале 250.** Осознанно.
 - **`cancel()` вместо `close()` в `finally`.** Правильно; 4.5 — про то,
   что рядом с ним, а не про него.
@@ -1341,7 +1366,7 @@ data class DashInputs(
 3. ✅ (14.09) identity-check на пути RTP — вышел как `rtpSender()`, см. 4.5.
 4. `publishState()` из `tick()` — раз в секунду, а не каждый кадр. **Не
    сделано**; вызов по-прежнему на каждой итерации
-   ([:1581](packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L1581)).
+   ([:1581](../../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/DashEngineController.kt#L1581)).
 5. ~~PNG-сжатие в `emitFramePreview`~~ — **отпало 18.09**: отладочный экран
    удалён, сжимать нечего (§4.9).
 6. ~~Комментарий у плоских счётчиков `MapSnapshotProvider`~~ — **отпало**:
@@ -1354,7 +1379,7 @@ data class DashInputs(
 
 - ~~**Ничего не измерялось на железе в рамках этого отчёта.**~~ Верно для
   редакций 11.09 и 14.09; с тех пор гейт 0 отъездил четыре заезда на двух
-  телефонах, и его числа лежат в [`docs/devices/`](docs/devices/). Что до
+  телефонах, и его числа лежат в [`docs/devices/`](../../docs/devices/). Что до
   сих пор из чтения кода, а не из замера: стоимость `publishState()` на
   главном потоке (4.6), цена PNG в бюджете кадра (4.9) и вообще вся
   латентность этапа 6.
@@ -1373,7 +1398,7 @@ data class DashInputs(
 - **Как `DashInputs` ляжет на `publishState()`** и обратный путь состояния в
   Flutter — не оценивалось.
 - `DashSession` целиком, Wi-Fi-слой, K1G — вне области; см.
-  `improvemen-dash-protocol.md`.
+  [`plans/done/2026-09-09-improvement-dash-protocol.md`](2026-09-09-improvement-dash-protocol.md).
 
 Отдельно: код-находки этого отчёта перепроверены трижды — независимой
 рецензией по редакции 11.09, повторным чтением кода 14.09 после влития

@@ -42,7 +42,7 @@ adb shell wm size; adb shell wm density
 adb pull /sdcard/Android/data/ru.snatchdash.app/files/diag
 ```
 
-Приоритеты потоков — на ЗАПУЩЕННОМ приложении (`pipeline.md` §4.3 объясняет,
+Приоритеты потоков — на ЗАПУЩЕННОМ приложении (`plans/done/2026-09-16-frame-pipeline.md` §4.3 объясняет,
 зачем):
 
 ```sh

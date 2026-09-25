@@ -354,7 +354,7 @@ sub и `0x0B sub=02 len=257`. У `0x09` известны были 04 и 06, а �
 
 **2026-09-16. Всё влито в `main`, план продолжается оттуда.** PR #9
 (`7687d89`) закрыл ветку `network-refactoring`, PR #10 (`2a2e88f`) — ветку
-`pipeline-quick-wins` соседнего плана [pipeline.md](pipeline.md). Правило §4
+`pipeline-quick-wins` соседнего плана [pipeline.md](plans/done/2026-09-16-frame-pipeline.md). Правило §4
 «ветка от `fix/need-to-fix-native-engine`» с этого момента читается как
 «ветка от `main`»: обеих прежних веток больше нет.
 

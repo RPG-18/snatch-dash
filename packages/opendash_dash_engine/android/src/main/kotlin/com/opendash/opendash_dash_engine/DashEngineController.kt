@@ -139,6 +139,19 @@ class DashEngineController(
         private const val MEM_SAMPLE_INTERVAL_MS = 60_000L
 
         /**
+         * The route card's title when there is no destination — `05 01`, once a second.
+         *
+         * One constant for three call sites that used to spell it out separately: the
+         * destination arriving without a name, the rider clearing navigation, and the blank
+         * that [setRouteCard] refuses to send (an empty string reads on the hardware as a
+         * card with no destination at all). They mean different things and look identical
+         * on the panel, so at least let them not be able to drift apart in the source.
+         *
+         * Renamed from "OpenDash" on 2026-09-25 together with [DashSession]'s hostname.
+         */
+        private const val PLACEHOLDER_TITLE = "Snatch"
+
+        /**
          * How often the FRAME TICK is allowed to publish engine state to Dart.
          *
          * Everything else — session transitions, WiFi status, media and call updates,
@@ -181,7 +194,7 @@ class DashEngineController(
      *
      * Owned here and not by the session, because Flutter pushes these at arbitrary times,
      * including while nothing is connected. When they lived on the session, every reconnect
-     * started from defaults and the first cards of a new session showed "OpenDash" with no
+     * started from defaults and the first cards of a new session showed the placeholder with no
      * guidance until Dart happened to push again.
      */
     private val chrome = MutableStateFlow(DashChrome())
@@ -1044,7 +1057,7 @@ class DashEngineController(
                 navigating = lat != null && lng != null,
             )
         }
-        setRouteCard(name ?: "OpenDash")
+        setRouteCard(name ?: PLACEHOLDER_TITLE)
         // DashSession reads [DashInputs.navigating] off the state stream for its own
         // chrome/nav-info decisions — push immediately instead of waiting for
         // the next frame-loop tick() so "Send to Dash" takes effect at once.
@@ -1055,7 +1068,7 @@ class DashEngineController(
         inputs.update {
             it.copy(destName = null, dest = null, navigating = false, route = RouteGeometry())
         }
-        setRouteCard("OpenDash")
+        setRouteCard(PLACEHOLDER_TITLE)
         publishState()
     }
 
@@ -1195,7 +1208,7 @@ class DashEngineController(
      * part of nav mode, so there is no separate idle mode (spec/fsm.md).
      */
     private fun setRouteCard(name: String) {
-        val title = name.ifBlank { "OpenDash" }
+        val title = name.ifBlank { PLACEHOLDER_TITLE }
         chrome.update { it.copy(destinationName = title, nav = null) }
         val live = current.value ?: return
         if (live.state.value == DashState.READY || live.state.value == DashState.STREAMING) {

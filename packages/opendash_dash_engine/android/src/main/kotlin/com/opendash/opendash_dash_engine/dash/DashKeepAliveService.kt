@@ -213,7 +213,7 @@ class DashKeepAliveService : Service() {
             ?: android.R.drawable.ic_menu_compass
 
         return builder
-            .setContentTitle("OpenDash — streaming to dash")
+            .setContentTitle("Snatch — streaming to dash")
             .setContentText("Map is live on the Tripper. Screen can stay off.")
             .setSmallIcon(appIcon)
             .setOngoing(true)

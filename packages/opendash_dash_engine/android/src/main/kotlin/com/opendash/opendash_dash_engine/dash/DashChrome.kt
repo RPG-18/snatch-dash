@@ -31,7 +31,7 @@ internal data class NowPlaying(
  * card, nav figures and a media card once a second, and those values come from Flutter at
  * arbitrary times — including while no session exists at all. Before, they were nine
  * `@Volatile` fields ON the session, so every reconnect started from defaults and the first
- * card of a new session showed "OpenDash" until Dart happened to push again.
+ * card of a new session showed the placeholder until Dart happened to push again.
  *
  * Held by [com.opendash.opendash_dash_engine.DashEngineController] in a `MutableStateFlow`
  * and read — not written — by the session. Same reasoning as `DashInputs` for the frame
@@ -43,7 +43,7 @@ internal data class DashChrome(
      * The card's title. Blank is not representable — the dash shows this string, and an
      * empty one reads on the hardware as a card with no destination at all.
      */
-    val destinationName: String = "OpenDash",
+    val destinationName: String = "Snatch",
     val nav: NavFigures? = null,
     val nowPlaying: NowPlaying? = null,
     val caller: String? = null,

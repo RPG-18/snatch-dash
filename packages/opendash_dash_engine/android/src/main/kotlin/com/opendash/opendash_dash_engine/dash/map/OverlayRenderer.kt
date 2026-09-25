@@ -285,7 +285,7 @@ class OverlayRenderer {
         // Colour follows the style: the light map's dark grey vanishes on Dark
         // Matter's near-black background.
         if (f.riderLat == null && f.destLat == null) {
-            val msg = "OpenDash · waiting for GPS"
+            val msg = "Snatch · waiting for GPS"
             standbyPaint.color = if (darkMap) Color.rgb(170, 174, 180) else Color.rgb(60, 64, 67)
             standbyPaint.getTextBounds(msg, 0, msg.length, textBounds)
             canvas.drawText(msg, (w - textBounds.width()) / 2f, h / 2f, standbyPaint)

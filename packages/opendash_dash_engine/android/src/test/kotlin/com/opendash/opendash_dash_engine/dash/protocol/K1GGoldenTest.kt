@@ -258,9 +258,9 @@ class K1GGoldenTest {
     @Test
     fun `hostname announce wraps the name in 06 0B with a trailing NUL`() {
         assertEquals(
-            "001e000200000000020100054b31472001" + "060b0009" + "4f70656e44617368" + "00",
-            hostnameAnnounce("OpenDash").toHex(),
-            "TLV length 0x0009 is the 8 name bytes plus the NUL",
+            "001c000200000000020100054b31472001" + "060b0007" + "536e6174636800",
+            hostnameAnnounce("Snatch").toHex(),
+            "TLV length 0x0007 is the 6 name bytes plus the NUL",
         )
     }
 
@@ -278,7 +278,7 @@ class K1GGoldenTest {
     fun `hostname truncation counts bytes, so a multibyte name is cut mid-character`() {
         // Documented, not endorsed. The cut is copyOf(200) over UTF-8 output, so 67 arrows
         // (201 bytes) lose the last one's trailing byte and leave a dangling e2 86 before
-        // the NUL. Nothing sends a name like this — the announce carries "OpenDash" — and a
+        // the NUL. Nothing sends a name like this — the announce carries "Snatch" — and a
         // future fix should make this test fail rather than change behaviour in silence.
         val pkt = hostnameAnnounce("→".repeat(67))
 
@@ -311,7 +311,7 @@ class K1GGoldenTest {
      * capture. The two tests below still cover the packet built from it.
      */
     private fun burstBytes(): List<ByteArray> =
-        Scripts.initialBurst("OpenDash", DashCommand.TimeSync(hour = 1, minute = 2, second = 3))
+        Scripts.initialBurst("Snatch", DashCommand.TimeSync(hour = 1, minute = 2, second = 3))
             .map { K1GCodec.encode(it.cmd) }
 
     @Test
@@ -321,7 +321,7 @@ class K1GGoldenTest {
         assertEquals(9, burst.size)
         assertEquals(authRequest().toHex(), burst[0].toHex(), "#0 auth request")
         assertEquals(
-            hostnameAnnounce("OpenDash").toHex(),
+            hostnameAnnounce("Snatch").toHex(),
             burst[1].toHex(),
             "#1 hostname announce",
         )

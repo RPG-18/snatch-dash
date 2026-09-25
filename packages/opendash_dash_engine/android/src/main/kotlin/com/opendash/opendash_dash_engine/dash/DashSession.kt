@@ -179,7 +179,15 @@ internal class DashSession private constructor(
         private const val TICKS_PER_SECOND = 4
         private const val TICKS_PER_TIME_SYNC = 120   // 30 s
 
-        private const val HOSTNAME = "OpenDash"
+        /**
+         * What the dash shows as the connected device, sent once per session as `06 0B`.
+         *
+         * A constant, not a setting: the dash has one line for it and nobody has asked to
+         * change it. Renamed from "OpenDash" on 2026-09-25 — the bytes on the wire change
+         * with it, which is why `DashSessionTest` compares the burst against this very
+         * name rather than against a literal of its own.
+         */
+        private const val HOSTNAME = "Snatch"
 
         /** Five retries, then stop: a dash that keeps rejecting will not start accepting. */
         private const val MAX_AUTH_REJECT_RETRIES = 5

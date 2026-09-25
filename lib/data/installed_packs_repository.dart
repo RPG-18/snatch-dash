@@ -16,7 +16,8 @@ abstract class InstalledPacksRepository {
 /// `sqflite`-backed registry of installed tile packs — the `installed_pack`
 /// table added in database v2.
 class SqliteInstalledPacksRepository implements InstalledPacksRepository {
-  SqliteInstalledPacksRepository({AppDatabase? db}) : _db = db ?? AppDatabase.instance;
+  SqliteInstalledPacksRepository({AppDatabase? db})
+    : _db = db ?? AppDatabase.instance;
 
   final AppDatabase _db;
 
@@ -51,12 +52,12 @@ class SqliteInstalledPacksRepository implements InstalledPacksRepository {
   }
 
   static InstalledPack _fromRow(Map<String, Object?> row) => InstalledPack(
-        code: row['code'] as String,
-        sha256: row['sha256'] as String,
-        generatedAt: row['generated_at'] as String,
-        sizeBytes: (row['size_bytes'] as num).toInt(),
-        installedAtMs: (row['installed_at_ms'] as num).toInt(),
-      );
+    code: row['code'] as String,
+    sha256: row['sha256'] as String,
+    generatedAt: row['generated_at'] as String,
+    sizeBytes: (row['size_bytes'] as num).toInt(),
+    installedAtMs: (row['installed_at_ms'] as num).toInt(),
+  );
 }
 
 /// In-memory implementation for widget tests, which have no sqflite binding —
@@ -73,7 +74,8 @@ class InMemoryInstalledPacksRepository implements InstalledPacksRepository {
 
   @override
   Future<List<InstalledPack>> list() async {
-    final packs = _packs.values.toList()..sort((a, b) => a.code.compareTo(b.code));
+    final packs = _packs.values.toList()
+      ..sort((a, b) => a.code.compareTo(b.code));
     return packs;
   }
 

@@ -47,12 +47,18 @@ class _RouteScreenState extends ConsumerState<RouteScreen> {
     final candidates = await notifier.resolve(item);
     if (!mounted) return;
     if (candidates.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(l10n.routeResolveError)));
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(l10n.routeResolveError)));
       return;
     }
 
-    final chosen = candidates.length == 1 ? candidates.first : await _pickCandidate(candidates, l10n);
-    if (chosen == null || !mounted) return; // dismissed the picker without choosing
+    final chosen = candidates.length == 1
+        ? candidates.first
+        : await _pickCandidate(candidates, l10n);
+    if (chosen == null || !mounted) {
+      return; // dismissed the picker without choosing
+    }
 
     setState(() {
       _preview = PlaceResult(
@@ -87,10 +93,15 @@ class _RouteScreenState extends ConsumerState<RouteScreen> {
         .read(savedDestinationsControllerProvider.notifier)
         .save(preview.name, preview.point.lat, preview.point.lng);
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(l10n.routeDestinationSaved)));
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(l10n.routeDestinationSaved)));
   }
 
-  Future<PlaceResult?> _pickCandidate(List<PlaceResult> candidates, AppLocalizations l10n) {
+  Future<PlaceResult?> _pickCandidate(
+    List<PlaceResult> candidates,
+    AppLocalizations l10n,
+  ) {
     return showModalBottomSheet<PlaceResult>(
       context: context,
       showDragHandle: true,
@@ -100,12 +111,20 @@ class _RouteScreenState extends ConsumerState<RouteScreen> {
           children: [
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-              child: Text(l10n.routeResolvePickTitle, style: Theme.of(sheetContext).textTheme.titleMedium),
+              child: Text(
+                l10n.routeResolvePickTitle,
+                style: Theme.of(sheetContext).textTheme.titleMedium,
+              ),
             ),
             for (final candidate in candidates)
               ListTile(
-                title: Text(candidate.name, style: const TextStyle(fontWeight: FontWeight.bold)),
-                subtitle: candidate.address.isEmpty ? null : Text(candidate.address),
+                title: Text(
+                  candidate.name,
+                  style: const TextStyle(fontWeight: FontWeight.bold),
+                ),
+                subtitle: candidate.address.isEmpty
+                    ? null
+                    : Text(candidate.address),
                 trailing: candidate.distanceMeters == null
                     ? null
                     : Text(formatDistance(l10n, candidate.distanceMeters!)),
@@ -143,7 +162,8 @@ class _RouteScreenState extends ConsumerState<RouteScreen> {
                     onChanged: notifier.setQuery,
                   ),
                 ),
-                if (state.searching || state.resolving) const LinearProgressIndicator(),
+                if (state.searching || state.resolving)
+                  const LinearProgressIndicator(),
                 Expanded(
                   child: AbsorbPointer(
                     absorbing: state.resolving,
@@ -155,7 +175,11 @@ class _RouteScreenState extends ConsumerState<RouteScreen> {
     );
   }
 
-  Widget _buildPreview(AppLocalizations l10n, PlaceResult preview, GeoPoint? origin) {
+  Widget _buildPreview(
+    AppLocalizations l10n,
+    PlaceResult preview,
+    GeoPoint? origin,
+  ) {
     return Stack(
       children: [
         Positioned.fill(child: OpenDashMap(dest: preview.point)),
@@ -176,8 +200,14 @@ class _RouteScreenState extends ConsumerState<RouteScreen> {
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              Text(preview.name, style: const TextStyle(fontWeight: FontWeight.bold)),
-                              if (preview.address.isNotEmpty) Text(preview.address),
+                              Text(
+                                preview.name,
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                              if (preview.address.isNotEmpty)
+                                Text(preview.address),
                             ],
                           ),
                         ),
@@ -213,12 +243,18 @@ class _RouteScreenState extends ConsumerState<RouteScreen> {
     );
   }
 
-  Widget _buildBody(BuildContext context, AppLocalizations l10n, RouteSearchState state) {
+  Widget _buildBody(
+    BuildContext context,
+    AppLocalizations l10n,
+    RouteSearchState state,
+  ) {
     if (state.error) {
       return Center(child: Text(l10n.routeSearchError));
     }
     if (state.results.isEmpty) {
-      final prompt = state.query.trim().length < 3 ? l10n.routeSearchPrompt : l10n.routeSearchNoResults;
+      final prompt = state.query.trim().length < 3
+          ? l10n.routeSearchPrompt
+          : l10n.routeSearchNoResults;
       return Center(child: Text(prompt, textAlign: TextAlign.center));
     }
     return ListView.separated(
@@ -227,9 +263,14 @@ class _RouteScreenState extends ConsumerState<RouteScreen> {
       itemBuilder: (context, i) {
         final result = state.results[i];
         return ListTile(
-          title: Text(result.title, style: const TextStyle(fontWeight: FontWeight.bold)),
+          title: Text(
+            result.title,
+            style: const TextStyle(fontWeight: FontWeight.bold),
+          ),
           subtitle: result.subtitle.isEmpty ? null : Text(result.subtitle),
-          trailing: result.distanceMeters == null ? null : Text(formatDistance(l10n, result.distanceMeters!)),
+          trailing: result.distanceMeters == null
+              ? null
+              : Text(formatDistance(l10n, result.distanceMeters!)),
           onTap: () => _selectResult(result, state.origin),
         );
       },

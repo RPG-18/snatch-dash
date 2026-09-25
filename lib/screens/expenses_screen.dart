@@ -24,7 +24,8 @@ const _categories = [
 /// Categories are stored/filtered by their canonical English key (see
 /// [GarageController.addExpense]) — only the label shown to the user is
 /// localized.
-String _categoryLabel(AppLocalizations l10n, String category) => switch (category) {
+String _categoryLabel(AppLocalizations l10n, String category) =>
+    switch (category) {
       'All Expenses' => l10n.categoryAllExpenses,
       'Fuel' => l10n.categoryFuel,
       'Repairs' => l10n.categoryRepairs,
@@ -92,7 +93,9 @@ class _ExpensesScreenState extends ConsumerState<ExpensesScreen> {
     final periods = _periods ??= _expensePeriods(l10n, locale);
     final period = _period ??= periods.first;
 
-    final periodExpenses = ui.expenses.where((e) => period.includes(e.dateMs)).toList();
+    final periodExpenses = ui.expenses
+        .where((e) => period.includes(e.dateMs))
+        .toList();
     final shown = _category == 'All Expenses'
         ? periodExpenses
         : periodExpenses.where((e) => e.category == _category).toList();
@@ -111,8 +114,14 @@ class _ExpensesScreenState extends ConsumerState<ExpensesScreen> {
                 Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(l10n.expensesTotalLabel, style: Theme.of(context).textTheme.bodySmall),
-                    Text(formatCurrencyAmount(total, currency), style: Theme.of(context).textTheme.headlineSmall),
+                    Text(
+                      l10n.expensesTotalLabel,
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                    Text(
+                      formatCurrencyAmount(total, currency),
+                      style: Theme.of(context).textTheme.headlineSmall,
+                    ),
                   ],
                 ),
                 const Spacer(),
@@ -120,7 +129,8 @@ class _ExpensesScreenState extends ConsumerState<ExpensesScreen> {
                   value: period,
                   underline: const SizedBox.shrink(),
                   items: [
-                    for (final p in periods) DropdownMenuItem(value: p, child: Text(p.label)),
+                    for (final p in periods)
+                      DropdownMenuItem(value: p, child: Text(p.label)),
                   ],
                   onChanged: (v) => setState(() => _period = v ?? period),
                 ),
@@ -128,7 +138,15 @@ class _ExpensesScreenState extends ConsumerState<ExpensesScreen> {
                 IconButton(
                   icon: const Icon(Icons.ios_share),
                   tooltip: l10n.expensesExportTooltip,
-                  onPressed: shown.isEmpty ? null : () => _showExportSheet(context, l10n, shown, period, currency),
+                  onPressed: shown.isEmpty
+                      ? null
+                      : () => _showExportSheet(
+                          context,
+                          l10n,
+                          shown,
+                          period,
+                          currency,
+                        ),
                 ),
               ],
             ),
@@ -158,10 +176,13 @@ class _ExpensesScreenState extends ConsumerState<ExpensesScreen> {
                 : ListView.separated(
                     padding: const EdgeInsets.all(16),
                     itemCount: shown.length,
-                    separatorBuilder: (context, index) => const Divider(height: 1),
+                    separatorBuilder: (context, index) =>
+                        const Divider(height: 1),
                     itemBuilder: (context, i) {
                       final e = shown[i];
-                      final date = DateTime.fromMillisecondsSinceEpoch(e.dateMs);
+                      final date = DateTime.fromMillisecondsSinceEpoch(
+                        e.dateMs,
+                      );
                       return ListTile(
                         title: Text(_categoryLabel(l10n, e.category)),
                         subtitle: Text(
@@ -173,10 +194,18 @@ class _ExpensesScreenState extends ConsumerState<ExpensesScreen> {
                           mainAxisAlignment: MainAxisAlignment.center,
                           crossAxisAlignment: CrossAxisAlignment.end,
                           children: [
-                            Text(formatCurrencyAmount(e.amount, currency, decimals: 2)),
+                            Text(
+                              formatCurrencyAmount(
+                                e.amount,
+                                currency,
+                                decimals: 2,
+                              ),
+                            ),
                             IconButton(
                               icon: const Icon(Icons.delete_outline, size: 18),
-                              onPressed: () => ref.read(garageControllerProvider.notifier).deleteExpense(e),
+                              onPressed: () => ref
+                                  .read(garageControllerProvider.notifier)
+                                  .deleteExpense(e),
                             ),
                           ],
                         ),
@@ -187,7 +216,8 @@ class _ExpensesScreenState extends ConsumerState<ExpensesScreen> {
         ],
       ),
       floatingActionButton: FloatingActionButton(
-        onPressed: () => _showAddExpense(context, l10n, ref, ui.activeVehicleName, currency),
+        onPressed: () =>
+            _showAddExpense(context, l10n, ref, ui.activeVehicleName, currency),
         child: const Icon(Icons.add),
       ),
     );
@@ -203,26 +233,46 @@ class _ExpensesScreenState extends ConsumerState<ExpensesScreen> {
     showModalBottomSheet<void>(
       context: context,
       builder: (sheetContext) => SafeArea(
-        child: Wrap(children: [
-          ListTile(
-            leading: const Icon(Icons.table_chart_outlined),
-            title: Text(l10n.expensesExportCsv),
-            onTap: () async {
-              Navigator.pop(sheetContext);
-              final file = await ExpenseExporter.exportCsv(shown, period.fileLabel, currency);
-              await SharePlus.instance.share(ShareParams(files: [XFile(file.path)], subject: 'SnatchDash expenses'));
-            },
-          ),
-          ListTile(
-            leading: const Icon(Icons.description_outlined),
-            title: Text(l10n.expensesExportDocument),
-            onTap: () async {
-              Navigator.pop(sheetContext);
-              final file = await ExpenseExporter.exportDoc(shown, period.label, currency);
-              await SharePlus.instance.share(ShareParams(files: [XFile(file.path)], subject: 'SnatchDash expenses'));
-            },
-          ),
-        ]),
+        child: Wrap(
+          children: [
+            ListTile(
+              leading: const Icon(Icons.table_chart_outlined),
+              title: Text(l10n.expensesExportCsv),
+              onTap: () async {
+                Navigator.pop(sheetContext);
+                final file = await ExpenseExporter.exportCsv(
+                  shown,
+                  period.fileLabel,
+                  currency,
+                );
+                await SharePlus.instance.share(
+                  ShareParams(
+                    files: [XFile(file.path)],
+                    subject: 'SnatchDash expenses',
+                  ),
+                );
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.description_outlined),
+              title: Text(l10n.expensesExportDocument),
+              onTap: () async {
+                Navigator.pop(sheetContext);
+                final file = await ExpenseExporter.exportDoc(
+                  shown,
+                  period.label,
+                  currency,
+                );
+                await SharePlus.instance.share(
+                  ShareParams(
+                    files: [XFile(file.path)],
+                    subject: 'SnatchDash expenses',
+                  ),
+                );
+              },
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -248,26 +298,44 @@ class _ExpensesScreenState extends ConsumerState<ExpensesScreen> {
               DropdownButtonFormField<String>(
                 initialValue: category,
                 items: [
-                  for (final c in _categories.skip(1)) DropdownMenuItem(value: c, child: Text(_categoryLabel(l10n, c))),
+                  for (final c in _categories.skip(1))
+                    DropdownMenuItem(
+                      value: c,
+                      child: Text(_categoryLabel(l10n, c)),
+                    ),
                 ],
                 onChanged: (v) => setState(() => category = v ?? category),
-                decoration: InputDecoration(labelText: l10n.expensesCategoryLabel),
+                decoration: InputDecoration(
+                  labelText: l10n.expensesCategoryLabel,
+                ),
               ),
               TextField(
                 controller: amount,
                 keyboardType: TextInputType.number,
-                decoration: InputDecoration(labelText: l10n.expensesAmountLabel(currency.symbol)),
+                decoration: InputDecoration(
+                  labelText: l10n.expensesAmountLabel(currency.symbol),
+                ),
               ),
-              TextField(controller: note, decoration: InputDecoration(labelText: l10n.expensesNoteOptionalLabel)),
+              TextField(
+                controller: note,
+                decoration: InputDecoration(
+                  labelText: l10n.expensesNoteOptionalLabel,
+                ),
+              ),
             ],
           ),
           actions: [
-            TextButton(onPressed: () => Navigator.pop(dialogContext), child: Text(l10n.actionCancel)),
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: Text(l10n.actionCancel),
+            ),
             TextButton(
               onPressed: () {
                 final a = double.tryParse(amount.text);
                 if (a != null && a > 0) {
-                  ref.read(garageControllerProvider.notifier).addExpense(category, a, note.text.trim());
+                  ref
+                      .read(garageControllerProvider.notifier)
+                      .addExpense(category, a, note.text.trim());
                 }
                 Navigator.pop(dialogContext);
               },

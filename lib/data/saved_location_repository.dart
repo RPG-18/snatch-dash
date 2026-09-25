@@ -10,7 +10,8 @@ abstract class SavedLocationRepository {
 /// `sqflite`-backed saved destinations — ports the `saved_location` table
 /// from `data/OpenDashDb.kt`.
 class SqliteSavedLocationRepository implements SavedLocationRepository {
-  SqliteSavedLocationRepository({AppDatabase? db}) : _db = db ?? AppDatabase.instance;
+  SqliteSavedLocationRepository({AppDatabase? db})
+    : _db = db ?? AppDatabase.instance;
 
   final AppDatabase _db;
 
@@ -19,26 +20,36 @@ class SqliteSavedLocationRepository implements SavedLocationRepository {
     final db = await _db.database;
     final rows = await db.query('saved_location', orderBy: 'id DESC');
     return rows
-        .map((row) => SavedLocation(
-              id: row['id'] as int,
-              name: row['name'] as String,
-              lat: (row['lat'] as num).toDouble(),
-              lng: (row['lng'] as num).toDouble(),
-            ))
+        .map(
+          (row) => SavedLocation(
+            id: row['id'] as int,
+            name: row['name'] as String,
+            lat: (row['lat'] as num).toDouble(),
+            lng: (row['lng'] as num).toDouble(),
+          ),
+        )
         .toList();
   }
 
   @override
   Future<SavedLocation> add(String name, double lat, double lng) async {
     final db = await _db.database;
-    final id = await db.insert('saved_location', {'name': name, 'lat': lat, 'lng': lng});
+    final id = await db.insert('saved_location', {
+      'name': name,
+      'lat': lat,
+      'lng': lng,
+    });
     return SavedLocation(id: id, name: name, lat: lat, lng: lng);
   }
 
   @override
   Future<void> remove(SavedLocation location) async {
     final db = await _db.database;
-    await db.delete('saved_location', where: 'id = ?', whereArgs: [location.id]);
+    await db.delete(
+      'saved_location',
+      where: 'id = ?',
+      whereArgs: [location.id],
+    );
   }
 }
 
@@ -54,7 +65,12 @@ class InMemorySavedLocationRepository implements SavedLocationRepository {
 
   @override
   Future<SavedLocation> add(String name, double lat, double lng) async {
-    final location = SavedLocation(id: _nextId++, name: name, lat: lat, lng: lng);
+    final location = SavedLocation(
+      id: _nextId++,
+      name: name,
+      lat: lat,
+      lng: lng,
+    );
     _locations.add(location);
     return location;
   }

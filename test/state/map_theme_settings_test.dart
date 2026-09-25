@@ -46,7 +46,9 @@ void main() {
     final container = ProviderContainer();
     addTearDown(container.dispose);
 
-    await container.read(mapThemeSettingsProvider.notifier).select(MapTheme.dark);
+    await container
+        .read(mapThemeSettingsProvider.notifier)
+        .select(MapTheme.dark);
 
     final prefs = await SharedPreferences.getInstance();
     expect(prefs.getString(kMapThemePrefsKey), 'dark');

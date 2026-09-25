@@ -36,7 +36,11 @@ class DashEngine {
   Future<void> disconnect() => OpendashDashEnginePlatform.instance.disconnect();
 
   Future<void> setDestination({String? name, double? lat, double? lng}) =>
-      OpendashDashEnginePlatform.instance.setDestination(name: name, lat: lat, lng: lng);
+      OpendashDashEnginePlatform.instance.setDestination(
+        name: name,
+        lat: lat,
+        lng: lng,
+      );
 
   Future<void> clearDestination() =>
       OpendashDashEnginePlatform.instance.clearDestination();
@@ -49,16 +53,15 @@ class DashEngine {
     bool offRoute = false,
     List<List<double>> points = const [],
     List<int> jamSegments = const [],
-  }) =>
-      OpendashDashEnginePlatform.instance.setNavState(
-        remainingMeters: remainingMeters,
-        nextTurnMeters: nextTurnMeters,
-        maneuver: maneuver,
-        etaHHMM: etaHHMM,
-        offRoute: offRoute,
-        points: points,
-        jamSegments: jamSegments,
-      );
+  }) => OpendashDashEnginePlatform.instance.setNavState(
+    remainingMeters: remainingMeters,
+    nextTurnMeters: nextTurnMeters,
+    maneuver: maneuver,
+    etaHHMM: etaHHMM,
+    offRoute: offRoute,
+    points: points,
+    jamSegments: jamSegments,
+  );
 
   Future<void> setFollowMode(bool enabled) =>
       OpendashDashEnginePlatform.instance.setFollowMode(enabled);
@@ -86,9 +89,15 @@ class DashEngine {
   Future<Map<String, dynamic>> getConfig() =>
       OpendashDashEnginePlatform.instance.getConfig();
 
-  Future<void> updateNowPlaying({String? title, String album = '', String artist = ''}) =>
-      OpendashDashEnginePlatform.instance
-          .updateNowPlaying(title: title, album: album, artist: artist);
+  Future<void> updateNowPlaying({
+    String? title,
+    String album = '',
+    String artist = '',
+  }) => OpendashDashEnginePlatform.instance.updateNowPlaying(
+    title: title,
+    album: album,
+    artist: artist,
+  );
 
   Future<void> updateCall(String? caller) =>
       OpendashDashEnginePlatform.instance.updateCall(caller);
@@ -98,7 +107,8 @@ class DashEngine {
   Future<bool> answerCall() => OpendashDashEnginePlatform.instance.answerCall();
   Future<bool> hangupCall() => OpendashDashEnginePlatform.instance.hangupCall();
   Future<bool> skipNext() => OpendashDashEnginePlatform.instance.skipNext();
-  Future<bool> skipPrevious() => OpendashDashEnginePlatform.instance.skipPrevious();
+  Future<bool> skipPrevious() =>
+      OpendashDashEnginePlatform.instance.skipPrevious();
   Future<bool> isNotificationAccessGranted() =>
       OpendashDashEnginePlatform.instance.isNotificationAccessGranted();
   Future<void> openNotificationAccessSettings() =>

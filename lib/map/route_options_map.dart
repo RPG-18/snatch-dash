@@ -120,11 +120,15 @@ class _RouteOptionsMapState extends State<RouteOptionsMap> {
 
     final origin = widget.origin;
     if (origin != null) {
-      objects.addPlacemarkWithPoint(ymk.Point(latitude: origin.lat, longitude: origin.lng));
+      objects.addPlacemarkWithPoint(
+        ymk.Point(latitude: origin.lat, longitude: origin.lng),
+      );
     }
     final dest = widget.destination;
     if (dest != null) {
-      objects.addPlacemarkWithPoint(ymk.Point(latitude: dest.lat, longitude: dest.lng));
+      objects.addPlacemarkWithPoint(
+        ymk.Point(latitude: dest.lat, longitude: dest.lng),
+      );
     }
   }
 
@@ -148,7 +152,10 @@ class _RouteOptionsMapState extends State<RouteOptionsMap> {
       line.setStrokeColors(
         selected && jam.length == segments
             ? [for (final level in jam) level.index]
-            : List.filled(segments, selected ? _flatSelectedSlot : _flatUnselectedSlot),
+            : List.filled(
+                segments,
+                selected ? _flatSelectedSlot : _flatUnselectedSlot,
+              ),
       );
     }
     // Restyling the polylines alone doesn't reach the screen: this native
@@ -160,8 +167,11 @@ class _RouteOptionsMapState extends State<RouteOptionsMap> {
     if (window != null) window.map.move(window.map.cameraPosition);
   }
 
-  ymk.Polyline _geometry(nav.Route route) =>
-      ymk.Polyline(route.geometry.map((p) => ymk.Point(latitude: p.lat, longitude: p.lng)).toList());
+  ymk.Polyline _geometry(nav.Route route) => ymk.Polyline(
+    route.geometry
+        .map((p) => ymk.Point(latitude: p.lat, longitude: p.lng))
+        .toList(),
+  );
 
   void _fitBounds() {
     final window = _mapWindow;
@@ -184,10 +194,15 @@ class _RouteOptionsMapState extends State<RouteOptionsMap> {
       ymk.Point(latitude: minLat - latPad, longitude: minLng - lngPad),
       ymk.Point(latitude: maxLat + latPad, longitude: maxLng + lngPad),
     );
-    final position = window.map.cameraPositionForGeometry(ymk.Geometry.fromBoundingBox(bounds));
+    final position = window.map.cameraPositionForGeometry(
+      ymk.Geometry.fromBoundingBox(bounds),
+    );
     window.map.move(
       position,
-      animation: const ymk.Animation(type: ymk.AnimationType.Smooth, duration: 0.6),
+      animation: const ymk.Animation(
+        type: ymk.AnimationType.Smooth,
+        duration: 0.6,
+      ),
     );
   }
 }

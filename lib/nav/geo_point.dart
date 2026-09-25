@@ -14,7 +14,8 @@ class GeoPoint {
   static double distMeters(GeoPoint a, GeoPoint b) {
     final dLat = _toRad(b.lat - a.lat);
     final dLng = _toRad(b.lng - a.lng);
-    final s = sin(dLat / 2) * sin(dLat / 2) +
+    final s =
+        sin(dLat / 2) * sin(dLat / 2) +
         cos(_toRad(a.lat)) * cos(_toRad(b.lat)) * sin(dLng / 2) * sin(dLng / 2);
     return 2 * _earthKm * 1000.0 * atan2(sqrt(s), sqrt(1 - s));
   }
@@ -32,7 +33,11 @@ class GeoPoint {
   /// Nearest point to [p] on the segment [a]→[b], plus the fraction t∈[0,1]
   /// along the segment. Uses a local equirectangular approximation — fine at
   /// the segment scale of a road.
-  static (GeoPoint, double) projectOnSegment(GeoPoint p, GeoPoint a, GeoPoint b) {
+  static (GeoPoint, double) projectOnSegment(
+    GeoPoint p,
+    GeoPoint a,
+    GeoPoint b,
+  ) {
     final latRef = _toRad(a.lat);
     double x(GeoPoint g) => _toRad(g.lng) * cos(latRef);
     double y(GeoPoint g) => _toRad(g.lat);

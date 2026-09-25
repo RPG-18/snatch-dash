@@ -2,6 +2,7 @@ package com.opendash.opendash_dash_engine.dash
 
 import com.opendash.opendash_dash_engine.dash.protocol.K1GPacket
 import com.opendash.opendash_dash_engine.util.DebugLog
+import com.opendash.opendash_dash_engine.util.PacketCapture
 import com.opendash.opendash_dash_engine.util.RideDiagnostics
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -23,7 +24,7 @@ import java.net.InetSocketAddress
  *
  * Every control packet gets the rolling K1G seq byte patched on send.
  */
-class DashSocket(private val network: android.net.Network? = null) : AutoCloseable {
+class DashSocket(private val network: android.net.Network? = null) : DashTransport {
     companion object {
         const val DASH_IP    = "192.168.1.1"
         const val BROADCAST  = "192.168.1.255"
@@ -88,7 +89,6 @@ class DashSocket(private val network: android.net.Network? = null) : AutoCloseab
         // sized to turn into an honest drop, moved one layer down where the telemetry cannot
         // see it. The line below reports what the platform actually gives us; if a ride ever
         // shows sends blocking, that number is the evidence to change it with.
-        private const val RECV_TIMEOUT_MS = 500
         private const val TAG             = "DashSocket"
     }
 
@@ -117,19 +117,39 @@ class DashSocket(private val network: android.net.Network? = null) : AutoCloseab
         var rx:  DatagramSocket? = null
         var rtp: DatagramSocket? = null
         try {
-            tx = DatagramSocket(null).also {
-                it.reuseAddress = true
-                it.broadcast = true
-                it.bind(InetSocketAddress(CTRL_PORT))
-                network?.bindSocket(it)
-            }
-            rx = DatagramSocket(null).also {
-                it.reuseAddress = true
-                it.soTimeout = RECV_TIMEOUT_MS
-                it.bind(InetSocketAddress(RX_PORT))
-                network?.bindSocket(it)
-            }
-            rtp = DatagramSocket().also { network?.bindSocket(it) }
+            // SO_REUSEADDR is NOT set on either fixed port, and that is deliberate.
+            //
+            // It used to be, on both, and what it bought was the ability to bind a port the
+            // previous session still held — which is precisely the failure worth hearing
+            // about. Two sockets bound to :2002 do not split the dash's traffic evenly or
+            // predictably; the platform hands a datagram to one of them, and the half that
+            // reaches a session nobody reads any more shows up as "the dash went quiet".
+            // With one-shot sessions the previous socket is closed before the next one is
+            // built (DashEngineController.openSession awaits the close), so a BindException
+            // here now means a real leak, and it should stop the session rather than be
+            // papered over.
+            // Assigned BEFORE being configured, every time, and that is the whole reason
+            // these three lines are not `.also { … }` chains. Inside an `.also` the socket
+            // exists but the variable does not yet, so a throw from `bind` or from
+            // `Network.bindSocket` — routine, it raises IOException the moment the Wi-Fi
+            // network is gone — left the catch below with nothing to close. The fd stayed
+            // open and, worse, :2002 stayed BOUND with no reference to it. That was
+            // survivable while SO_REUSEADDR papered over it; with the option gone (see
+            // above) every later attempt dies with BindException instead, through the auth
+            // retries and on to the 120 s give-up.
+            tx = DatagramSocket(null)
+            tx.broadcast = true
+            tx.bind(InetSocketAddress(CTRL_PORT))
+            network?.bindSocket(tx)
+
+            rx = DatagramSocket(null)
+            // No soTimeout: [receive] blocks until a datagram or until [close]. See
+            // DashTransport.receive for why the polled 500 ms timeout went away.
+            rx.bind(InetSocketAddress(RX_PORT))
+            network?.bindSocket(rx)
+
+            rtp = DatagramSocket()
+            network?.bindSocket(rtp)
             DebugLog.i(TAG) { "Sockets open — TX :$CTRL_PORT→$BROADCAST:$CTRL_PORT (broadcast), RX :$RX_PORT, RTP→$DASH_IP:$RTP_PORT" }
             txSocket  = tx
             rxSocket  = rx
@@ -167,13 +187,14 @@ class DashSocket(private val network: android.net.Network? = null) : AutoCloseab
     }
 
     /** Send a K1G control packet (seq patched here, like K1GTx in the reference). */
-    fun send(data: ByteArray) = sequencer.send(data) { pkt ->
+    override fun send(data: ByteArray) = sequencer.send(data) { pkt ->
         // Inside the sequencer's lock, and the log line with it: this file's contract is that
         // a TX line can be diffed against a capture byte for byte, and lines written outside
         // the lock arrive in whatever order the threads take it, describing packets that went
         // out in another. In a release build DebugLog compiles the whole thing away; in a
         // debug one it is a hex dump of a few dozen bytes, eight times a second.
         DebugLog.d(TAG) { "TX →$BROADCAST:$CTRL_PORT  ${pkt.size}B  ${pkt.hexFull()}" }
+        PacketCapture.tx(pkt, srcPort = CTRL_PORT, dstIp = BROADCAST, dstPort = CTRL_PORT)
         // UDP fire-and-forget: a dropped/unreachable link (ENETUNREACH, EBADF) must never
         // crash the app — the session will fail and reconnect.
         //
@@ -190,7 +211,7 @@ class DashSocket(private val network: android.net.Network? = null) : AutoCloseab
         }
     }
 
-    fun sendRtp(data: ByteArray) {
+    override fun sendRtp(data: ByteArray) {
         // IOException only — see the note in [send] on why a broad catch hid a
         // NetworkOnMainThreadException as a link failure.
         try {
@@ -201,25 +222,23 @@ class DashSocket(private val network: android.net.Network? = null) : AutoCloseab
     }
 
     /**
-     * Blocks up to RECV_TIMEOUT_MS; **null means timeout and nothing else.** Throws on a
-     * genuine socket error (closed/unreachable) — the caller's receive loop catches it and
-     * ends the session instead of letting the exception crash the whole app.
+     * Blocks until a datagram arrives, or throws when the socket is closed or the link dies.
      *
-     * That contract is load-bearing: `DashSession`'s RX loop reads null as "no traffic" and
-     * leaves `lastRxAtMs` alone, so a null returned for any OTHER reason feeds the idle
-     * watchdog and tears down a link that is in fact carrying packets. An oversized datagram
-     * therefore loops back for the next one instead of returning — it is discarded, but it
-     * is not silence.
+     * An oversized datagram is discarded and this loops back for the next one, so the
+     * caller never sees that anything arrived. **That is a known limitation, not a
+     * contract:** `DashSession` refreshes its idle watchdog only on a datagram this returns,
+     * so a peer that sent nothing but oversized datagrams would be torn down as "silent"
+     * while the link carried traffic. Nothing has ever sent one — the dash's largest is a
+     * 269-byte restart blob — and the single ride-file warning below is what would say
+     * otherwise. Reported here rather than fixed because the fix is a contract change
+     * ([receive] would have to return something for "arrived but unusable"), and there is
+     * no evidence to design it against.
      */
-    suspend fun receive(): ByteArray? = withContext(Dispatchers.IO) {
+    override suspend fun receive(): ByteArray = withContext(Dispatchers.IO) {
         val buf = DatagramPacket(rxBuffer, rxBuffer.size)
         while (true) {
-            try {
-                buf.length = rxBuffer.size
-                rxSocket.receive(buf)
-            } catch (_: java.net.SocketTimeoutException) {
-                return@withContext null
-            }
+            buf.length = rxBuffer.size
+            rxSocket.receive(buf)
             if (buf.length > MAX_DATAGRAM) {
                 // Bigger than anything this protocol produces, and already truncated by the
                 // buffer — the tail is gone. `K1GPacket.parseIncoming` would not crash on it
@@ -237,13 +256,30 @@ class DashSocket(private val network: android.net.Network? = null) : AutoCloseab
                             "truncated and dropped; further ones this session are silent",
                     )
                 }
+                // Dropped by the SESSION, recorded by the CAPTURE — the two want opposite
+                // things here. Refusing to parse a truncated datagram is right; leaving it
+                // out of the capture is not, because the capture exists to tell a dash that
+                // has gone quiet from one that is talking and not being heard. A firmware
+                // sending these would look like the first while being the second.
+                PacketCapture.rx(
+                    buf.data.copyOf(buf.length.coerceAtMost(rxBuffer.size)),
+                    srcIp = buf.address?.hostAddress ?: DASH_IP,
+                    srcPort = buf.port,
+                    dstPort = RX_PORT,
+                )
                 continue
             }
             val bytes = buf.data.copyOf(buf.length)
             DebugLog.d(TAG) { "RX ←${buf.address?.hostAddress}:${buf.port}  ${bytes.size}B  ${bytes.hexFull()}" }
+            PacketCapture.rx(
+                bytes,
+                srcIp = buf.address?.hostAddress ?: DASH_IP,
+                srcPort = buf.port,
+                dstPort = RX_PORT,
+            )
             return@withContext bytes
         }
-        @Suppress("UNREACHABLE_CODE") null
+        @Suppress("UNREACHABLE_CODE") ByteArray(0)
     }
 
     override fun close() {

@@ -36,22 +36,28 @@ void main() {
   });
 
   group('SqliteGarageRepository — fuel', () {
-    test('addFuel persists and fuelFills returns newest-odometer-first', () async {
-      await garageRepo.addFuel(10, 900, 1000, 'Shell', 'default');
-      await garageRepo.addFuel(9.5, 850, 1300, 'IOCL', 'default');
+    test(
+      'addFuel persists and fuelFills returns newest-odometer-first',
+      () async {
+        await garageRepo.addFuel(10, 900, 1000, 'Shell', 'default');
+        await garageRepo.addFuel(9.5, 850, 1300, 'IOCL', 'default');
 
-      final fills = await garageRepo.fuelFills('default');
-      expect(fills.length, 2);
-      expect(fills.first.odometerKm, 1300);
-      expect(fills.last.odometerKm, 1000);
-    });
+        final fills = await garageRepo.fuelFills('default');
+        expect(fills.length, 2);
+        expect(fills.first.odometerKm, 1300);
+        expect(fills.last.odometerKm, 1000);
+      },
+    );
 
-    test('addFuel raises the vehicle odometer when higher than stored', () async {
-      await garageRepo.setOdometer(500, 'default');
-      await garageRepo.addFuel(10, 900, 1200, '', 'default');
+    test(
+      'addFuel raises the vehicle odometer when higher than stored',
+      () async {
+        await garageRepo.setOdometer(500, 'default');
+        await garageRepo.addFuel(10, 900, 1200, '', 'default');
 
-      expect(await garageRepo.odometer('default'), 1200);
-    });
+        expect(await garageRepo.odometer('default'), 1200);
+      },
+    );
 
     test('deleteFuel removes the row', () async {
       final fill = await garageRepo.addFuel(10, 900, 1000, '', 'default');
@@ -64,7 +70,9 @@ void main() {
   group('SqliteGarageRepository — maintenance', () {
     test('ensureMaintenance seeds the 8 default intervals once', () async {
       await garageRepo.ensureMaintenance('default');
-      await garageRepo.ensureMaintenance('default'); // second call must be a no-op
+      await garageRepo.ensureMaintenance(
+        'default',
+      ); // second call must be a no-op
 
       final items = await garageRepo.maintenanceItems('default');
       expect(items.length, 8);
@@ -91,15 +99,22 @@ void main() {
 
       await garageRepo.markServiceDone(item, 5000);
 
-      final updated = (await garageRepo.maintenanceItems('default'))
-          .firstWhere((i) => i.id == item.id);
+      final updated = (await garageRepo.maintenanceItems(
+        'default',
+      )).firstWhere((i) => i.id == item.id);
       expect(updated.lastDoneOdoKm, 5000);
     });
   });
 
   group('SqliteGarageRepository — expenses', () {
     test('addExpense/deleteExpense round-trip', () async {
-      final expense = await garageRepo.addExpense('Fuel', 500, 'Top-up', 1000, 'default');
+      final expense = await garageRepo.addExpense(
+        'Fuel',
+        500,
+        'Top-up',
+        1000,
+        'default',
+      );
       expect((await garageRepo.expenses('default')).length, 1);
 
       await garageRepo.deleteExpense(expense);

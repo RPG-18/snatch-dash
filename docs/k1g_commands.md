@@ -72,7 +72,10 @@ The `0x0080` length on the auth TLV confirms the RSA ciphertext is 128 bytes
   `55`/`AA`/`BB`/`CC` (4-way).
 - `+runtime` in the table below means the constant is a *prefix* — type, sub
   and length only, with the value concatenated as hex at call time. Example
-  from `REForeGroundService`: `"06080001".concat(hex(volume))`.
+  from `REForeGroundService`: `"06040001".concat(hex(volume + 100))`.
+  (This example named `06 08` until 2026-09-22. That TLV is the **weather
+  code**, not volume — see the `0x06` table below; volume is `06 04`, as the
+  same table has always said.)
 
 ## Coverage
 
@@ -84,8 +87,11 @@ Two caveats on that number, both of which cut against reading it too literally:
 1. **Absence here ≠ the app doesn't use it.** This table only covers commands
    stored as *string constants*. Anything the app builds dynamically is
    invisible to it — which is why several TLVs the port *does* send (`05 08`,
-   `05 22`, `06 0A`, `06 10`, `0A 02`) do not appear below. Those are route-card
-   fields patched at runtime, exactly as our `routeCard()` patches them.
+   `05 0D`, `05 22`, `06 0A`, `06 10`, `0A 02`) do not appear below. Some of
+   those are route-card fields patched at runtime, exactly as our `routeCard()`
+   patches them. `05 40` (album art) is built the same way — a TLV the port does
+   not send at all, and whose existence this table alone cannot reveal. See
+   "Media".
 2. The pairs were recovered by slicing constants with the TLV walker described
    above. Constants that are header fragments rather than whole packets can
    mis-slice; the `0x03`/`0x04` families in particular are self-consistent but
@@ -128,9 +134,9 @@ back to the APK; at most six are shown.
 | sub | values seen | n | in port | `hbg` fields | note |
 |---|---|---|---|---|---|
 | `0B` | +runtime | 1 |  | `S2` |  |
-| `17` | `55`, `AA` | 2 | yes | `l1, m1` |  |
-| `19` | `55`, `AA` | 2 |  | `i1, j1` |  |
-| `1A` | +runtime | 1 |  | `k1` |  |
+| `17` | `55`, `AA` | 2 | yes | `l1, m1` | **Media active** (`55`) / inactive (`AA`). See "Media" |
+| `19` | `55`, `AA` | 2 |  | `i1, j1` | **Playing** (`55`) / **paused** (`AA`) |
+| `1A` | +runtime | 1 |  | `k1` | **Dead constant** — never used anywhere in the app |
 | `1B` | `10`, `11`, `12`, `13`, `14`, `15`, `16`, `17`, `18`, `19`… | 11 | yes | `A1, B1, C1, D1, E1, F1` |  |
 | `21` | `0A`, `14`, `1E`, `32` | 4 | yes | `l2, m2, n2, o2` |  |
 | `23` | `55`, `AA`, `BB`, `CC` | 4 |  | `h2, i2, j2, k2` |  |
@@ -146,20 +152,20 @@ back to the APK; at most six are shown.
 | `55` | +runtime | 1 |  | `T2` |  |
 | `56` | `55`, `AA` | 2 | yes | `g, h` |  |
 | `57` | `55` | 1 | yes | `P2` |  |
-| `58` | `55`, `AA` | 2 |  | `g1, h1` |  |
+| `58` | `55`, `AA` | 2 |  | `g1, h1` | **Album art follows** (`55`) / no art (`AA`) |
 
 #### Type `0x06`
 
 | sub | values seen | n | in port | `hbg` fields | note |
 |---|---|---|---|---|---|
 | `01` | +runtime | 1 | yes | `s` |  |
-| `03` | +runtime | 1 | yes | `v` | Media flag (bool) — `REForeGroundService` |
-| `04` | +runtime | 1 | yes | `u` | Media volume — value is `volume + 100`, `REForeGroundService` |
+| `03` | +runtime | 1 | yes | `v` | **GPS enabled** (`55`/`AA`) — `LocationManager.isProviderEnabled` |
+| `04` | +runtime | 1 | yes | `u` | **Battery level + 100** — `BATTERY_PROPERTY_CAPACITY`. Not volume |
 | `05` | `55`, `AA` | 4 | yes | `w, x, y, z` |  |
-| `0C` | `10`, `20`, `30` | 3 |  | `M2, N2, O2` |  |
+| `0C` | `10`, `20`, `30` | 3 |  | `M2, N2, O2` | **Zoom limits**: `30` zoom applied, `20` upper bound reached, `10` lower bound. See "Buttons `09 00`" |
 | `0D` | `55`, `AA` | 2 |  | `i, j` |  |
 | `0E` | `55`, `AA` | 2 |  | `w0, x0` |  |
-| `0F` | +runtime | 1 | yes | `t` | Media flag (bool) — `REForeGroundService` |
+| `0F` | +runtime | 1 | yes | `t` | **Charging** (`55`/`AA`) — `BATTERY_CHANGED`, status `CHARGING`/`FULL` |
 | `11` | `55` | 1 | yes | `L2` | IDR frame decoded ack |
 | `12` | `55` | 1 | yes | `K2` | P-frame decoded ack |
 | `13` | +runtime | 1 |  | `U2` |  |
@@ -171,7 +177,7 @@ back to the APK; at most six are shown.
 | `19` | +runtime | 1 |  | `a3` |  |
 | `1A` | +runtime | 1 |  | `b3` |  |
 | `1B` | +runtime | 1 |  | `c3` |  |
-| `80` | `03`, `04`, `05`, `06`, `07`, `08`, `09`, `0A`, `0B`, `12`… | 19 | yes | `A2, B2, C2, D2, E2, F2` |  |
+| `80` | `03`, `04`, `05`, `06`, `07`, `08`, `09`, `0A`, `0B`, `12`… | 19 | yes | `A2, B2, C2, D2, E2, F2` | **Button-code echo** in reply to `09 00`. See "Buttons `09 00`" |
 
 #### Type `0x08`
 
@@ -184,7 +190,7 @@ back to the APK; at most six are shown.
 
 | sub | values seen | n | in port | `hbg` fields | note |
 |---|---|---|---|---|---|
-| `00` | `05`, `06`, `07`, `09`, `0A`, `12`, `22` | 7 | yes | `Q2, b1, c1, d1, e1, f1` | Joystick / button event |
+| `00` | `05`, `06`, `07`, `09`, `0A`, `12`, `22` | 7 | yes | `Q2, b1, c1, d1, e1, f1` | Joystick / button event. Full 19-code map in "Buttons `09 00`" below; the constants cover only the six where the code is matched against a whole TLV |
 | `01` | `0055`, `00AA`, `00BB`, `00CC`, `0155`, `01AA`, `01BB`, `01CC`, `0255`, `02AA`… | 24 |  | `J1, K1, L1, M1, N1, O1` |  |
 | `03` | `0A01`, `1401`, `1E01` | 3 |  | `Y0, Z0, a1` |  |
 | `07` | `55`, `AA` | 2 |  | `A3, z3` |  |
@@ -230,10 +236,22 @@ Confidence is stated per row because it varies a lot.
 | `06 11` = `55` | IDR-frame-decoded ack | Identical to our working command | Confirmed |
 | `06 12` = `55` | P-frame-decoded ack | Identical to our working command | Confirmed |
 | `09 00` | Joystick / button event | Same codes we already handle | Confirmed |
+| `06 80` + code | **Button echo**: the app repeats the code of the `09 00` it received | 19 `hbg` constants, each sent from its own handler | Confirmed |
+| `06 0C` = `10`/`20`/`30` | **Zoom limits**: `30` zoom applied · `20` at the upper bound · `10` at the lower | `Z7`/`a8`/`h1` in `NavigationRootFragment` | Confirmed |
+| `05 0D` + value | **Now-playing card**: `album \0 title \0 artist`, 19 chars per field | `REForeGroundService.A()` | Confirmed |
+| `05 17` = `55`/`AA` | Media active / inactive | Same method and the playback-state callback | Confirmed |
+| `05 19` = `55`/`AA` | Playing / paused | `onPlaybackStateChanged` | Confirmed |
+| `05 22` + name | Incoming-call card, NUL-terminated caller name | `REForeGroundService` | Confirmed |
+| `05 58` = `55`/`AA` | Album art follows / no art | `REForeGroundService.A()` | Confirmed |
+| `05 40` + chunk | **Album art**, 75×75 JPEG in 1000-byte chunks | `MetaDataUtils` (`nbg.a/c/e`) | Confirmed |
 | `04 01` = `55`/`AA` | Temperature unit (°C / °F) | Only TLV sent by `TemperatureActivity` | Likely |
-| `06 04` + value | Media volume, sent as `volume + 100` | `REForeGroundService` media callback | Likely |
-| `06 08` + value | Media, value from `t9k.y().p0()` | Same callback | Plausible |
-| `06 03`, `06 0F` | Media booleans | Same callback, `55`/`AA` args | Plausible |
+| `06 04` + value | **Battery level**, sent as `%+100` | `REForeGroundService.k()` → `BatteryManager` | Confirmed |
+| `06 01` = `01`/`00` | Cellular signal present | `TelephonyManager.getAllCellInfo()`, level > 0 | Confirmed |
+| `05 4C`, `05 1B` | `STREAM_MUSIC` and `STREAM_VOICE_CALL` volume, 11 steps: `10` silent, `11`…`1A` | 1 Hz status block | Confirmed |
+| `06 08` + value | **Weather code**, 1 byte: `01` cloudy · `02` thunder · `03` rain · `04` snow/ice · `05` clear · `FF` no data. ~40 AccuWeather codes collapse into these five in `c5r.java` | `REForeGroundService:281`, `WeatherEngine` (`f5r.java`) | Confirmed |
+| `06 10` + value | **Temperature**, 1 byte, `°C + 40`. With no reading the original drops the TLV entirely and adjusts seg count | Same packet | Confirmed |
+| `06 03` = `55`/`AA` | GPS enabled | Same status block | Confirmed |
+| `06 0F` = `55`/`AA` | Phone is charging | Same status block | Confirmed |
 | `04 xx`, `03 xx` | Cluster settings family | Sent from `ui/settings/activity/*` | Plausible |
 
 ### Dash settings are protocol commands
@@ -252,36 +270,238 @@ currency only.
 Only `04 01` (temperature) is pinned down so far; the rest of the `03`/`04`
 families are the obvious place to look next.
 
-### The 1 Hz heartbeat ships captured media state
+### The 1 Hz heartbeat ships captured phone status and weather
 
 Decoding `06 04` has an immediate consequence for the port. Our heartbeat
-template in [`DashCommands.kt`](../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/protocol/DashCommands.kt)
-carries a media block that `heartbeat()` does not patch:
+in [`DashMessage.kt`](../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/protocol/DashMessage.kt)
+carries a block that `Heartbeat` only partly patches:
 
 ```
-06 08 0001 05      ← captured
+06 08 0001 05      ← captured — and it is the WEATHER code, meaning "clear"
 06 10 0001 39      ← patched at runtime (temperature, °C + 40)
 06 03 0001 55      ← captured, "on"
-06 04 0001 A2      ← captured
+06 04 0001 A2      ← captured, 62 % charge
 06 0F 0001 AA      ← captured, "off"
 ```
 
-`heartbeat()` only rewrites the byte after the `06 10` marker. The other four
-retain whatever the original packet capture happened to contain — and they go
+`Heartbeat` only rewrites the byte after the `06 10` marker — and even that is
+a constant, +25 °C, because its one caller passes no argument. The other four
+retain whatever the original packet capture happened to contain, and they go
 out once a second for the entire session.
 
-Read through the official app's formula (`06 04` = `volume + 100`), `0xA2` =
-162 → **volume 62**. That the arbitrary captured byte decodes to a plausible
-volume is itself decent evidence the formula is right.
+**`06 08` is the worse of the two.** It is not media at all but the weather
+glyph, and the captured `05` means "clear" — so the dash has been showing sun
+all year round, in every weather, on every ride. Replacing both bytes with
+real data is what [`spec/weather.md`](../spec/weather.md) plans.
+
+We read `06 04` as media volume and took `0xA2` = 162 → "volume 62" as evidence
+the formula was right. The formula is right; the label was not. It is
+`BatteryManager.BATTERY_PROPERTY_CAPACITY` plus 100 — **62 % charge**. The
+neighbouring `06 03` and `06 0F`, called "media booleans" in that same revision,
+are GPS and charging. The whole `06 01`/`03`/`04`/`0F` block is phone status, not
+media; the breakdown is in [`spec/multimedia.md`](../spec/multimedia.md), §1.
+
+The conclusion for the port is unchanged, just about a different field: the dash
+shows a stranger's 62 % battery for the whole session.
 
 This is the same class of bug the route card already documents and works around
 — *"the template's captured values must never reach the dash once real guidance
 is running… the card repeats at 1 Hz and would stomp the activeNavPacket
 numbers every second"* — except here nothing patches them. If the dash renders
-a volume bar from `06 04`, it has been showing a stranger's volume level.
+a charge indicator from `06 04`, it has been showing a stranger's percentage.
 
 Unverified on hardware, and harmless if the dash ignores these fields outside
 its media view. Worth a look either way.
+
+### Media: five TLVs, and state between them
+
+The port sends the dash one media command — `05 0D`, once a second,
+unconditionally. The original sends five and keeps state between them. This is
+the largest un-ported piece of the protocol.
+
+| TLV | Meaning |
+|---|---|
+| `05 0D` | card: `album \0 title \0 artist`, 19 chars per field |
+| `05 17` | `55` media active · `AA` inactive |
+| `05 19` | `55` playing · `AA` paused |
+| `05 58` | `55` album art follows · `AA` no art |
+| `05 40` | album-art JPEG chunk (below) |
+
+None of `05 0D`, `05 22` or `05 40` appear in the tables above: they are built
+dynamically, with no `hbg` constant. That is the caveat from "Coverage", and
+media is its largest instance.
+
+#### The state machine
+
+`REForeGroundService.A(MediaMetadataCompat)`, driven from the
+`MediaControllerCompat` callback:
+
+```
+onMetadataChanged  — acts on EVERY SECOND call (a counter in the callback)
+  ├─ title, artist and album all null   → 05 17 AA, return
+  ├─ same mediaId AND same title as
+  │  last time                          → return, nothing is sent
+  └─ otherwise:
+       05 0D  album \0 title \0 artist
+       no art  → 05 58 AA
+       has art → 05 58 55, then 05 40 chunks
+
+onPlaybackStateChanged
+  05 17 55                     — always, before the state
+  STATE_PLAYING → 05 19 55
+  STATE_PAUSED  → 05 19 AA
+```
+
+Two branches nobody would guess: with `METADATA_KEY_ADVERTISEMENT != 0` the dash
+gets the album `"Advertisement"` and empty everything else, and an
+`IllegalStateException` while assembling the packet falls back to the title
+`"NowPlaying"` with an empty album and artist.
+
+#### Album art: the only TLV with its own internal framing
+
+The bitmap is scaled to **75×75**, compressed as **JPEG quality 50** and cut
+into **1000-byte** chunks with `Thread.sleep(10)` between packets. Assembly
+lives in `MetaDataUtils` (`bluconnect/nbg.java`): `c` (chunking), `a` (first
+chunk) and `e` (the rest).
+
+```
+first chunk:   05 40 | len = payload+3 | 00  | size_hi size_lo | payload…
+subsequent:    05 40 | len = payload+1 | idx | payload…
+last:          05 40 | len = payload+1 | FF  | payload…
+```
+
+- `size` is the full JPEG length, big-endian u16, **only in the first chunk**;
+- `idx` is the chunk number from 1 up; `FF` in its place marks the last one;
+- if the image fits in a single chunk, the original still sends an empty
+  terminator as a second packet: `len = 1`, `idx = FF`, zero payload bytes.
+
+The packet header is ordinary (`0002`, `K1G `, seq `00`) — the unusual part is
+that the `05 40` TLV carries its own housekeeping bytes inside the value.
+
+**This is what NorthStar could not decode.** Its `DashCommands.albumArtFrames`
+carries the note *"EXPERIMENTAL — fragment sub-framing unconfirmed… the 2-byte
+intra-value prefix we saw isn't decoded yet"*, and the function is deliberately
+never called. The prefix is not two bytes: three on the first chunk and one on
+the rest — indistinguishable from a dump alone.
+
+#### How the port differs
+
+Our media layer is a literal descendant of NorthStar's: the same
+`MediaModels.kt`, `MediaInfoProvider.kt`, `*NotificationListener.kt`, the same
+fields, the same two TLVs (`05 0D` and `05 22`). Hence the shared divergences
+from the original:
+
+- **`05 17`, `05 19`, `05 58` and `05 40` are never sent.** The dash learns
+  neither that playback paused nor that the music stopped: `05 0D` keeps
+  arriving at 1 Hz with the last track. Our only mention of `05 17` is a
+  captured initial-burst step carrying `AA` — literally "no music playing"
+  (`Scripts.kt`) — with no note saying so.
+- **`NowPlaying.art` is read and never used**, in both projects. The field is in
+  the model, the bitmap is in memory, and there is nothing to send it with.
+- **The `05 0D` field order disagrees.** The original writes `album, title,
+  artist`; NorthStar writes `title, album, artist` with the comment "matches the
+  dash's layout", and we inherited that verbatim. One of them is wrong, or the
+  dash does not care — see "Open questions".
+- **Field limit: 19 vs 20.** The original does `substring(0, 19)`; we and
+  NorthStar use `MEDIA_FIELD_MAX = 20`.
+- **Cadence.** The original sends on events and suppresses repeats; we send at
+  1 Hz unconditionally. If the dash redraws the card per packet, the difference
+  is visible.
+
+### Buttons `09 00`: the full code map and what goes back
+
+The dispatcher is `aaq.S(String)` ([`bluconnect/aaq.java`](../re_app/jadx_out/sources/bluconnect/aaq.java#L520),
+lines ~520-630): it takes the byte at hex offset 8-10 of the packet and calls a
+method on the `s05` interface, implemented by `NavigationRootFragment`. Every
+meaning below comes from the debug `println` inside the handler itself — the
+original prints "Testing - … command from joystick" throughout.
+
+| code | `s05` method | what it does | `06 80` echo | other packets |
+|---|---|---|---|---|
+| `03` | `P1()` | call volume up (`adjustStreamVolume(STREAM_VOICE_CALL, +1)`) | `03` | |
+| `04` | `o0()` | call volume down | `04` | |
+| `05` | `c0()` → `igi.I()` | media play/pause | `05` | |
+| `06` | `D()` → `igi.N()` | media volume up (`MediaControllerCompat`) | `06` | |
+| `07` | `E()` → `igi.M()` | media volume down | `07` | |
+| `08` | `z()` | mute toggle (`STREAM_MUSIC`) | `08` | |
+| `09` | `F()` → `igi.s()` | next track | `09` | |
+| `0A` | `d0()` → `igi.n()` | previous track | `0A` | |
+| `0B` | `x0()` | start navigation | `0B` | |
+| `12` | `X()` | stop navigation | `12` | |
+| `13` | `E2()` | zoom in | `13` | `06 0C` |
+| `14` | `A0()` | zoom out | `14` | `06 0C` |
+| `15` | `h1()` | recenter, zoom set to `16.0` | `15` | `06 0C 30` |
+| `16` | `L()` | establish call | **none** | |
+| `18` | `W()` | start music | **none** | |
+| `19` | `l2()` | navigation notification | `19` | |
+| `20` | `F()` | remove waypoint | `20` | |
+| `21` | `y()` | RSA call | `21` | |
+| `22` | `u()` → `J(true)` | compass | `22` | |
+
+Several things only the whole table shows.
+
+**There are two volumes, on different buttons.** `03`/`04` drive
+`STREAM_VOICE_CALL` through `AudioManager`; `06`/`07` drive the media session's
+volume through `MediaControllerCompat`. They are not interchangeable.
+
+**Two codes get no echo.** The constants `hbg.E2` (`…16`) and `hbg.F2` (`…18`)
+exist in the APK but are never used: "establish call" and "start music" run
+silently. That reads as an oversight in the original, not a protocol rule.
+
+**The media branches send nothing at all when no media service is bound.**
+`c0`, `D`, `E`, `F(str)` and `d0` all start with a `t9k.y().V() == null` check —
+with `null` there is neither an action nor an echo. From the dash's side,
+silence cannot distinguish "no such button" from "nothing is playing".
+
+#### Zoom sends up to three packets
+
+```java
+public void E2() {                                  // code 13, zoom in
+    activity.runOnUiThread(() -> Z7(this));         // camera work, async
+    t9k.y().L().o(pbh.a.f(hbg.B2));                 // 06 80 0001 13 — echo
+}
+```
+
+Then, on the UI thread (`NavigationRootFragment.Z7`; `a8` mirrors it for zoom out):
+
+```java
+double d2 = currentZoom + 2.0;                                    // step is two levels
+if (d2 > 8.0f && d2 < maxZoom) { applyZoom(d2); send(hbg.O2); }   // 06 0C 0001 30
+if (maxZoom - d2 < 2.0)        { send(hbg.N2); }                  // 06 0C 0001 20
+```
+
+Zoom out uses a different threshold: `06 0C 0001 10` (`hbg.M2`) once less than
+three levels remain above the `8.0` floor. The two conditions are independent, so
+a press near a bound emits **two** `06 0C` in a row — `30` first, then `20` or
+`10`. If the new zoom falls outside the range the camera does not move and `30`
+is not sent: only the limit packet and the echo go out.
+
+`15` (recenter) works the same way but sends both packets from one thread and in
+the opposite order: `06 0C 30` first, then the echo.
+
+**Packet order for zoom.** The joystick parser lives on a plain UDP reader
+`Thread` (`jbg`), not on the main looper, so `runOnUiThread` really does *post*
+the work — and the `06 80` echo goes out **before** the `06 0C` packets.
+
+#### How the port differs
+
+- **We echo differently.** [`DashSession`](../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/DashSession.kt)
+  replies `06 80 <code>` to **every** incoming `09 00`, right at parse time. The
+  original echoes from specific handlers and only for codes it understands, so
+  ours is a superset. No harm seen on hardware, but it is a simplification, not
+  parity.
+- **We never send `06 0C`.** `DashCameraState.stepZoom` hits its ceiling
+  silently. The 2026-09-05 ride sent 110 zoom-out presses into the floor; the
+  original would have answered each with `06 0C 10`, and the dash would
+  presumably have greyed the icon out. That is exactly the feedback we lack.
+- **The zoom scales differ on purpose.** The original steps 2 whole levels with
+  a floor of `8.0`; ours is in hundredths — `1000…1500`, step `50` (half a level).
+- **Our code meanings come from `open-dash`, not from here.** The comment in
+  [`dash_button_controller.dart`](../lib/state/dash_button_controller.dart) cites
+  that port's `DashViewModel` constants. The table above is from the official
+  app, and they disagree on `05`/`06`/`07`: ours calls them "previous track" and
+  "answer/reject call", here they are play/pause and media volume. Hardware
+  settles that, not reading.
 
 ## Composite blocks
 
@@ -414,6 +634,15 @@ whether `0F05` matches the dash's own BSSID.
   `01 55`, …) — a 2-D enum, structure unknown.
 - `06 13` … `06 1B` are nine consecutive runtime-value subs with no observed
   constant payload.
+- **Field order in `05 0D`.** The original sends `album, title, artist`;
+  NorthStar, and we after it, send `title, album, artist`. Reading cannot settle
+  this: look at the cluster with music playing whose track name differs
+  obviously from its album name.
+- **Media field length: 19 or 20.** The original truncates at 19 characters, we
+  and NorthStar at 20. A difference of exactly one looks suspiciously like
+  "19 characters + a terminating NUL", i.e. the two may be counting different
+  things and both be right. But if the dash takes exactly 19, our twentieth
+  character eats the field separator.
 - Stream parameters (see above).
 
 ## Note on stale comments in the port

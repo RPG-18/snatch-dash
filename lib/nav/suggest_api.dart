@@ -50,7 +50,10 @@ class SuggestApi {
 
   static Completer<void>? _abort;
 
-  static Future<List<SuggestResult>> suggest(String text, {GeoPoint? near}) async {
+  static Future<List<SuggestResult>> suggest(
+    String text, {
+    GeoPoint? near,
+  }) async {
     final key = text.trim().toLowerCase();
 
     final cached = _cache.remove(key);
@@ -74,10 +77,14 @@ class SuggestApi {
         rethrow;
       } catch (e) {
         if (attempt == _maxAttempts) {
-          talker.warning('[SuggestApi] query="$text" failed after $attempt attempt(s): $e');
+          talker.warning(
+            '[SuggestApi] query="$text" failed after $attempt attempt(s): $e',
+          );
           rethrow;
         }
-        talker.warning('[SuggestApi] query="$text" attempt $attempt failed: $e — retrying');
+        talker.warning(
+          '[SuggestApi] query="$text" attempt $attempt failed: $e — retrying',
+        );
         results = const [];
       }
 
@@ -87,7 +94,9 @@ class SuggestApi {
       // that may well have real matches; back off and retry rather than
       // showing "nothing found".
       await Future.any([Future<void>.delayed(delay), abort.future]);
-      if (abort.isCompleted) throw http.RequestAbortedException(Uri.parse(_baseUrl));
+      if (abort.isCompleted) {
+        throw http.RequestAbortedException(Uri.parse(_baseUrl));
+      }
       delay *= 2;
     }
 
@@ -104,29 +113,40 @@ class SuggestApi {
     Future<void> abortTrigger,
     int attempt,
   ) async {
-    final uri = Uri.parse(_baseUrl).replace(queryParameters: {
-      'apikey': _apiKey,
-      'text': text,
-      'results': '$_maxResults',
-      'print_address': '1',
-      if (near != null) 'ull': '${near.lng},${near.lat}',
-    });
+    final uri = Uri.parse(_baseUrl).replace(
+      queryParameters: {
+        'apikey': _apiKey,
+        'text': text,
+        'results': '$_maxResults',
+        'print_address': '1',
+        if (near != null) 'ull': '${near.lng},${near.lat}',
+      },
+    );
 
     talker.info('[SuggestApi] query="$text" (attempt $attempt)');
-    final request = http.AbortableRequest('GET', uri, abortTrigger: abortTrigger);
+    final request = http.AbortableRequest(
+      'GET',
+      uri,
+      abortTrigger: abortTrigger,
+    );
     final streamed = await _client.send(request);
     final response = await http.Response.fromStream(streamed);
 
     if (response.statusCode != 200) {
-      talker.warning('[SuggestApi] query="$text" (attempt $attempt) -> HTTP ${response.statusCode}');
+      talker.warning(
+        '[SuggestApi] query="$text" (attempt $attempt) -> HTTP ${response.statusCode}',
+      );
       return const [];
     }
 
-    final body = jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
+    final body =
+        jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
     final results = (body['results'] as List<dynamic>? ?? const [])
         .map((e) => SuggestResult.fromJson(e as Map<String, dynamic>))
         .toList(growable: false);
-    talker.info('[SuggestApi] query="$text" (attempt $attempt) -> ${results.length} result(s)');
+    talker.info(
+      '[SuggestApi] query="$text" (attempt $attempt) -> ${results.length} result(s)',
+    );
     return results;
   }
 }

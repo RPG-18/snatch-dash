@@ -7,6 +7,13 @@ import 'dash_engine_state.dart';
 /// K1G joystick/media/call button codes the physical dash sends as `09 00`
 /// events — see `DashSession.dispatchIncoming`. Values match the original
 /// native app's `DashViewModel` companion constants.
+///
+/// They do NOT all match the OFFICIAL Royal Enfield app, whose full dispatch
+/// table was read out on 2026-09-22 (docs/k1g_commands.md, "Buttons `09 00`").
+/// It maps 0x05 to media play/pause and 0x06/0x07 to media volume up/down,
+/// where the codes below — inherited from open-dash — call them previous-track
+/// and answer/reject-call. Both readings cannot be right; only the hardware
+/// can say which, and nothing here changes until it does.
 const _btnCallAnswer = 0x06;
 const _btnCallReject = 0x07;
 const _btnMapZoomIn = 0x13;
@@ -20,8 +27,10 @@ const _btnMediaPrevious = 0x0A;
 // the zoom codes, so merging them changes nothing but saves two branches.
 // They DO overlap with the call codes (0x06/0x07), which is why the call
 // branches have to stay first.
-bool _isLooseNextButton(int code) => code == 0x06 || code == 0x09 || code == 0x22;
-bool _isLoosePreviousButton(int code) => code == 0x05 || code == 0x07 || code == 0x0A;
+bool _isLooseNextButton(int code) =>
+    code == 0x06 || code == 0x09 || code == 0x22;
+bool _isLoosePreviousButton(int code) =>
+    code == 0x05 || code == 0x07 || code == 0x0A;
 
 /// Dispatches physical dash button presses to an app-side action, mirroring
 /// `DashViewModel.onButton` — the native `DashSession`/`DashEngineController`
@@ -57,24 +66,37 @@ class DashButtonController extends Notifier<void> {
       // already answered/outgoing — matching the original's `call != null`
       // (vs `call.incoming == true` for answer).
       DashEngine.instance.hangupCall();
-    } else if (mediaActive && (code == _btnMediaNext || _isLooseNextButton(code))) {
+    } else if (mediaActive &&
+        (code == _btnMediaNext || _isLooseNextButton(code))) {
       DashEngine.instance.skipNext();
-    } else if (mediaActive && (code == _btnMediaPrevious || _isLoosePreviousButton(code))) {
+    } else if (mediaActive &&
+        (code == _btnMediaPrevious || _isLoosePreviousButton(code))) {
       DashEngine.instance.skipPrevious();
-    } else if (code == _btnMapZoomIn || code == _btnMediaNext || _isLooseNextButton(code)) {
+    } else if (code == _btnMapZoomIn ||
+        code == _btnMediaNext ||
+        _isLooseNextButton(code)) {
       DashEngine.instance.zoomIn();
-    } else if (code == _btnMapZoomOut || code == _btnMediaPrevious || _isLoosePreviousButton(code)) {
+    } else if (code == _btnMapZoomOut ||
+        code == _btnMediaPrevious ||
+        _isLoosePreviousButton(code)) {
       DashEngine.instance.zoomOut();
     } else {
       // The native side acks and forwards every `09 00`, so a code with no branch
       // here dies silently in this else — and from the saddle that is the same
       // press-and-nothing-happens as a broken control. The 2026-09-05 ride sent
       // 0x15 nine times and 0x0B six times; neither appears above, and nothing in
-      // the log said so. Whether they SHOULD do something is a separate question
-      // this line exists to raise.
-      talker.warning('dash button 0x${code.toRadixString(16).toUpperCase()} has no action');
+      // the log said so.
+      //
+      // Both are answered now: in the official app 0x15 is recenter and 0x0B is
+      // start-navigation (docs/k1g_commands.md, "Buttons `09 00`"). Wiring them
+      // to `recenter()` and a navigation start is a behaviour change, so it is
+      // deliberately NOT done here — this line keeps saying so until it is.
+      talker.warning(
+        'dash button 0x${code.toRadixString(16).toUpperCase()} has no action',
+      );
     }
   }
 }
 
-final dashButtonControllerProvider = NotifierProvider<DashButtonController, void>(DashButtonController.new);
+final dashButtonControllerProvider =
+    NotifierProvider<DashButtonController, void>(DashButtonController.new);

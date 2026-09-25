@@ -70,7 +70,11 @@ class MockOpendashDashEnginePlatform
   Future<Map<String, dynamic>> getConfig() async => {};
 
   @override
-  Future<void> updateNowPlaying({String? title, String album = '', String artist = ''}) async {}
+  Future<void> updateNowPlaying({
+    String? title,
+    String album = '',
+    String artist = '',
+  }) async {}
 
   @override
   Future<void> updateCall(String? caller) async {}
@@ -98,7 +102,8 @@ class MockOpendashDashEnginePlatform
 }
 
 void main() {
-  final OpendashDashEnginePlatform initialPlatform = OpendashDashEnginePlatform.instance;
+  final OpendashDashEnginePlatform initialPlatform =
+      OpendashDashEnginePlatform.instance;
 
   test('$MethodChannelOpendashDashEngine is the default instance', () {
     expect(initialPlatform, isInstanceOf<MethodChannelOpendashDashEngine>());
@@ -106,7 +111,8 @@ void main() {
 
   test('getPlatformVersion', () async {
     final engine = DashEngine.instance;
-    MockOpendashDashEnginePlatform fakePlatform = MockOpendashDashEnginePlatform();
+    MockOpendashDashEnginePlatform fakePlatform =
+        MockOpendashDashEnginePlatform();
     OpendashDashEnginePlatform.instance = fakePlatform;
 
     expect(await engine.getPlatformVersion(), '42');

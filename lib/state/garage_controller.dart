@@ -17,7 +17,13 @@ class FuelRow {
 }
 
 class MaintRow {
-  const MaintRow(this.item, this.remainingKm, this.remainingDays, this.tone, this.officialSchedule);
+  const MaintRow(
+    this.item,
+    this.remainingKm,
+    this.remainingDays,
+    this.tone,
+    this.officialSchedule,
+  );
   final MaintenanceItem item;
   final int remainingKm;
   final int? remainingDays;
@@ -57,7 +63,9 @@ class GarageUi {
   final double expenses30;
 }
 
-final garageRepositoryProvider = Provider<GarageRepository>((ref) => SqliteGarageRepository());
+final garageRepositoryProvider = Provider<GarageRepository>(
+  (ref) => SqliteGarageRepository(),
+);
 
 /// Ports `GarageViewModel.kt`'s `compute()` (fuel efficiency, maintenance due
 /// status, 30-day stats) on top of [GarageRepository].
@@ -83,7 +91,10 @@ class GarageController extends Notifier<GarageUi> {
       await repo.ensureMaintenance(vehicle.id);
       await _reload();
     });
-    return GarageUi(activeVehicleId: vehicle.id, activeVehicleName: vehicle.title);
+    return GarageUi(
+      activeVehicleId: vehicle.id,
+      activeVehicleName: vehicle.title,
+    );
   }
 
   Future<void> _reload() async {
@@ -91,9 +102,13 @@ class GarageController extends Notifier<GarageUi> {
     final repo = ref.read(garageRepositoryProvider);
     final vehicle = ref.read(vehicleStoreProvider).active;
 
-    final fills = await repo.fuelFills(vehicle.id); // newest (highest odometer) first
+    final fills = await repo.fuelFills(
+      vehicle.id,
+    ); // newest (highest odometer) first
     final storedOdo = await repo.odometer(vehicle.id);
-    final fillsMaxOdo = fills.isEmpty ? 0 : fills.map((f) => f.odometerKm).reduce(max);
+    final fillsMaxOdo = fills.isEmpty
+        ? 0
+        : fills.map((f) => f.odometerKm).reduce(max);
     final odo = max(storedOdo, fillsMaxOdo);
     final expenses = await repo.expenses(vehicle.id);
 
@@ -101,13 +116,15 @@ class GarageController extends Notifier<GarageUi> {
     for (var i = 0; i < fills.length; i++) {
       final f = fills[i];
       final prev = i + 1 < fills.length ? fills[i + 1] : null;
-      final kmpl = (prev != null && f.litres > 0 && f.odometerKm > prev.odometerKm)
+      final kmpl =
+          (prev != null && f.litres > 0 && f.odometerKm > prev.odometerKm)
           ? (f.odometerKm - prev.odometerKm) / f.litres
           : null;
       fuelRows.add(FuelRow(f, kmpl));
     }
 
-    final cutoff = DateTime.now().millisecondsSinceEpoch - 30 * 24 * 3600 * 1000;
+    final cutoff =
+        DateTime.now().millisecondsSinceEpoch - 30 * 24 * 3600 * 1000;
     final recent = fuelRows.where((r) => r.fill.dateMs >= cutoff).toList();
     final kmpls = recent.map((r) => r.kmpl).whereType<double>().toList();
 
@@ -119,16 +136,24 @@ class GarageController extends Notifier<GarageUi> {
       int? remainingDays;
       if (intervalMonths != null) {
         final lastDone = DateTime.fromMillisecondsSinceEpoch(m.lastDoneDateMs);
-        final dueAt = DateTime(lastDone.year, lastDone.month + intervalMonths, lastDone.day);
-        remainingDays = (dueAt.difference(DateTime.now()).inMilliseconds / 86400000).ceil();
+        final dueAt = DateTime(
+          lastDone.year,
+          lastDone.month + intervalMonths,
+          lastDone.day,
+        );
+        remainingDays =
+            (dueAt.difference(DateTime.now()).inMilliseconds / 86400000).ceil();
       }
       final timeWarning =
-          intervalMonths != null && remainingDays != null && remainingDays < intervalMonths * 30 * 0.25;
-      final tone = (remaining < 0 || (remainingDays != null && remainingDays < 0))
+          intervalMonths != null &&
+          remainingDays != null &&
+          remainingDays < intervalMonths * 30 * 0.25;
+      final tone =
+          (remaining < 0 || (remainingDays != null && remainingDays < 0))
           ? 'alert'
           : (remaining < m.intervalKm * 0.25 || timeWarning)
-              ? 'warn'
-              : 'ok';
+          ? 'warn'
+          : 'ok';
       return MaintRow(m, remaining, remainingDays, tone, official);
     }).toList();
 
@@ -143,24 +168,43 @@ class GarageController extends Notifier<GarageUi> {
       fuel: fuelRows,
       maint: maint,
       expenses: expenses,
-      avgKmpl30: kmpls.isEmpty ? null : kmpls.reduce((a, b) => a + b) / kmpls.length,
+      avgKmpl30: kmpls.isEmpty
+          ? null
+          : kmpls.reduce((a, b) => a + b) / kmpls.length,
       avgKmplLast5: () {
-        final top5 = fuelRows.map((r) => r.kmpl).whereType<double>().take(5).toList();
+        final top5 = fuelRows
+            .map((r) => r.kmpl)
+            .whereType<double>()
+            .take(5)
+            .toList();
         return top5.isEmpty ? null : top5.reduce((a, b) => a + b) / top5.length;
       }(),
       spent30: recent.fold(0.0, (sum, r) => sum + r.fill.cost),
       litres30: recent.fold(0.0, (sum, r) => sum + r.fill.litres),
       fills30: recent.length,
       expensesTotal: expenses.fold(0.0, (sum, e) => sum + e.amount),
-      expenses30: expenses.where((e) => e.dateMs >= cutoff).fold(0.0, (sum, e) => sum + e.amount),
+      expenses30: expenses
+          .where((e) => e.dateMs >= cutoff)
+          .fold(0.0, (sum, e) => sum + e.amount),
     );
     // Buzz if a service just crossed into "due" (de-duped inside the notifier).
     unawaited(MaintenanceNotifier.instance.check(maintItems, odo));
   }
 
-  Future<void> addFuel(double litres, double cost, int odometerKm, String location) async {
+  Future<void> addFuel(
+    double litres,
+    double cost,
+    int odometerKm,
+    String location,
+  ) async {
     final repo = ref.read(garageRepositoryProvider);
-    await repo.addFuel(litres, cost, odometerKm, location, state.activeVehicleId);
+    await repo.addFuel(
+      litres,
+      cost,
+      odometerKm,
+      location,
+      state.activeVehicleId,
+    );
     await _reload();
   }
 
@@ -169,10 +213,19 @@ class GarageController extends Notifier<GarageUi> {
     await _reload();
   }
 
-  Future<void> addExpense(String category, double amount, String note, {int? dateMs}) async {
+  Future<void> addExpense(
+    String category,
+    double amount,
+    String note, {
+    int? dateMs,
+  }) async {
     final repo = ref.read(garageRepositoryProvider);
     await repo.addExpense(
-      category, amount, note, dateMs ?? DateTime.now().millisecondsSinceEpoch, state.activeVehicleId,
+      category,
+      amount,
+      note,
+      dateMs ?? DateTime.now().millisecondsSinceEpoch,
+      state.activeVehicleId,
     );
     await _reload();
   }
@@ -187,14 +240,26 @@ class GarageController extends Notifier<GarageUi> {
     await _reload();
   }
 
-  Future<void> logService(MaintenanceItem item, int odoKm, int intervalKm) async {
-    await ref.read(garageRepositoryProvider).logService(item, odoKm, intervalKm);
+  Future<void> logService(
+    MaintenanceItem item,
+    int odoKm,
+    int intervalKm,
+  ) async {
+    await ref
+        .read(garageRepositoryProvider)
+        .logService(item, odoKm, intervalKm);
     await _reload();
   }
 
   Future<void> addService(String name, String iconKey, int intervalKm) async {
     final repo = ref.read(garageRepositoryProvider);
-    await repo.addService(name, iconKey, intervalKm, state.activeVehicleId, state.odometerKm);
+    await repo.addService(
+      name,
+      iconKey,
+      intervalKm,
+      state.activeVehicleId,
+      state.odometerKm,
+    );
     await _reload();
   }
 
@@ -204,9 +269,13 @@ class GarageController extends Notifier<GarageUi> {
   }
 
   Future<void> setOdometer(int km) async {
-    await ref.read(garageRepositoryProvider).setOdometer(km, state.activeVehicleId);
+    await ref
+        .read(garageRepositoryProvider)
+        .setOdometer(km, state.activeVehicleId);
     await _reload();
   }
 }
 
-final garageControllerProvider = NotifierProvider<GarageController, GarageUi>(GarageController.new);
+final garageControllerProvider = NotifierProvider<GarageController, GarageUi>(
+  GarageController.new,
+);

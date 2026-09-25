@@ -7,14 +7,18 @@ import 'package:snatch_dash/data/installed_packs_repository.dart';
 import 'package:snatch_dash/models/offline_map.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
-InstalledPack _pack(String code, {String sha = 'aa', String generatedAt = 'T1', int size = 10}) =>
-    InstalledPack(
-      code: code,
-      sha256: sha,
-      generatedAt: generatedAt,
-      sizeBytes: size,
-      installedAtMs: 1700000000000,
-    );
+InstalledPack _pack(
+  String code, {
+  String sha = 'aa',
+  String generatedAt = 'T1',
+  int size = 10,
+}) => InstalledPack(
+  code: code,
+  sha256: sha,
+  generatedAt: generatedAt,
+  sizeBytes: size,
+  installedAtMs: 1700000000000,
+);
 
 void main() {
   setUpAll(() {
@@ -53,16 +57,19 @@ void main() {
     expect((await repo.list()).map((x) => x.code), ['ru-len-spe']);
   });
 
-  test('re-installing a pack replaces its row instead of duplicating it', () async {
-    await repo.put(_pack('ru-ad', sha: 'old', generatedAt: 'T1'));
-    await repo.put(_pack('ru-ad', sha: 'new', generatedAt: 'T2', size: 999));
+  test(
+    're-installing a pack replaces its row instead of duplicating it',
+    () async {
+      await repo.put(_pack('ru-ad', sha: 'old', generatedAt: 'T1'));
+      await repo.put(_pack('ru-ad', sha: 'new', generatedAt: 'T2', size: 999));
 
-    final packs = await repo.list();
-    expect(packs, hasLength(1));
-    expect(packs.single.sha256, 'new');
-    expect(packs.single.generatedAt, 'T2');
-    expect(packs.single.sizeBytes, 999);
-  });
+      final packs = await repo.list();
+      expect(packs, hasLength(1));
+      expect(packs.single.sha256, 'new');
+      expect(packs.single.generatedAt, 'T2');
+      expect(packs.single.sizeBytes, 999);
+    },
+  );
 
   test('removing an unknown code is a no-op, not an error', () async {
     await repo.remove('ru-nope');
@@ -70,7 +77,10 @@ void main() {
   });
 
   test('in-memory implementation matches the sqlite one', () async {
-    final memory = InMemoryInstalledPacksRepository([_pack('ru-zab'), _pack('ru-ad')]);
+    final memory = InMemoryInstalledPacksRepository([
+      _pack('ru-zab'),
+      _pack('ru-ad'),
+    ]);
 
     expect((await memory.list()).map((x) => x.code), ['ru-ad', 'ru-zab']);
 

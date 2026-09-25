@@ -27,8 +27,9 @@ class PlaceSearch {
 
   // "Online" only — "Offline"/"Combined" search managers require a paid
   // MapKit tier (offline index), not available on the free key this app uses.
-  static final _searchManager =
-      ymk.SearchFactory.instance.createSearchManager(ymk.SearchManagerType.Online);
+  static final _searchManager = ymk.SearchFactory.instance.createSearchManager(
+    ymk.SearchManagerType.Online,
+  );
 
   static ymk.SearchSession? _session;
 
@@ -38,13 +39,22 @@ class PlaceSearch {
     _session = null;
   }
 
-  static Future<List<PlaceResult>> search(String text, {GeoPoint? near, int resultPageSize = 10}) async {
+  static Future<List<PlaceResult>> search(
+    String text, {
+    GeoPoint? near,
+    int resultPageSize = 10,
+  }) async {
     cancel();
     talker.info('[PlaceSearch] query="$text"');
 
     final completer = Completer<ymk.SearchResponse>();
     final session = _searchManager.submit(
-      ymk.Geometry.fromPoint(ymk.Point(latitude: _fallbackOrigin.lat, longitude: _fallbackOrigin.lng)),
+      ymk.Geometry.fromPoint(
+        ymk.Point(
+          latitude: _fallbackOrigin.lat,
+          longitude: _fallbackOrigin.lng,
+        ),
+      ),
       ymk.SearchOptions(
         searchTypes: ymk.SearchType.None,
         geometry: true,
@@ -71,18 +81,25 @@ class PlaceSearch {
       final geoObject = item.asGeoObject();
       if (geoObject == null) continue;
 
-      final toponym = geoObject.metadataContainer.get(ymk.SearchToponymObjectMetadata.factory);
-      final points = geoObject.geometry.map((g) => g.asPoint()).whereType<ymk.Point>();
-      final point = toponym?.balloonPoint ?? (points.isEmpty ? null : points.first);
+      final toponym = geoObject.metadataContainer.get(
+        ymk.SearchToponymObjectMetadata.factory,
+      );
+      final points = geoObject.geometry
+          .map((g) => g.asPoint())
+          .whereType<ymk.Point>();
+      final point =
+          toponym?.balloonPoint ?? (points.isEmpty ? null : points.first);
       if (point == null) continue;
 
       final dest = GeoPoint(point.latitude, point.longitude);
-      results.add(PlaceResult(
-        name: geoObject.name ?? '',
-        address: toponym?.address.formattedAddress ?? '',
-        point: dest,
-        distanceMeters: near != null ? GeoPoint.distMeters(near, dest) : null,
-      ));
+      results.add(
+        PlaceResult(
+          name: geoObject.name ?? '',
+          address: toponym?.address.formattedAddress ?? '',
+          point: dest,
+          distanceMeters: near != null ? GeoPoint.distMeters(near, dest) : null,
+        ),
+      );
     }
     talker.info('[PlaceSearch] query="$text" -> ${results.length} result(s)');
     return results;

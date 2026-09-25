@@ -31,8 +31,9 @@ import 'route.dart';
 class Router {
   Router._();
 
-  static final _router =
-      ymk.DirectionsFactory.instance.createDrivingRouter(ymk.DrivingRouterType.Online);
+  static final _router = ymk.DirectionsFactory.instance.createDrivingRouter(
+    ymk.DrivingRouterType.Online,
+  );
 
   /// Keeps in-flight [ymk.DrivingSession]s reachable — see the comment in
   /// [routes] for why this is necessary.
@@ -61,8 +62,8 @@ class Router {
   /// same language as the rest of the UI.
   static ymk.AnnotationLanguage get _annotationLanguage =>
       WidgetsBinding.instance.platformDispatcher.locale.languageCode == 'ru'
-          ? ymk.AnnotationLanguage.Russian
-          : ymk.AnnotationLanguage.English;
+      ? ymk.AnnotationLanguage.Russian
+      : ymk.AnnotationLanguage.English;
 
   static const _maneuverTypeByAction = {
     ymk.DrivingAction.Straight: ManeuverType.straight,
@@ -95,14 +96,21 @@ class Router {
   /// Requests up to [routesCount] alternative routes — used by the route
   /// preview screen to let the rider pick among them. [route] above is a
   /// thin single-result wrapper around this.
-  static Future<List<Route>?> routes(GeoPoint from, GeoPoint to, {int routesCount = 1}) async {
+  static Future<List<Route>?> routes(
+    GeoPoint from,
+    GeoPoint to, {
+    int routesCount = 1,
+  }) async {
     final completer = Completer<List<ymk.DrivingRoute>>();
     // Kept alive in `_pending` for the request's duration: `DrivingSession`
     // implements `Finalizable`, so if nothing on the Dart side references it,
     // the GC can collect it (and cancel the native request) before either
     // callback fires — the request then hangs forever with no error.
     final session = _router.requestRoutes(
-      ymk.DrivingOptions(routesCount: routesCount, annotationLanguage: _annotationLanguage),
+      ymk.DrivingOptions(
+        routesCount: routesCount,
+        annotationLanguage: _annotationLanguage,
+      ),
       const ymk.DrivingVehicleOptions(),
       ymk.DrivingSessionRouteListener(
         onDrivingRoutes: (routes) => completer.complete(routes),
@@ -134,7 +142,9 @@ class Router {
       // Cancelling releases the native request; the listener is contractually
       // silent afterwards, which is fine — nothing awaits `completer` any more.
       session.cancel();
-      talker.warning('[Router] no answer in ${_requestTimeout.inSeconds}s — giving up on this request');
+      talker.warning(
+        '[Router] no answer in ${_requestTimeout.inSeconds}s — giving up on this request',
+      );
       return null;
     } catch (_) {
       return null;
@@ -146,12 +156,15 @@ class Router {
   }
 
   static Route? _toRoute(ymk.DrivingRoute r) {
-    final geometry = r.geometry.points.map((p) => GeoPoint(p.latitude, p.longitude)).toList();
+    final geometry = r.geometry.points
+        .map((p) => GeoPoint(p.latitude, p.longitude))
+        .toList();
     if (geometry.length < 2) return null;
 
     final cumulative = List<double>.filled(geometry.length, 0.0);
     for (var i = 1; i < geometry.length; i++) {
-      cumulative[i] = cumulative[i - 1] + GeoPoint.distMeters(geometry[i - 1], geometry[i]);
+      cumulative[i] =
+          cumulative[i - 1] + GeoPoint.distMeters(geometry[i - 1], geometry[i]);
     }
 
     final weight = r.metadata.weight;
@@ -160,7 +173,10 @@ class Router {
       // Section 0's annotation describes the route's initial heading, not a
       // turn the rider needs a heads-up for — every section after that is a
       // real manoeuvre-to-manoeuvre leg (see `DrivingRoute.sections` doc).
-      ...r.sections.skip(1).map((s) => _toManeuver(s, geometry, cumulative)).whereType<Maneuver>(),
+      ...r.sections
+          .skip(1)
+          .map((s) => _toManeuver(s, geometry, cumulative))
+          .whereType<Maneuver>(),
       Maneuver(
         // Synthetic — not from a `DrivingSection.metadata.annotation`, so
         // there's no SDK `descriptionText` to put here. Left untranslated
@@ -205,21 +221,31 @@ class Router {
     final b = geometry[i + 1];
     final t = pos.segmentPosition.clamp(0.0, 1.0);
     final annotation = section.metadata.annotation;
-    final type = _maneuverTypeByAction[annotation.action] ?? ManeuverType.straight;
+    final type =
+        _maneuverTypeByAction[annotation.action] ?? ManeuverType.straight;
 
     final isRoundabout =
-        type == ManeuverType.enterRoundabout || type == ManeuverType.leaveRoundabout;
+        type == ManeuverType.enterRoundabout ||
+        type == ManeuverType.leaveRoundabout;
 
     return Maneuver(
       type: type,
       instruction: annotation.descriptionText,
-      location: GeoPoint(a.lat + (b.lat - a.lat) * t, a.lng + (b.lng - a.lng) * t),
+      location: GeoPoint(
+        a.lat + (b.lat - a.lat) * t,
+        a.lng + (b.lng - a.lng) * t,
+      ),
       cumulativeMeters: cumulative[i] + t * (cumulative[i + 1] - cumulative[i]),
       roundaboutClockwise: isRoundabout
-          ? _roundaboutClockwise(geometry, section.geometry.begin, section.geometry.end)
+          ? _roundaboutClockwise(
+              geometry,
+              section.geometry.begin,
+              section.geometry.end,
+            )
           : null,
-      roundaboutExitNumber:
-          isRoundabout ? annotation.actionMetadata?.asLeaveRoundaboutMetadata()?.exitNumber : null,
+      roundaboutExitNumber: isRoundabout
+          ? annotation.actionMetadata?.asLeaveRoundaboutMetadata()?.exitNumber
+          : null,
     );
   }
 

@@ -35,4 +35,6 @@ class RidesController extends Notifier<List<Ride>> {
   }
 }
 
-final ridesControllerProvider = NotifierProvider<RidesController, List<Ride>>(RidesController.new);
+final ridesControllerProvider = NotifierProvider<RidesController, List<Ride>>(
+  RidesController.new,
+);

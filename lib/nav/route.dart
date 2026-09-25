@@ -77,18 +77,24 @@ const _dashCodeByType = {
 /// assumed by symmetry for counterclockwise, still unconfirmed).
 const _roundaboutClockwiseBase = 0x0A; // + exit 1..9 → 0x0B..0x13
 const _roundaboutClockwiseExit10Base = 0x46; // + (exit-10), 10..19 → 0x46..0x4F
-const _roundaboutCounterclockwiseBase = 0x31; // + exit 1..9 → 0x32..0x3A — UNCONFIRMED
-const _roundaboutCounterclockwiseExit10Base = 0x50; // + (exit-10), 10..19 → 0x50..0x59 — UNCONFIRMED
+const _roundaboutCounterclockwiseBase =
+    0x31; // + exit 1..9 → 0x32..0x3A — UNCONFIRMED
+const _roundaboutCounterclockwiseExit10Base =
+    0x50; // + (exit-10), 10..19 → 0x50..0x59 — UNCONFIRMED
 
 int _roundaboutDashCode(bool clockwise, int? exitNumber) {
-  final base = clockwise ? _roundaboutClockwiseBase : _roundaboutCounterclockwiseBase;
-  final exit10Base =
-      clockwise ? _roundaboutClockwiseExit10Base : _roundaboutCounterclockwiseExit10Base;
+  final base = clockwise
+      ? _roundaboutClockwiseBase
+      : _roundaboutCounterclockwiseBase;
+  final exit10Base = clockwise
+      ? _roundaboutClockwiseExit10Base
+      : _roundaboutCounterclockwiseExit10Base;
   return switch (exitNumber) {
     null || 0 => base,
     >= 1 && <= 9 => base + exitNumber,
     >= 10 && <= 19 => exit10Base + (exitNumber - 10),
-    _ => base, // beyond the confirmed range — fall back to the exit-unspecified icon
+    _ =>
+      base, // beyond the confirmed range — fall back to the exit-unspecified icon
   };
 }
 
@@ -134,7 +140,8 @@ class Maneuver {
   /// glyph) when the rotation direction couldn't be computed at all, or for
   /// any [type] not covered by [_dashCodeByType].
   int get dashCode {
-    if (type == ManeuverType.enterRoundabout || type == ManeuverType.leaveRoundabout) {
+    if (type == ManeuverType.enterRoundabout ||
+        type == ManeuverType.leaveRoundabout) {
       final clockwise = roundaboutClockwise;
       if (clockwise == null) return 0x09;
       return _roundaboutDashCode(clockwise, roundaboutExitNumber);

@@ -25,15 +25,15 @@ class MethodChannelOpendashDashEngine extends OpendashDashEnginePlatform {
   @override
   Stream<Map<String, dynamic>> get stateStream {
     return _stateStream ??= eventChannel.receiveBroadcastStream().map(
-          (event) => Map<String, dynamic>.from(event as Map),
-        );
+      (event) => Map<String, dynamic>.from(event as Map),
+    );
   }
 
   @override
   Stream<Map<String, dynamic>> get logStream {
     return _logStream ??= logChannel.receiveBroadcastStream().map(
-          (event) => Map<String, dynamic>.from(event as Map),
-        );
+      (event) => Map<String, dynamic>.from(event as Map),
+    );
   }
 
   @override
@@ -51,7 +51,8 @@ class MethodChannelOpendashDashEngine extends OpendashDashEnginePlatform {
       });
 
   @override
-  Future<void> clearDestination() => methodChannel.invokeMethod('clearDestination');
+  Future<void> clearDestination() =>
+      methodChannel.invokeMethod('clearDestination');
 
   @override
   Future<void> setNavState({
@@ -62,16 +63,15 @@ class MethodChannelOpendashDashEngine extends OpendashDashEnginePlatform {
     bool offRoute = false,
     List<List<double>> points = const [],
     List<int> jamSegments = const [],
-  }) =>
-      methodChannel.invokeMethod('setNavState', {
-        'remainingMeters': remainingMeters,
-        'nextTurnMeters': nextTurnMeters,
-        'maneuver': maneuver,
-        'etaHHMM': etaHHMM,
-        'offRoute': offRoute,
-        'points': points,
-        'jamSegments': jamSegments,
-      });
+  }) => methodChannel.invokeMethod('setNavState', {
+    'remainingMeters': remainingMeters,
+    'nextTurnMeters': nextTurnMeters,
+    'maneuver': maneuver,
+    'etaHHMM': etaHHMM,
+    'offRoute': offRoute,
+    'points': points,
+    'jamSegments': jamSegments,
+  });
 
   @override
   Future<void> setFollowMode(bool enabled) =>
@@ -88,7 +88,8 @@ class MethodChannelOpendashDashEngine extends OpendashDashEnginePlatform {
   Future<void> zoomOut() => methodChannel.invokeMethod('zoomOut');
 
   @override
-  Future<void> toggleHeadingUp() => methodChannel.invokeMethod('toggleHeadingUp');
+  Future<void> toggleHeadingUp() =>
+      methodChannel.invokeMethod('toggleHeadingUp');
 
   @override
   Future<void> recenter() => methodChannel.invokeMethod('recenter');
@@ -111,12 +112,15 @@ class MethodChannelOpendashDashEngine extends OpendashDashEnginePlatform {
   }
 
   @override
-  Future<void> updateNowPlaying({String? title, String album = '', String artist = ''}) =>
-      methodChannel.invokeMethod('updateNowPlaying', {
-        'title': title,
-        'album': album,
-        'artist': artist,
-      });
+  Future<void> updateNowPlaying({
+    String? title,
+    String album = '',
+    String artist = '',
+  }) => methodChannel.invokeMethod('updateNowPlaying', {
+    'title': title,
+    'album': album,
+    'artist': artist,
+  });
 
   @override
   Future<void> updateCall(String? caller) =>
@@ -134,7 +138,8 @@ class MethodChannelOpendashDashEngine extends OpendashDashEnginePlatform {
       (await methodChannel.invokeMethod<bool>('hangupCall')) ?? false;
 
   @override
-  Future<bool> skipNext() async => (await methodChannel.invokeMethod<bool>('skipNext')) ?? false;
+  Future<bool> skipNext() async =>
+      (await methodChannel.invokeMethod<bool>('skipNext')) ?? false;
 
   @override
   Future<bool> skipPrevious() async =>
@@ -142,7 +147,8 @@ class MethodChannelOpendashDashEngine extends OpendashDashEnginePlatform {
 
   @override
   Future<bool> isNotificationAccessGranted() async =>
-      (await methodChannel.invokeMethod<bool>('isNotificationAccessGranted')) ?? false;
+      (await methodChannel.invokeMethod<bool>('isNotificationAccessGranted')) ??
+      false;
 
   @override
   Future<void> openNotificationAccessSettings() =>

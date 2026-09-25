@@ -58,6 +58,10 @@ object RideDiagnostics {
         runCatching { File(context.getExternalFilesDir(null), "diag").apply { mkdirs() } }
             .onSuccess { dir = it }
             .onFailure { DebugLog.w(TAG) { "init failed: ${it.message}" } }
+        // The packet capture lives in the same directory and under the same per-ride name,
+        // and is driven from here for exactly that reason: two files of one ride must not be
+        // able to disagree about which ride they are. It is a no-op outside a debug build.
+        PacketCapture.init(context)
         deviceLabel = "${Build.MANUFACTURER} ${Build.MODEL}, Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})"
         buildLabel = "build ${BuildId.sha12(context)} @${BuildId.gitSha}, app ${BuildId.versionLabel(context)}"
         // Also into app_log.txt, which the session header never reaches: [start]
@@ -81,6 +85,7 @@ object RideDiagnostics {
             sessionStartMs = monotonicMs()
             val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
             file = File(d, "ride-$stamp.log")
+            PacketCapture.start(stamp)
             rotate(d)
             raw("==== session start: $reason — $deviceLabel, $buildLabel ====")
         }
@@ -122,6 +127,7 @@ object RideDiagnostics {
         synchronized(lock) {
             raw("==== session end: $reason ====")
             file = null
+            PacketCapture.stop()
         }
     }
 

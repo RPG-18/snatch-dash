@@ -45,7 +45,10 @@ class MapThemeSettings extends Notifier<MapTheme> {
       final prefs = await SharedPreferences.getInstance();
       final stored = prefs.getString(kMapThemePrefsKey);
       if (!ref.mounted || _chosen) return;
-      state = MapTheme.values.firstWhere((t) => t.key == stored, orElse: () => MapTheme.light);
+      state = MapTheme.values.firstWhere(
+        (t) => t.key == stored,
+        orElse: () => MapTheme.light,
+      );
     } catch (e, st) {
       // Nothing awaits the microtask this runs in, so a failure here would
       // otherwise be an unhandled async error. The default (light) stands.
@@ -68,5 +71,6 @@ class MapThemeSettings extends Notifier<MapTheme> {
   }
 }
 
-final mapThemeSettingsProvider =
-    NotifierProvider<MapThemeSettings, MapTheme>(MapThemeSettings.new);
+final mapThemeSettingsProvider = NotifierProvider<MapThemeSettings, MapTheme>(
+  MapThemeSettings.new,
+);

@@ -14,7 +14,8 @@ class RouteState {
   final SharedLocation? destination;
   final nav.Route? route;
 
-  RouteState copyWith({SharedLocation? destination, nav.Route? route}) => RouteState(
+  RouteState copyWith({SharedLocation? destination, nav.Route? route}) =>
+      RouteState(
         destination: destination ?? this.destination,
         route: route ?? this.route,
       );
@@ -63,7 +64,10 @@ class RouteController extends Notifier<RouteState> {
 
     _navLoop?.stop();
     if (route != null) {
-      _navLoop = NavLoop(route, onRerouted: (r) => state = state.copyWith(route: r))..start();
+      _navLoop = NavLoop(
+        route,
+        onRerouted: (r) => state = state.copyWith(route: r),
+      )..start();
     }
   }
 
@@ -81,10 +85,13 @@ class RouteController extends Notifier<RouteState> {
     // it does belong in the log.
     unawaited(
       DashEngine.instance.clearDestination().catchError(
-        (Object e, StackTrace st) => talker.error('[Route] clearDestination failed', e, st),
+        (Object e, StackTrace st) =>
+            talker.error('[Route] clearDestination failed', e, st),
       ),
     );
   }
 }
 
-final routeControllerProvider = NotifierProvider<RouteController, RouteState>(RouteController.new);
+final routeControllerProvider = NotifierProvider<RouteController, RouteState>(
+  RouteController.new,
+);

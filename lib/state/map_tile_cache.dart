@@ -7,7 +7,10 @@ import 'package:yandex_maps_mapkit/mapkit_factory.dart' show mapkit;
 enum MapTileCacheStatus { idle, computing, clearing, error }
 
 class MapTileCacheState {
-  const MapTileCacheState({this.status = MapTileCacheStatus.idle, this.sizeBytes});
+  const MapTileCacheState({
+    this.status = MapTileCacheStatus.idle,
+    this.sizeBytes,
+  });
 
   final MapTileCacheStatus status;
 
@@ -16,7 +19,8 @@ class MapTileCacheState {
   /// in flight, so a re-render mid-request doesn't flash the size away.
   final int? sizeBytes;
 
-  MapTileCacheState copyWith({MapTileCacheStatus? status, int? sizeBytes}) => MapTileCacheState(
+  MapTileCacheState copyWith({MapTileCacheStatus? status, int? sizeBytes}) =>
+      MapTileCacheState(
         status: status ?? this.status,
         sizeBytes: sizeBytes ?? this.sizeBytes,
       );
@@ -50,7 +54,9 @@ class MapTileCacheController extends Notifier<MapTileCacheState> {
   Future<void> clear() async {
     state = state.copyWith(status: MapTileCacheStatus.clearing);
     final completer = Completer<void>();
-    mapkit.storageManager.clear(ymk.StorageManagerClearListener(onClearCompleted: completer.complete));
+    mapkit.storageManager.clear(
+      ymk.StorageManagerClearListener(onClearCompleted: completer.complete),
+    );
     await completer.future;
     if (!ref.mounted) return;
     await refresh();
@@ -62,12 +68,17 @@ class MapTileCacheController extends Notifier<MapTileCacheState> {
   /// apart).
   Future<int?> _computeSize() async {
     final completer = Completer<int?>();
-    mapkit.storageManager.computeSize(ymk.StorageManagerSizeListener(
-      onSuccess: completer.complete,
-      onError: (_) => completer.complete(null),
-    ));
+    mapkit.storageManager.computeSize(
+      ymk.StorageManagerSizeListener(
+        onSuccess: completer.complete,
+        onError: (_) => completer.complete(null),
+      ),
+    );
     return completer.future;
   }
 }
 
-final mapTileCacheProvider = NotifierProvider<MapTileCacheController, MapTileCacheState>(MapTileCacheController.new);
+final mapTileCacheProvider =
+    NotifierProvider<MapTileCacheController, MapTileCacheState>(
+      MapTileCacheController.new,
+    );

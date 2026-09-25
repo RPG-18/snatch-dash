@@ -17,7 +17,8 @@ class ExpenseExporter {
     OpenDashCurrency currency,
   ) async {
     final file = await _exportFile('opendash-expenses-$periodFileLabel.csv');
-    final buffer = StringBuffer()..writeln('Date,Category,Amount_${currency.code},Note');
+    final buffer = StringBuffer()
+      ..writeln('Date,Category,Amount_${currency.code},Note');
     for (final e in expenses) {
       final row = [
         _exportDate(e.dateMs),
@@ -40,11 +41,17 @@ class ExpenseExporter {
     final file = await _exportFile('opendash-expenses-$fileLabel.doc');
     final total = expenses.fold(0.0, (sum, e) => sum + e.amount);
     final buffer = StringBuffer()
-      ..writeln('<html><head><meta charset="utf-8"><title>OpenDash Expenses</title></head><body>')
+      ..writeln(
+        '<html><head><meta charset="utf-8"><title>OpenDash Expenses</title></head><body>',
+      )
       ..writeln('<h1>OpenDash Expenses - ${_html(periodLabel)}</h1>')
-      ..writeln('<p>Total: ${_html(formatCurrencyAmount(total, currency, decimals: 2))}</p>')
+      ..writeln(
+        '<p>Total: ${_html(formatCurrencyAmount(total, currency, decimals: 2))}</p>',
+      )
       ..writeln('<table border="1" cellspacing="0" cellpadding="6">')
-      ..writeln('<tr><th>Date</th><th>Category</th><th>Amount</th><th>Note</th></tr>');
+      ..writeln(
+        '<tr><th>Date</th><th>Category</th><th>Amount</th><th>Note</th></tr>',
+      );
     for (final e in expenses) {
       buffer.writeln(
         '<tr><td>${_exportDate(e.dateMs)}</td><td>${_html(e.category)}</td>'
@@ -58,7 +65,9 @@ class ExpenseExporter {
   }
 
   static Future<File> _exportFile(String name) async {
-    final dir = Directory(p.join((await getTemporaryDirectory()).path, 'exports'));
+    final dir = Directory(
+      p.join((await getTemporaryDirectory()).path, 'exports'),
+    );
     if (!dir.existsSync()) dir.createSync(recursive: true);
     return File(p.join(dir.path, name));
   }
@@ -79,6 +88,8 @@ class ExpenseExporter {
     return '"${needsGuard ? "'" : ''}$escaped"';
   }
 
-  static String _html(String value) =>
-      value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
+  static String _html(String value) => value
+      .replaceAll('&', '&amp;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;');
 }

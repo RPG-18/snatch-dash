@@ -24,10 +24,13 @@ void main() {
     const channel = MethodChannel('ru.snatchdash.app/maps');
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(channel, (call) async {
-      calls.add(call);
-      if (replies.containsKey(call.method)) return replies[call.method];
-      throw PlatformException(code: 'ENQUEUE_FAILED', message: 'downloader disabled');
-    });
+          calls.add(call);
+          if (replies.containsKey(call.method)) return replies[call.method];
+          throw PlatformException(
+            code: 'ENQUEUE_FAILED',
+            message: 'downloader disabled',
+          );
+        });
     downloader = MapPackDownloader(channel: channel);
   });
 
@@ -36,7 +39,9 @@ void main() {
 
     await downloader.start(
       _region,
-      url: Uri.parse('https://storage.yandexcloud.net/snatch-dash-maps/ru/ru-ad.pmtiles'),
+      url: Uri.parse(
+        'https://storage.yandexcloud.net/snatch-dash-maps/ru/ru-ad.pmtiles',
+      ),
       generatedAt: '2026-09-03T08:27:35Z',
       title: 'Адыгея',
     );
@@ -51,26 +56,43 @@ void main() {
     expect(args['title'], 'Адыгея');
   });
 
-  test('a disabled system downloader surfaces as an exception, not a crash', () async {
-    expect(
-      () => downloader.start(_region, url: Uri.parse('https://x/y'), generatedAt: '', title: 'x'),
-      throwsA(isA<PlatformException>().having((e) => e.code, 'code', 'ENQUEUE_FAILED')),
-    );
-  });
+  test(
+    'a disabled system downloader surfaces as an exception, not a crash',
+    () async {
+      expect(
+        () => downloader.start(
+          _region,
+          url: Uri.parse('https://x/y'),
+          generatedAt: '',
+          title: 'x',
+        ),
+        throwsA(
+          isA<PlatformException>().having(
+            (e) => e.code,
+            'code',
+            'ENQUEUE_FAILED',
+          ),
+        ),
+      );
+    },
+  );
 
-  test('progress falls back to the manifest size until Content-Length lands', () async {
-    replies['progress'] = [
-      {'code': 'ru-ad', 'bytesSoFar': 7101143, 'totalBytes': 14202287},
-      {'code': 'ru-sa', 'bytesSoFar': 0, 'totalBytes': 0},
-    ];
+  test(
+    'progress falls back to the manifest size until Content-Length lands',
+    () async {
+      replies['progress'] = [
+        {'code': 'ru-ad', 'bytesSoFar': 7101143, 'totalBytes': 14202287},
+        {'code': 'ru-sa', 'bytesSoFar': 0, 'totalBytes': 0},
+      ];
 
-    final progress = await downloader.progress();
+      final progress = await downloader.progress();
 
-    expect(progress.first.code, 'ru-ad');
-    expect(progress.first.fraction, closeTo(0.5, 0.001));
-    // Nothing known yet — no fraction rather than a fake zero-length bar.
-    expect(progress.last.fraction, isNull);
-  });
+      expect(progress.first.code, 'ru-ad');
+      expect(progress.first.fraction, closeTo(0.5, 0.001));
+      // Nothing known yet — no fraction rather than a fake zero-length bar.
+      expect(progress.last.fraction, isNull);
+    },
+  );
 
   test('reconcile maps an install straight into a registry row', () async {
     replies['reconcile'] = [
@@ -132,7 +154,10 @@ void main() {
       {'code': 'ru-len-spe', 'sizeBytes': 118000000},
     ];
 
-    expect(await downloader.installedFiles(), {'ru-ad': 14202287, 'ru-len-spe': 118000000});
+    expect(await downloader.installedFiles(), {
+      'ru-ad': 14202287,
+      'ru-len-spe': 118000000,
+    });
   });
 
   test('room check and delete forward their arguments', () async {

@@ -38,11 +38,16 @@ void main() {
     const methodChannel = MethodChannel('opendash_dash_engine');
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(methodChannel, (call) async {
-      if (call.method == 'getConfig') {
-        return <String, dynamic>{'ssidPrefix': 'RE_', 'ssid': '', 'password': '', 'needsDiscovery': true};
-      }
-      return null;
-    });
+          if (call.method == 'getConfig') {
+            return <String, dynamic>{
+              'ssidPrefix': 'RE_',
+              'ssid': '',
+              'password': '',
+              'needsDiscovery': true,
+            };
+          }
+          return null;
+        });
 
     // EventChannel.receiveBroadcastStream sends 'listen'/'cancel' method
     // calls on a MethodChannel sharing the event channel's name — not a raw
@@ -57,20 +62,20 @@ void main() {
     mapsCalls.clear();
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(mapsChannel, (call) async {
-      mapsCalls.add(call.method);
-      return switch (call.method) {
-        'mapsDir' => Directory.systemTemp.createTempSync('maps_test').path,
-        'hasRoomFor' => true,
-        'progress' => <Map<String, Object?>>[],
-        // A list of rows, matching the channel contract (`invokeListMethod`) —
-        // a bare map here throws a cast error inside the bootstrap, which the
-        // controller now catches, leaving the test green while the drift check
-        // it is meant to cover never ran.
-        'installedFiles' => <Map<String, Object?>>[],
-        'reconcile' => <Map<String, Object?>>[],
-        _ => null,
-      };
-    });
+          mapsCalls.add(call.method);
+          return switch (call.method) {
+            'mapsDir' => Directory.systemTemp.createTempSync('maps_test').path,
+            'hasRoomFor' => true,
+            'progress' => <Map<String, Object?>>[],
+            // A list of rows, matching the channel contract (`invokeListMethod`) —
+            // a bare map here throws a cast error inside the bootstrap, which the
+            // controller now catches, leaving the test green while the drift check
+            // it is meant to cover never ran.
+            'installedFiles' => <Map<String, Object?>>[],
+            'reconcile' => <Map<String, Object?>>[],
+            _ => null,
+          };
+        });
   });
 
   tearDown(() {
@@ -88,12 +93,17 @@ void main() {
     await tester.pumpWidget(
       ProviderScope(
         overrides: [
-          garageRepositoryProvider.overrideWithValue(InMemoryGarageRepository()),
-          savedLocationRepositoryProvider.overrideWithValue(InMemorySavedLocationRepository()),
+          garageRepositoryProvider.overrideWithValue(
+            InMemoryGarageRepository(),
+          ),
+          savedLocationRepositoryProvider.overrideWithValue(
+            InMemorySavedLocationRepository(),
+          ),
           // Home gates navigation on the pack registry, so booting it now
           // touches sqlite — which widget tests have no binding for.
-          installedPacksRepositoryProvider
-              .overrideWithValue(InMemoryInstalledPacksRepository()),
+          installedPacksRepositoryProvider.overrideWithValue(
+            InMemoryInstalledPacksRepository(),
+          ),
         ],
         child: const OpenDashApp(),
       ),
@@ -104,7 +114,9 @@ void main() {
     expect(find.text('Home'), findsOneWidget);
   });
 
-  testWidgets('the startup reconcile runs without opening the maps screen', (tester) async {
+  testWidgets('the startup reconcile runs without opening the maps screen', (
+    tester,
+  ) async {
     // What the system downloader was chosen for: the app is killed mid-download,
     // DownloadManager finishes the pack, and the next launch must install it.
     // That work lives in offlineMapsControllerProvider.build(), and the provider
@@ -114,10 +126,15 @@ void main() {
     await tester.pumpWidget(
       ProviderScope(
         overrides: [
-          garageRepositoryProvider.overrideWithValue(InMemoryGarageRepository()),
-          savedLocationRepositoryProvider.overrideWithValue(InMemorySavedLocationRepository()),
-          installedPacksRepositoryProvider
-              .overrideWithValue(InMemoryInstalledPacksRepository()),
+          garageRepositoryProvider.overrideWithValue(
+            InMemoryGarageRepository(),
+          ),
+          savedLocationRepositoryProvider.overrideWithValue(
+            InMemorySavedLocationRepository(),
+          ),
+          installedPacksRepositoryProvider.overrideWithValue(
+            InMemoryInstalledPacksRepository(),
+          ),
         ],
         child: const OpenDashApp(),
       ),

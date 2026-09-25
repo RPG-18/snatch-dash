@@ -2,7 +2,7 @@ package com.opendash.opendash_dash_engine
 
 import androidx.annotation.NonNull
 import com.opendash.opendash_dash_engine.dash.map.GeoPoint
-import com.opendash.opendash_dash_engine.dash.protocol.DashCommands
+import com.opendash.opendash_dash_engine.dash.protocol.DashGlyphs
 import com.opendash.opendash_dash_engine.util.DebugLog
 import io.flutter.embedding.engine.plugins.FlutterPlugin
 import io.flutter.plugin.common.EventChannel
@@ -10,11 +10,13 @@ import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import io.flutter.plugin.common.MethodChannel.MethodCallHandler
 import io.flutter.plugin.common.MethodChannel.Result
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 /**
@@ -126,7 +128,44 @@ class OpendashDashEnginePlugin : FlutterPlugin, MethodCallHandler, EventChannel.
             "getPlatformVersion" -> result.success("Android ${android.os.Build.VERSION.RELEASE}")
 
             "connect" -> { c.connect(); result.success(null) }
-            "disconnect" -> { c.disconnect(); result.success(null) }
+            // Launched, and Dart waits for the whole thing: disconnect suspends now because
+            // the farewell packets have to actually leave before the socket closes (see
+            // DashEngineController.disconnect). result.success must be called on the main
+            // thread, which [scope] is.
+            //
+            // **Every path answers.** A MethodChannel call that is never replied to leaves
+            // its Dart future pending for the life of the process — the rider taps
+            // "Отключить" and the button stays spinning forever. Before this method became
+            // suspend, a throw left `onMethodCall` and reached Dart as a PlatformException;
+            // moving the work into a coroutine lost that, which is a regression rather than
+            // a simplification. Two ways to go unanswered and both are covered: the
+            // coroutine throws, and the scope is already cancelled — where `launch` does
+            // nothing at all, silently.
+            "disconnect" -> if (!scope.isActive) {
+                result.error("ENGINE_GONE", "Plugin detached before disconnect could run", null)
+            } else {
+                scope.launch {
+                    try {
+                        c.disconnect()
+                        result.success(null)
+                    } catch (e: CancellationException) {
+                        // Answer, then keep unwinding: the scope is going away under us
+                        // (detach), and the channel may already be torn down — hence the
+                        // runCatching around the reply rather than around the rethrow.
+                        runCatching {
+                            result.error("CANCELLED", "disconnect was cancelled", null)
+                        }
+                        throw e
+                    } catch (e: Exception) {
+                        DebugLog.e(TAG, { "disconnect failed" }, e)
+                        result.error(
+                            "DISCONNECT_FAILED",
+                            "${e.javaClass.simpleName}: ${e.message}",
+                            null,
+                        )
+                    }
+                }
+            }
 
             "setDestination" -> {
                 c.setDestination(
@@ -144,7 +183,7 @@ class OpendashDashEnginePlugin : FlutterPlugin, MethodCallHandler, EventChannel.
                 c.setNavState(
                     remainingMeters = call.argument<Double>("remainingMeters"),
                     nextTurnMeters = call.argument<Double>("nextTurnMeters"),
-                    maneuver = call.argument<Int>("maneuver") ?: DashCommands.NAV_MANEUVER_STRAIGHT,
+                    maneuver = call.argument<Int>("maneuver") ?: DashGlyphs.NAV_MANEUVER_STRAIGHT,
                     etaHHMM = call.argument<String>("etaHHMM"),
                     isOffRoute = call.argument<Boolean>("offRoute") ?: false,
                     points = rawPoints.map { GeoPoint(it[0], it[1]) },

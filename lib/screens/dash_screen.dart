@@ -12,6 +12,7 @@ import '../nav/geo_point.dart';
 import '../state/dash_engine_state.dart';
 import '../state/offline_maps_controller.dart';
 import '../state/route_controller.dart';
+import '../util/app_logger.dart';
 import '../util/location_permission.dart';
 import 'debug/maneuver_glyph_probe.dart';
 
@@ -46,7 +47,9 @@ class DashScreen extends ConsumerWidget {
         title: Text(_stageLabel(l10n, engine.stage)),
         actions: [
           IconButton(
-            icon: Icon(engine.headingUp ? Icons.explore : Icons.explore_outlined),
+            icon: Icon(
+              engine.headingUp ? Icons.explore : Icons.explore_outlined,
+            ),
             tooltip: l10n.dashHeadingUpTooltip,
             onPressed: () => DashEngine.instance.toggleHeadingUp(),
           ),
@@ -67,7 +70,10 @@ class DashScreen extends ConsumerWidget {
             Positioned(
               top: 12,
               right: 12,
-              child: ManeuverGlyphProbe(riderLat: engine.riderLat, riderLng: engine.riderLng),
+              child: ManeuverGlyphProbe(
+                riderLat: engine.riderLat,
+                riderLng: engine.riderLng,
+              ),
             ),
           // Top-centre status chips, stacked so they can never overlap each
           // other. The bottom of the screen is spoken for: the remaining-km
@@ -82,7 +88,11 @@ class DashScreen extends ConsumerWidget {
               child: Column(
                 children: [
                   if (engine.gpsLost || engine.gpsWeak)
-                    Chip(label: Text(engine.gpsLost ? l10n.dashGpsLost : l10n.dashGpsWeak)),
+                    Chip(
+                      label: Text(
+                        engine.gpsLost ? l10n.dashGpsLost : l10n.dashGpsWeak,
+                      ),
+                    ),
                   // Connecting without packs is allowed (media, calls and the
                   // link itself don't need maps), so the dash shows an empty
                   // frame. This chip is the only place that says why — without
@@ -102,7 +112,13 @@ class DashScreen extends ConsumerWidget {
               left: 0,
               right: 0,
               child: Center(
-                child: Chip(label: Text(l10n.dashDistanceRemaining(engine.remainingKm!.toStringAsFixed(1)))),
+                child: Chip(
+                  label: Text(
+                    l10n.dashDistanceRemaining(
+                      engine.remainingKm!.toStringAsFixed(1),
+                    ),
+                  ),
+                ),
               ),
             ),
           if (engine.incomingCaller != null)
@@ -115,16 +131,19 @@ class DashScreen extends ConsumerWidget {
                 child: ListTile(
                   leading: const Icon(Icons.call),
                   title: Text(engine.incomingCaller!),
-                  trailing: Wrap(spacing: 4, children: [
-                    IconButton(
-                      icon: const Icon(Icons.call_end),
-                      onPressed: () => DashEngine.instance.hangupCall(),
-                    ),
-                    IconButton(
-                      icon: const Icon(Icons.call),
-                      onPressed: () => DashEngine.instance.answerCall(),
-                    ),
-                  ]),
+                  trailing: Wrap(
+                    spacing: 4,
+                    children: [
+                      IconButton(
+                        icon: const Icon(Icons.call_end),
+                        onPressed: () => DashEngine.instance.hangupCall(),
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.call),
+                        onPressed: () => DashEngine.instance.answerCall(),
+                      ),
+                    ],
+                  ),
                 ),
               ),
             )
@@ -136,17 +155,24 @@ class DashScreen extends ConsumerWidget {
               child: Card(
                 child: ListTile(
                   leading: const Icon(Icons.music_note),
-                  title: Text(engine.nowPlayingTitle!, maxLines: 1, overflow: TextOverflow.ellipsis),
-                  trailing: Wrap(spacing: 4, children: [
-                    IconButton(
-                      icon: const Icon(Icons.skip_previous),
-                      onPressed: () => DashEngine.instance.skipPrevious(),
-                    ),
-                    IconButton(
-                      icon: const Icon(Icons.skip_next),
-                      onPressed: () => DashEngine.instance.skipNext(),
-                    ),
-                  ]),
+                  title: Text(
+                    engine.nowPlayingTitle!,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  trailing: Wrap(
+                    spacing: 4,
+                    children: [
+                      IconButton(
+                        icon: const Icon(Icons.skip_previous),
+                        onPressed: () => DashEngine.instance.skipPrevious(),
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.skip_next),
+                        onPressed: () => DashEngine.instance.skipNext(),
+                      ),
+                    ],
+                  ),
                 ),
               ),
             ),
@@ -171,7 +197,8 @@ class DashScreen extends ConsumerWidget {
           FloatingActionButton.extended(
             heroTag: 'connect',
             onPressed: () async {
-              if (engine.stage == DashStage.idle || engine.stage == DashStage.error) {
+              if (engine.stage == DashStage.idle ||
+                  engine.stage == DashStage.error) {
                 if (!await ensureLocationPermission()) {
                   if (context.mounted) {
                     ScaffoldMessenger.of(context).showSnackBar(
@@ -184,11 +211,27 @@ class DashScreen extends ConsumerWidget {
                 // state stream, not by awaiting the call that started it.
                 unawaited(DashEngine.instance.connect());
               } else {
-                unawaited(DashEngine.instance.disconnect());
+                // Caught, unlike connect(): disconnect now suspends on the native side
+                // until the farewell packets have left, so it can come back as a
+                // PlatformException — a detaching engine, or a teardown that threw.
+                // Fire-and-forget plus a throwing future is an unhandled async error that
+                // reaches nobody; the rider's own signal is still the state stream.
+                unawaited(
+                  DashEngine.instance.disconnect().catchError(
+                    (Object e, StackTrace st) =>
+                        talker.handle(e, st, 'disconnect() failed'),
+                  ),
+                );
               }
             },
-            icon: Icon(_isConnected(engine.stage) ? Icons.link_off : Icons.link),
-            label: Text(_isConnected(engine.stage) ? l10n.dashDisconnect : l10n.dashConnect),
+            icon: Icon(
+              _isConnected(engine.stage) ? Icons.link_off : Icons.link,
+            ),
+            label: Text(
+              _isConnected(engine.stage)
+                  ? l10n.dashDisconnect
+                  : l10n.dashConnect,
+            ),
           ),
         ],
       ),
@@ -199,11 +242,11 @@ class DashScreen extends ConsumerWidget {
       stage != DashStage.idle && stage != DashStage.error;
 
   String _stageLabel(AppLocalizations l10n, DashStage stage) => switch (stage) {
-        DashStage.idle => l10n.dashStageOffline,
-        DashStage.connecting => l10n.dashStageConnecting,
-        DashStage.authenticating => l10n.dashStageAuthenticating,
-        DashStage.ready => l10n.dashStageReady,
-        DashStage.streaming => l10n.dashStageConnected,
-        DashStage.error => l10n.dashStageError,
-      };
+    DashStage.idle => l10n.dashStageOffline,
+    DashStage.connecting => l10n.dashStageConnecting,
+    DashStage.authenticating => l10n.dashStageAuthenticating,
+    DashStage.ready => l10n.dashStageReady,
+    DashStage.streaming => l10n.dashStageConnected,
+    DashStage.error => l10n.dashStageError,
+  };
 }

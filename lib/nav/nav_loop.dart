@@ -108,7 +108,9 @@ class NavLoop {
     // rider moves off again, `arrived` goes false and this puts MapKit back long
     // before the off-route debounce could ask for a route.
     MapkitLifecycle.setNavigating(!progress.arrived);
-    final eta = DateTime.now().add(Duration(seconds: progress.etaSeconds.round()));
+    final eta = DateTime.now().add(
+      Duration(seconds: progress.etaSeconds.round()),
+    );
     final etaHHMM =
         '${eta.hour.toString().padLeft(2, '0')}${eta.minute.toString().padLeft(2, '0')}';
 
@@ -124,11 +126,13 @@ class NavLoop {
       points: const [],
     );
 
-    unawaited(VoiceManager.instance.maybeAnnounce(
-      progress.nextManeuver,
-      progress.distanceToManeuverM,
-      progress.remainingMeters,
-    ));
+    unawaited(
+      VoiceManager.instance.maybeAnnounce(
+        progress.nextManeuver,
+        progress.distanceToManeuverM,
+        progress.remainingMeters,
+      ),
+    );
 
     _handleOffRoute(progress.offRoute, pos);
   }
@@ -142,13 +146,17 @@ class NavLoop {
     if (_offRouteTicks < _offRouteDebounceTicks || _rerouting) return;
 
     final last = _lastRerouteAttempt;
-    if (last != null && DateTime.now().difference(last) < _nextAllowedWait()) return;
+    if (last != null && DateTime.now().difference(last) < _nextAllowedWait()) {
+      return;
+    }
 
     unawaited(_reroute(pos));
   }
 
   Duration _nextAllowedWait() {
-    final shift = _consecutiveFailures > _maxBackoffShift ? _maxBackoffShift : _consecutiveFailures;
+    final shift = _consecutiveFailures > _maxBackoffShift
+        ? _maxBackoffShift
+        : _consecutiveFailures;
     final wait = _rerouteCooldown * (1 << shift);
     return wait > _rerouteBackoffCap ? _rerouteBackoffCap : wait;
   }
@@ -174,13 +182,15 @@ class NavLoop {
       VoiceManager.instance.resetTrip();
       // Fire-and-forget on purpose: this is a push down a platform channel from the
       // navigation loop, and the loop's next tick must not wait on the dash side.
-      unawaited(DashEngine.instance.setNavState(
-        remainingMeters: newRoute.totalMeters,
-        nextTurnMeters: newRoute.totalMeters,
-        offRoute: false,
-        points: newRoute.geometry.map((p) => [p.lat, p.lng]).toList(),
-        jamSegments: newRoute.jamSegments.map((j) => j.index).toList(),
-      ));
+      unawaited(
+        DashEngine.instance.setNavState(
+          remainingMeters: newRoute.totalMeters,
+          nextTurnMeters: newRoute.totalMeters,
+          offRoute: false,
+          points: newRoute.geometry.map((p) => [p.lat, p.lng]).toList(),
+          jamSegments: newRoute.jamSegments.map((j) => j.index).toList(),
+        ),
+      );
     } finally {
       _rerouting = false;
     }

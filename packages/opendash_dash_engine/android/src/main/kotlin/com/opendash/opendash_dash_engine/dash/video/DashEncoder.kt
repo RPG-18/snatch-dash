@@ -351,15 +351,23 @@ class DashEncoder(private val onEncodedData: (ByteArray, Boolean, Boolean) -> Un
      *   at start and on a parameter change, and NalProcessor bundles them into the next IDR.
      *
      *   The question it answers: does the frame rendered a line earlier actually come out in
-     *   the same iteration? [DashEngineController] advances `videoPtsMs` BEFORE calling this,
-     *   so a frame that misses its [DRAIN_TIMEOUT_US] window is drained on the next iteration
-     *   and carries that iteration's timestamp — and if the next frame makes it too, two
-     *   access units go out stamped identically. That is legal RFC 6184 (the marker bit
-     *   delimits an AU, not the timestamp), but a decoder scheduling by timestamp shows the
-     *   second one immediately, and the even spacing `videoPtsMs` exists to provide is gone.
+     *   the same iteration?
      *
-     *   Whether any of that happens in the field is unmeasured, and the whole point of
-     *   returning a number here is to stop guessing before rebuilding this path.
+     *   **This used to be the double-stamp defect, and the description of it here is kept
+     *   because the number is still worth having — but the defect is fixed.** Until
+     *   2026-09-15 the loop advanced `videoPtsMs` once per ITERATION, before calling this, so
+     *   a frame that missed its [DRAIN_TIMEOUT_US] window was drained on the next iteration
+     *   carrying that iteration's stamp — and if the next frame made it too, two access units
+     *   went out stamped identically. Legal RFC 6184 (the marker bit delimits an AU, not the
+     *   timestamp), but a decoder scheduling by timestamp shows the second one immediately,
+     *   and the even spacing `videoPtsMs` exists to provide was gone. On this codec that was
+     *   5-20% of frames, and it is what froze the map on the Huawei.
+     *
+     *   `FrameStreamer.onEncoded` now advances the stamp per FRAME that actually came out,
+     *   so a miss no longer costs a duplicate instant — see the note there, and
+     *   `spec/video.md`'s «RTP-метка — счётчик кадров». The misses themselves remain and are
+     *   what this return value counts: they belong to the encoder, and on the Huawei a median
+     *   of ~22 a minute is the documented normal (`docs/devices/huawei-hbn-lx9.md`).
      */
     override fun drain(): Int {
         val codec = codec ?: return 0

@@ -9,12 +9,17 @@ import '../data/map_pack_downloader.dart';
 import '../models/offline_map.dart';
 import '../util/app_logger.dart' show talker;
 
-final mapManifestApiProvider = Provider<MapManifestApi>((ref) => MapManifestApi());
+final mapManifestApiProvider = Provider<MapManifestApi>(
+  (ref) => MapManifestApi(),
+);
 
-final installedPacksRepositoryProvider =
-    Provider<InstalledPacksRepository>((ref) => SqliteInstalledPacksRepository());
+final installedPacksRepositoryProvider = Provider<InstalledPacksRepository>(
+  (ref) => SqliteInstalledPacksRepository(),
+);
 
-final mapPackDownloaderProvider = Provider<MapPackDownloader>((ref) => MapPackDownloader());
+final mapPackDownloaderProvider = Provider<MapPackDownloader>(
+  (ref) => MapPackDownloader(),
+);
 
 /// Packs that passed verification and were renamed into place.
 ///
@@ -77,8 +82,9 @@ final installedPacksProvider =
 ///
 /// Kept derived rather than duplicated so it can never disagree with the
 /// registry.
-final hasInstalledPacksProvider =
-    Provider<bool?>((ref) => ref.watch(installedPacksProvider)?.isNotEmpty);
+final hasInstalledPacksProvider = Provider<bool?>(
+  (ref) => ref.watch(installedPacksProvider)?.isNotEmpty,
+);
 
 /// Why the list of *available* packs looks the way it does. The three data
 /// sources — registry, local `index.json`, network — fail independently, and
@@ -141,7 +147,8 @@ class OfflineMapsState {
     return region != null && region.sha256 != pack.sha256;
   }
 
-  MapRegion? regionFor(String code) => regions.where((r) => r.code == code).firstOrNull;
+  MapRegion? regionFor(String code) =>
+      regions.where((r) => r.code == code).firstOrNull;
 
   OfflineMapsState copyWith({
     ManifestStatus? status,
@@ -150,14 +157,13 @@ class OfflineMapsState {
     String? lastError,
     int? errorNonce,
     bool clearError = false,
-  }) =>
-      OfflineMapsState(
-        status: status ?? this.status,
-        manifest: manifest ?? this.manifest,
-        progress: progress ?? this.progress,
-        lastError: clearError ? null : (lastError ?? this.lastError),
-        errorNonce: errorNonce ?? this.errorNonce,
-      );
+  }) => OfflineMapsState(
+    status: status ?? this.status,
+    manifest: manifest ?? this.manifest,
+    progress: progress ?? this.progress,
+    lastError: clearError ? null : (lastError ?? this.lastError),
+    errorNonce: errorNonce ?? this.errorNonce,
+  );
 }
 
 /// Drives the offline-maps screen: manifest freshness, downloads, installs.
@@ -258,15 +264,21 @@ class OfflineMapsController extends Notifier<OfflineMapsState> {
     if (!ref.mounted) return;
     for (final pack in rows) {
       if (onDisk.containsKey(pack.code)) continue;
-      talker.warning('[OfflineMaps] ${pack.code} is in the registry but not on disk — dropping');
+      talker.warning(
+        '[OfflineMaps] ${pack.code} is in the registry but not on disk — dropping',
+      );
       await ref.read(installedPacksProvider.notifier).remove(pack.code);
     }
 
     final known = {for (final pack in rows) pack.code};
     for (final entry in onDisk.entries) {
       if (known.contains(entry.key)) continue;
-      talker.warning('[OfflineMaps] ${entry.key} is on disk but not in the registry — adopting');
-      await ref.read(installedPacksProvider.notifier).put(
+      talker.warning(
+        '[OfflineMaps] ${entry.key} is on disk but not in the registry — adopting',
+      );
+      await ref
+          .read(installedPacksProvider.notifier)
+          .put(
             InstalledPack(
               code: entry.key,
               // Unknown, deliberately: see the note above. Empty compares unequal
@@ -287,7 +299,11 @@ class OfflineMapsController extends Notifier<OfflineMapsState> {
     try {
       final manifest = await api.fetchRemote();
       if (!ref.mounted) return;
-      state = state.copyWith(status: ManifestStatus.ready, manifest: manifest, clearError: true);
+      state = state.copyWith(
+        status: ManifestStatus.ready,
+        manifest: manifest,
+        clearError: true,
+      );
       return;
     } on ManifestVersionUnsupported catch (e) {
       // Deliberately terminal: don't guess at an unknown schema, and don't
@@ -358,7 +374,9 @@ class OfflineMapsController extends Notifier<OfflineMapsState> {
       // registry: dropping the row anyway would leave the dash drawing a map the
       // interface says is gone — and could shut the navigation gate over a live
       // one.
-      talker.warning('[OfflineMaps] $code was not deleted from disk — keeping its registry row');
+      talker.warning(
+        '[OfflineMaps] $code was not deleted from disk — keeping its registry row',
+      );
       _reportError('deleteFailed');
       return;
     }
@@ -375,7 +393,11 @@ class OfflineMapsController extends Notifier<OfflineMapsState> {
     try {
       await cancel(code);
     } catch (e, st) {
-      talker.error('[OfflineMaps] could not cancel a download for the deleted $code', e, st);
+      talker.error(
+        '[OfflineMaps] could not cancel a download for the deleted $code',
+        e,
+        st,
+      );
     }
     await ref.read(installedPacksProvider.notifier).remove(code);
   }
@@ -387,8 +409,9 @@ class OfflineMapsController extends Notifier<OfflineMapsState> {
   /// when the OSM data didn't. The interface must not promise incremental
   /// updates (spec/remote_map_server.md, "Проверка обновлений").
   bool hasUpdate(String code) {
-    final installed =
-        (ref.read(installedPacksProvider) ?? const []).where((p) => p.code == code).firstOrNull;
+    final installed = (ref.read(installedPacksProvider) ?? const [])
+        .where((p) => p.code == code)
+        .firstOrNull;
     return installed != null && state.hasUpdateFor(installed);
   }
 
@@ -458,7 +481,9 @@ class OfflineMapsController extends Notifier<OfflineMapsState> {
       switch (result.outcome) {
         case PackOutcome.installed:
           _retries.remove(result.code);
-          await ref.read(installedPacksProvider.notifier).put(result.toInstalledPack());
+          await ref
+              .read(installedPacksProvider.notifier)
+              .put(result.toInstalledPack());
           talker.info('[OfflineMaps] installed ${result.code}');
 
         case PackOutcome.conflict:
@@ -472,7 +497,9 @@ class OfflineMapsController extends Notifier<OfflineMapsState> {
           await _handleChecksumMismatch(result);
 
         case PackOutcome.failed:
-          talker.warning('[OfflineMaps] download failed ${result.code}: ${result.detail}');
+          talker.warning(
+            '[OfflineMaps] download failed ${result.code}: ${result.detail}',
+          );
           // Without this the stale count outlives the failure and the rider's
           // next manual download starts with part of its retry budget spent.
           _retries.remove(result.code);
@@ -530,10 +557,15 @@ class OfflineMapsController extends Notifier<OfflineMapsState> {
     await _retryAfterConflict(result, manifestIsFresh: true);
   }
 
-  Future<void> _retryAfterConflict(PackDownloadResult result, {bool manifestIsFresh = false}) async {
+  Future<void> _retryAfterConflict(
+    PackDownloadResult result, {
+    bool manifestIsFresh = false,
+  }) async {
     final attempts = _retries[result.code] ?? 0;
     if (attempts >= _maxRetries) {
-      talker.warning('[OfflineMaps] giving up on ${result.code} after $attempts retries');
+      talker.warning(
+        '[OfflineMaps] giving up on ${result.code} after $attempts retries',
+      );
       _retries.remove(result.code);
       _reportError('downloadFailed');
       return;
@@ -545,14 +577,18 @@ class OfflineMapsController extends Notifier<OfflineMapsState> {
     // the same answer.
     if (!manifestIsFresh) await refresh();
     if (!ref.mounted) return;
-    final region = state.regions.where((r) => r.code == result.code).firstOrNull;
+    final region = state.regions
+        .where((r) => r.code == result.code)
+        .firstOrNull;
     if (region == null) {
       // The pack is gone from the corpus — a normal outcome, not an error.
       talker.info('[OfflineMaps] ${result.code} no longer in the manifest');
       _retries.remove(result.code);
       return;
     }
-    talker.info('[OfflineMaps] retrying ${result.code} (attempt ${attempts + 1})');
+    talker.info(
+      '[OfflineMaps] retrying ${result.code} (attempt ${attempts + 1})',
+    );
     await download(region, _titles[result.code] ?? result.code);
   }
 
@@ -567,4 +603,6 @@ class OfflineMapsController extends Notifier<OfflineMapsState> {
 }
 
 final offlineMapsControllerProvider =
-    NotifierProvider<OfflineMapsController, OfflineMapsState>(OfflineMapsController.new);
+    NotifierProvider<OfflineMapsController, OfflineMapsState>(
+      OfflineMapsController.new,
+    );

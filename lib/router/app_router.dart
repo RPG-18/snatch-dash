@@ -23,7 +23,8 @@ final appRouter = GoRouter(
   initialLocation: '/home',
   routes: [
     StatefulShellRoute.indexedStack(
-      builder: (context, state, navigationShell) => AppShell(navigationShell: navigationShell),
+      builder: (context, state, navigationShell) =>
+          AppShell(navigationShell: navigationShell),
       branches: [
         StatefulShellBranch(
           routes: [
@@ -37,7 +38,8 @@ final appRouter = GoRouter(
                 ),
                 GoRoute(
                   path: 'route-preview',
-                  builder: (context, state) => RoutePreviewScreen(args: state.extra as RoutePreviewArgs),
+                  builder: (context, state) =>
+                      RoutePreviewScreen(args: state.extra as RoutePreviewArgs),
                 ),
                 GoRoute(
                   path: 'dash',
@@ -51,31 +53,48 @@ final appRouter = GoRouter(
             ),
           ],
         ),
-        StatefulShellBranch(routes: [
-          GoRoute(path: '/vehicles', builder: (context, state) => const VehiclesScreen()),
-        ]),
-        StatefulShellBranch(routes: [
-          GoRoute(path: '/expenses', builder: (context, state) => const ExpensesScreen()),
-        ]),
-        StatefulShellBranch(routes: [
-          GoRoute(path: '/garage', builder: (context, state) => const GarageScreen()),
-        ]),
-        StatefulShellBranch(routes: [
-          GoRoute(
-            path: '/more',
-            builder: (context, state) => const SettingsScreen(),
-            routes: [
-              GoRoute(
-                path: 'logs',
-                builder: (context, state) => TalkerScreen(talker: talker),
-              ),
-              GoRoute(
-                path: 'offline-maps',
-                builder: (context, state) => const OfflineMapsScreen(),
-              ),
-            ],
-          ),
-        ]),
+        StatefulShellBranch(
+          routes: [
+            GoRoute(
+              path: '/vehicles',
+              builder: (context, state) => const VehiclesScreen(),
+            ),
+          ],
+        ),
+        StatefulShellBranch(
+          routes: [
+            GoRoute(
+              path: '/expenses',
+              builder: (context, state) => const ExpensesScreen(),
+            ),
+          ],
+        ),
+        StatefulShellBranch(
+          routes: [
+            GoRoute(
+              path: '/garage',
+              builder: (context, state) => const GarageScreen(),
+            ),
+          ],
+        ),
+        StatefulShellBranch(
+          routes: [
+            GoRoute(
+              path: '/more',
+              builder: (context, state) => const SettingsScreen(),
+              routes: [
+                GoRoute(
+                  path: 'logs',
+                  builder: (context, state) => TalkerScreen(talker: talker),
+                ),
+                GoRoute(
+                  path: 'offline-maps',
+                  builder: (context, state) => const OfflineMapsScreen(),
+                ),
+              ],
+            ),
+          ],
+        ),
       ],
     ),
   ],

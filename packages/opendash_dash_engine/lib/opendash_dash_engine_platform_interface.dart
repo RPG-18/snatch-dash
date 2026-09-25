@@ -7,7 +7,8 @@ abstract class OpendashDashEnginePlatform extends PlatformInterface {
 
   static final Object _token = Object();
 
-  static OpendashDashEnginePlatform _instance = MethodChannelOpendashDashEngine();
+  static OpendashDashEnginePlatform _instance =
+      MethodChannelOpendashDashEngine();
 
   static OpendashDashEnginePlatform get instance => _instance;
 
@@ -53,8 +54,7 @@ abstract class OpendashDashEnginePlatform extends PlatformInterface {
     bool offRoute = false,
     List<List<double>> points = const [],
     List<int> jamSegments = const [],
-  }) =>
-      throw UnimplementedError();
+  }) => throw UnimplementedError();
 
   Future<void> setFollowMode(bool enabled) => throw UnimplementedError();
   Future<void> panBy(double dx, double dy) => throw UnimplementedError();
@@ -68,8 +68,11 @@ abstract class OpendashDashEnginePlatform extends PlatformInterface {
   Future<void> setWifiPassword(String password) => throw UnimplementedError();
   Future<Map<String, dynamic>> getConfig() => throw UnimplementedError();
 
-  Future<void> updateNowPlaying({String? title, String album = '', String artist = ''}) =>
-      throw UnimplementedError();
+  Future<void> updateNowPlaying({
+    String? title,
+    String album = '',
+    String artist = '',
+  }) => throw UnimplementedError();
   Future<void> updateCall(String? caller) => throw UnimplementedError();
 
   /// Turn-guidance chime for [VoiceMode.chime] — no Dart/Flutter equivalent

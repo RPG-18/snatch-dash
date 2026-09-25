@@ -52,9 +52,9 @@ class DashAuthTest {
         exponentTlv = DashMessage.AuthExponent(spec.publicExponent.toByteArray())
     }
 
-    /** The plaintext the dash will see once it decrypts the packet [DashAuth] emitted. */
+    /** The plaintext the dash will see once it decrypts what [DashAuth] emitted. */
     private fun decrypt(sendKey: AuthEvent.SendKey): ByteArray {
-        val ciphertext = sendKey.packet.copyOfRange(21, sendKey.packet.size)
+        val ciphertext = sendKey.cipher
         val cipher = Cipher.getInstance("RSA/ECB/PKCS1Padding")
         cipher.init(Cipher.DECRYPT_MODE, keyPair.private)
         return cipher.doFinal(ciphertext)
@@ -78,7 +78,10 @@ class DashAuthTest {
 
         val sendKey = sendKeyAfterBothHalves(auth)
 
-        assertEquals(149, sendKey.packet.size, "a q3c.d packet: 21-byte header + 128 ciphertext")
+        // 128 B, not the 149 of the finished q3c.d packet: the 21-byte header belongs to
+        // K1GCodec now, and the golden test pins it there (`authSendKey` refuses anything
+        // but a 128-byte block).
+        assertEquals(128, sendKey.cipher.size, "one RSA-1024 block")
     }
 
     @Test

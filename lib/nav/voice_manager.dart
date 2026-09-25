@@ -91,7 +91,11 @@ class VoiceManager {
 
   /// Call every nav tick. [maneuver] is the upcoming turn (null = none),
   /// [distanceM] the distance to it, [remainingM] distance to the destination.
-  Future<void> maybeAnnounce(Maneuver? maneuver, double distanceM, double remainingM) async {
+  Future<void> maybeAnnounce(
+    Maneuver? maneuver,
+    double distanceM,
+    double remainingM,
+  ) async {
     if (_mode == VoiceMode.off) return;
     final l10n = deviceLocalizations();
 
@@ -124,7 +128,12 @@ class VoiceManager {
     } else if (distanceM > _nearM && distanceM <= _farM && !_farDone) {
       _farDone = true;
       if (_mode == VoiceMode.full) {
-        await _speak(l10n.voiceIn(_roundDist(l10n, distanceM), _turnPhrase(l10n, maneuver)));
+        await _speak(
+          l10n.voiceIn(
+            _roundDist(l10n, distanceM),
+            _turnPhrase(l10n, maneuver),
+          ),
+        );
       } else {
         await DashEngine.instance.playChime();
       }
@@ -158,7 +167,9 @@ class VoiceManager {
   }
 
   Future<void> _speak(String text) async {
-    await _tts.setLanguage(deviceLocalizations().localeName == 'ru' ? 'ru-RU' : 'en-US');
+    await _tts.setLanguage(
+      deviceLocalizations().localeName == 'ru' ? 'ru-RU' : 'en-US',
+    );
     await _tts.speak(text);
   }
 
@@ -180,13 +191,13 @@ class VoiceManager {
   /// falls back to `m.instruction` (from `descriptionText`) or the generic
   /// "continue" phrase if that's empty.
   String _turnPhrase(AppLocalizations l10n, Maneuver m) => switch (m.type) {
-        ManeuverType.arrive => l10n.voiceTurnArrive,
-        ManeuverType.left => l10n.voiceTurnLeft,
-        ManeuverType.right => l10n.voiceTurnRight,
-        ManeuverType.uturnLeft => l10n.voiceTurnUturnLeft,
-        ManeuverType.uturnRight => l10n.voiceTurnUturnRight,
-        _ => m.instruction.isNotEmpty ? m.instruction : l10n.voiceTurnContinue,
-      };
+    ManeuverType.arrive => l10n.voiceTurnArrive,
+    ManeuverType.left => l10n.voiceTurnLeft,
+    ManeuverType.right => l10n.voiceTurnRight,
+    ManeuverType.uturnLeft => l10n.voiceTurnUturnLeft,
+    ManeuverType.uturnRight => l10n.voiceTurnUturnRight,
+    _ => m.instruction.isNotEmpty ? m.instruction : l10n.voiceTurnContinue,
+  };
 
   String _roundDist(AppLocalizations l10n, double m) {
     if (m >= 1000) return l10n.voiceDistanceKm((m / 1000.0).toStringAsFixed(1));
@@ -196,4 +207,6 @@ class VoiceManager {
   }
 }
 
-final voiceModeProvider = StateProvider<VoiceMode>((ref) => VoiceManager.instance.mode);
+final voiceModeProvider = StateProvider<VoiceMode>(
+  (ref) => VoiceManager.instance.mode,
+);

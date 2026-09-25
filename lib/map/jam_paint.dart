@@ -24,7 +24,11 @@ const jamColors = {
 /// to one slot, so a line that has to switch back to traffic colors later
 /// must not go through here; `RouteOptionsMap` primes [jamColors] once per
 /// polyline and reindexes with `setStrokeColors` instead.
-void applyJamColors(ymk.PolylineMapObject line, List<JamLevel> jamSegments, Color fallbackColor) {
+void applyJamColors(
+  ymk.PolylineMapObject line,
+  List<JamLevel> jamSegments,
+  Color fallbackColor,
+) {
   final segmentCount = line.geometry.points.length - 1;
   if (jamSegments.length != segmentCount) {
     line.setStrokeColor(fallbackColor);

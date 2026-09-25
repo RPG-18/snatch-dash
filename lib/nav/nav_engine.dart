@@ -55,16 +55,20 @@ class NavEngine {
       }
     }
 
-    final remaining = (route.totalMeters - bestCum).clamp(0.0, double.maxFinite);
+    final remaining = (route.totalMeters - bestCum).clamp(
+      0.0,
+      double.maxFinite,
+    );
     final arrived = remaining <= _arriveM;
     final offRoute = bestDist > _offRouteM;
 
     final next = route.maneuvers.cast<Maneuver?>().firstWhere(
-          (m) => m != null && m.cumulativeMeters > bestCum + 1.0,
-          orElse: () => null,
-        );
-    final distToManeuver =
-        next != null ? (next.cumulativeMeters - bestCum).clamp(0.0, double.maxFinite) : remaining;
+      (m) => m != null && m.cumulativeMeters > bestCum + 1.0,
+      orElse: () => null,
+    );
+    final distToManeuver = next != null
+        ? (next.cumulativeMeters - bestCum).clamp(0.0, double.maxFinite)
+        : remaining;
 
     final speed = speedMps > 0.5 ? speedMps : _defaultSpeedMps;
     final eta = remaining / speed;

@@ -21,7 +21,7 @@ import com.opendash.opendash_dash_engine.dash.map.MapSnapshotProvider
 import com.opendash.opendash_dash_engine.dash.map.MapStyleAssembler
 import com.opendash.opendash_dash_engine.dash.map.MapTheme
 import com.opendash.opendash_dash_engine.dash.map.OverlayRenderer
-import com.opendash.opendash_dash_engine.dash.protocol.DashCommands
+import com.opendash.opendash_dash_engine.dash.protocol.DashGlyphs
 import com.opendash.opendash_dash_engine.dash.video.DashEncoder
 import com.opendash.opendash_dash_engine.media.CallController
 import com.opendash.opendash_dash_engine.media.CallInfoProvider
@@ -30,17 +30,41 @@ import com.opendash.opendash_dash_engine.util.DebugLog
 import com.opendash.opendash_dash_engine.util.RideDiagnostics
 import com.opendash.opendash_dash_engine.util.memorySummary
 import com.opendash.opendash_dash_engine.util.monotonicMs
+import com.opendash.opendash_dash_engine.dash.ConnEvent
+import com.opendash.opendash_dash_engine.dash.ConnState
+import com.opendash.opendash_dash_engine.dash.ConnectionFsm
+import com.opendash.opendash_dash_engine.dash.DashChrome
+import com.opendash.opendash_dash_engine.dash.Effect
+import com.opendash.opendash_dash_engine.dash.label
+import com.opendash.opendash_dash_engine.dash.DashSocket
+import com.opendash.opendash_dash_engine.dash.NavFigures
+import com.opendash.opendash_dash_engine.dash.NowPlaying
+import com.opendash.opendash_dash_engine.dash.SessionEvent
+import com.opendash.opendash_dash_engine.dash.protocol.DashCommand
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlin.coroutines.EmptyCoroutineContext
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * Top-level orchestrator for the native dash engine — the Flutter-side
@@ -79,6 +103,30 @@ class DashEngineController(
         private const val RECONNECT_GIVEUP_MS = 120_000L
 
         /**
+         * How long a stream has to last before it counts as working — [Effect.ArmSettle].
+         *
+         * Twenty seconds: twice the RX watchdog's RX_IDLE_TIMEOUT_MS, so a stream that gets
+         * here has exchanged heartbeats with the dash in both directions rather than merely
+         * having been started. Short against RECONNECT_GIVEUP_MS by an order of magnitude,
+         * which is the property that matters — a genuinely working stream must cancel the
+         * give-up countdown with most of it still unspent, or a late [ConnEvent.StreamSettled]
+         * would end a good ride.
+         */
+        private const val STREAM_SETTLE_MS = 20_000L
+
+        /**
+         * How long [disconnect] waits for the reducer to finish acting on it.
+         *
+         * Generous against what it is actually waiting for — `DashSession.close` gives the
+         * farewell one second and then cancels regardless — and short enough that a wedged
+         * loop cannot leave the rider's button spinning.
+         */
+        private const val DISCONNECT_TIMEOUT_MS = 3_000L
+
+        /** How long the teardown waits for a starved reducer loop to notice its cancellation. */
+        private const val FSM_JOIN_TIMEOUT_MS = 500L
+
+        /**
          * How often the `[mem]` line is written.
          *
          * A minute, the same period the stream's own health line uses, and for the same
@@ -112,11 +160,34 @@ class DashEngineController(
          * 15 s reroute cooldown. Named here so the next reader does not have to re-derive it.
          */
         private const val TICK_PUBLISH_INTERVAL_MS = 1_000L
+
     }
 
     private val dashConfig = DashConfig.get(context)
     private val wifiManager = DashWifiManager(context, scope)
-    private val session = DashSession(scope)
+    /**
+     * The connection the engine is speaking over right now, or null between connections.
+     *
+     * A [DashSession] is one-shot (see its own doc), so "reconnect" means a new object here.
+     * A StateFlow rather than a plain field because the collectors below have to follow the
+     * swap: `flatMapLatest` drops the old session's state and events the instant this
+     * changes, which is what used to need a `sessionSeq` token checked inside the session.
+     */
+    private val current = MutableStateFlow<DashSession?>(null)
+
+    /**
+     * What the dash's repeating cards say — destination, turn figures, media, call.
+     *
+     * Owned here and not by the session, because Flutter pushes these at arbitrary times,
+     * including while nothing is connected. When they lived on the session, every reconnect
+     * started from defaults and the first cards of a new session showed "OpenDash" with no
+     * guidance until Dart happened to push again.
+     */
+    private val chrome = MutableStateFlow(DashChrome())
+
+    /** IDLE when there is no session — which is exactly what "no session" looks like. */
+    private val sessionState: DashState
+        get() = current.value?.state?.value ?: DashState.IDLE
     private val locationTracker = LocationTracker(context, scope)
     private val styleAssembler = MapStyleAssembler(context)
 
@@ -144,23 +215,71 @@ class DashEngineController(
     }
 
     private var streamJob: Job? = null
-    private var sessionWatchJob: Job? = null
-    private var wifiWatchJob: Job? = null
+    /**
+     * Everything that can move the connection, in one queue and one order.
+     *
+     * Replaces two collectors that each acted on half the picture and four fields that
+     * carried the other half between them. UNLIMITED and never closed: a dropped event is a
+     * connection that stops for no reason, and the producers are timers and two flows, so
+     * the queue is never more than a few deep.
+     */
+    private val connEvents = Channel<ConnEvent>(Channel.UNLIMITED)
+
+    /** The reducer loop. One coroutine, so "in order" is not a hope. */
+    private var fsmJob: Job? = null
+
+    /**
+     * Where the connection has got to. Written ONLY by [fsmJob].
+     *
+     * `@Volatile` for the one reader outside that coroutine — [connect]'s cheap guard, which
+     * is an optimisation, not the authority. The reducer decides; a stale read there costs at
+     * most one no-op event.
+     */
+    @Volatile private var connState: ConnState = ConnState.Idle
+
+    /** Wi-Fi state and session events, turned into [ConnEvent]s. */
+    private var wifiFeedJob: Job? = null
+    private var sessionFeedJob: Job? = null
+
+    /**
+     * Completed once [fsmJob] has finished acting on a [ConnEvent.UserDisconnect].
+     *
+     * The farewell has to have left before `disconnect()` returns — that is what Dart waits
+     * for — and with the decision moved into the reducer the work no longer happens on the
+     * caller's coroutine. The signal lives here rather than inside the event so
+     * [ConnectionFsm] stays free of coroutine types and testable without them.
+     */
+    @Volatile private var pendingDisconnect: CompletableDeferred<Unit>? = null
+
+    /** Serialises open against close, so "one live session" is a property and not a hope. */
+    private val sessionLock = Mutex()
+
+    /** The pending re-handshake, armed and cancelled by [Effect.ArmAuthRetry]/[Effect.CancelAuthRetry]. */
+    private var authRetryJob: Job? = null
+
     private var mediaForwardJob: Job? = null
     private var callForwardJob: Job? = null
-    // Bounded retry count for the cheap re-auth path in [connect]'s sessionWatchJob — see
-    // MAX_AUTH_RETRIES's doc. Reset on READY (auth actually succeeded) and on every fresh
-    // top-level [connect] call.
-    private var authRetries = 0
-    // True once the WiFi link came up and a session was started on it, cleared when the link
-    // goes away again (and on every fresh [connect]). Both watch jobs are main-confined, so no
-    // @Volatile: [wifiWatchJob] writes it, the session watcher reads it to tell "the link never
-    // came up" apart from "the link is up and the session on it died". It says nothing about
-    // *when* that session was started — see the re-check in the retry branch.
-    private var sessionStarted = false
-    // Armed whenever session.state isn't STREAMING, cancelled once it is — see
-    // RECONNECT_GIVEUP_MS's doc.
+    /**
+     * Armed while the connection is not streaming, cancelled once it is — see
+     * RECONNECT_GIVEUP_MS. Driven by [Effect.ArmGiveUp]/[Effect.CancelGiveUp], never by a
+     * state read: the reducer knows which transitions leave a working stream, and it is the
+     * only thing that does.
+     *
+     * It is NOT what bounds a stream that keeps starting and dying — it cannot be, because a
+     * link may legitimately take most of its two minutes to come up, and a stream that starts
+     * at t=100 s would then be killed at t=120 s for being new. That bound is the retry
+     * budget carried through [ConnState.Streaming], and this timer is re-armed by the
+     * reducer once the budget is spent.
+     */
     private var giveupJob: Job? = null
+
+    /**
+     * Armed on entry to [ConnState.Streaming], cancelled on every exit from it — see
+     * [Effect.ArmSettle]. What it answers is "did this stream last", which is why it is a
+     * plain delay and not a subscription to anything the frame loop produces, and the only
+     * thing that answer decides is whether the retry budget is forgiven.
+     */
+    private var settleJob: Job? = null
 
     /**
      * Per-minute `[mem]` sampler, tied to the CONNECTION rather than to the stream.
@@ -237,8 +356,7 @@ class DashEngineController(
      * The stream job's completion handler reports a loop that ended on its own (see it), and
      * on the ordinary disconnect path the session has not left STREAMING yet by the time the
      * loop unwinds — so without this flag every deliberate «Отключить» would write a warning
-     * about a stream nobody lost, and call `session.disconnect()` a beat before the caller
-     * does. @Volatile: written on Main, read on `dash-frame`.
+     * about a stream nobody lost, and close the session a beat before the caller does. @Volatile: written on Main, read on `dash-frame`.
      */
     @Volatile private var stoppingDeliberately = false
 
@@ -253,14 +371,15 @@ class DashEngineController(
 
     fun connect() {
         // Idempotent on a live connection, which spec/fsm.md already promises for the
-        // `idleMap → navigating` transition ("connect() — no-op"): only DashSession.connect()
-        // had that guard, this method had none and ran the whole cycle again on a connected
+        // `idleMap → navigating` transition ("connect() — no-op"). The guard used to live one
+        // layer down, in DashSession.connect; a one-shot session has no such method, so this
+        // is now the only place it can be. Without it the whole cycle ran again on a connected
         // dash. That re-request tore down the WiFi link the running session's sockets are bound
-        // to (see DashWifiManager.connect's own guard), reset [hasConnectedOnce] and
-        // [authRetries], opened a second ride file mid-ride and restarted media forwarding —
+        // to (see DashWifiManager.connect's own guard), reset [hasConnectedOnce] and the
+        // retry budget, opened a second ride file mid-ride and restarted media forwarding —
         // for a rider, "Send to Dash" killed the picture ~10s later. Nothing is lost by
         // returning here: [setDestination] pushes the new destination to the session itself.
-        val sessionState = session.state.value
+        val sessionState = sessionState
         val sessionLive = sessionState != DashState.IDLE && sessionState != DashState.ERROR
         val linkStatus = wifiManager.state.value.status
         if (sessionLive && linkStatus == WifiConnStatus.CONNECTED) {
@@ -272,12 +391,13 @@ class DashEngineController(
         // needs the opposite treatment: not "we are already connected", but the wreck of the
         // previous session, still holding sockets bound to a network that is gone.
         //
-        // Nothing below would clean it up. This method resets [sessionStarted] to false and
-        // starts a fresh wifi collector, which StateFlow immediately hands its current value —
-        // REQUESTING, not CONNECTED. The "link came up" branch needs CONNECTED; the teardown
-        // branch needs sessionStarted; neither fires, so `session.disconnect()` is never
-        // called and `session.connect()` later bounces off its own IDLE/ERROR guard. The old
-        // session then pushes RTP into a dead socket until the RX watchdog notices
+        // Cleaning it up is [ConnectionFsm]'s job now, and the line below only says so for
+        // the ride file: `UserConnect` in `WaitingForWifi` emits StopSession before the new
+        // RequestWifi, so the wreck is closed in the reducer, in order, whatever the Wi-Fi
+        // layer happens to report next. Before that it was nobody's: the old code needed a
+        // CONNECTED that never came and a flag it had just cleared, so the wreck survived,
+        // the guard above read it as a live connection, and the old session pushed RTP
+        // into a dead socket until the RX watchdog noticed
         // (RX_IDLE_TIMEOUT_MS = 10s) and the retry after it adds AUTH_RETRY_DELAY_MS: about
         // 11.5 seconds of frozen picture on the dash after a "Send to Dash".
         //
@@ -286,12 +406,17 @@ class DashEngineController(
         // collector that would tear the session down is a separate coroutine resumed on the
         // next dispatch — and a method-channel call from Dart gets in between. Same treatment
         // the collector's own else-branch gives, just from the path that overtook it.
+        // Not closed here: this method runs on Main and cannot wait. The close goes into
+        // the WiFi collector below, ahead of its collect loop — see there for why it must
+        // be that coroutine and not a `scope.launch` of its own. Held by reference, not as
+        // a flag, because the session collector below also needs to know WHICH session is
+        // the wreck: it must not act on that session's replayed state.
         if (sessionLive) {
             RideDiagnostics.warn(
                 "connect",
-                "connect() over a $sessionState session whose link is $linkStatus — tearing it down first",
+                "connect() over a $sessionState session whose link is $linkStatus — " +
+                    "it will be closed once the WiFi request is in, before any new session",
             )
-            session.disconnect()
         }
         RideDiagnostics.init(context)
         RideDiagnostics.start("connect")
@@ -319,30 +444,69 @@ class DashEngineController(
                 delay(MEM_SAMPLE_INTERVAL_MS)
             }
         }
-        session.onButton = { code -> onButton?.invoke(code.toInt() and 0xFF) }
-        session.onError = { msg -> publishState(errorMessage = msg) }
+        // Lost in the rewrite and caught by review: without it the dash map never follows
+        // the rider, and `hasGps`, speed and off-route are dead for the whole ride.
         locationTracker.start()
-        authRetries = 0
+        startFeeds()
 
         val ssid = dashConfig.ssid
-        // A fresh attempt gets a fresh window. [armGiveupTimer] no-ops while a timer is
-        // already running, and nothing between here and there cancels one — so without
-        // this line a reconnect inherits whatever is left of the previous attempt's
-        // countdown, and a tap at t=115s of a 120s window is killed five seconds in,
-        // reported as "gave up — 120000ms without reaching STREAMING". The timer is
-        // re-armed by the session collector below on the first non-STREAMING state.
-        cancelGiveupTimer()
-        wifiWatchJob?.cancel()
-        sessionStarted = false
-        wifiWatchJob = scope.launch {
-            wifiManager.onSsidResolved = { resolved ->
-                if (dashConfig.needsDiscovery) dashConfig.ssid = resolved
+        // The wreck, if there is one, is closed by the reducer's own StopSession — see the
+        // UserConnect branch for WaitingForWifi. It is not closed here, and that is the
+        // point of having one place decide.
+        connEvents.trySend(ConnEvent.UserConnect(ssid.ifBlank { dashConfig.ssidPrefix }))
+
+        startMediaForwarding()
+    }
+
+    /**
+     * Start the two feeds and the reducer loop, once per [connect].
+     *
+     * The feeds only translate: Wi-Fi status and session events become [ConnEvent]s, and
+     * nothing in them decides anything. Every decision that used to live inside those two
+     * collectors — start the stream, retry the handshake, arm or cancel a timer, tear a
+     * session down — is now a branch of [ConnectionFsm.reduce], which is a pure function
+     * with seventeen tests behind it.
+     */
+    private fun startFeeds() {
+        fsmJob?.cancel()
+        fsmJob = scope.launch {
+            for (event in connEvents) {
+                val (next, effects) = ConnectionFsm.reduce(connState, event)
+                // The line задача 6.4 asks for, and the only window onto the machine
+                // itself: everything else in the ride file is a consequence — `[wifi]`,
+                // `[session] →`, the stream lines — and from those the decision has to be
+                // inferred. Here it is stated.
+                //
+                // **Every event, including the ones that change nothing.** A filter stood
+                // here for an hour, justified by "4 Hz of Wi-Fi re-emissions would bury the
+                // rest"; that was simply wrong — `DashWifiManager._state` is a conflated
+                // StateFlow of a data class, so an unchanged status never re-emits, and the
+                // events reaching this loop are taps, link transitions, session events and
+                // two timers. What the filter did instead was hide the two moments worth
+                // having most: `SessionEnded` once the retry budget is spent, where the
+                // machine stops trying and says nothing for two minutes, and `UserConnect`
+                // on a live stream, where the rider presses a button and nothing happens.
+                // "Nothing happened, and here is why" is the answer a ride file is for.
+                val did =
+                    if (effects.isEmpty()) "" else effects.joinToString(prefix = " : ") { it.label }
+                RideDiagnostics.log(
+                    "connect",
+                    "fsm ${connState.label} --${event.label}--> ${next.label}$did",
+                )
+                connState = next
+                for (effect in effects) execute(effect)
+                publishState()
+                // After the effects, not before: what `disconnect()` waits for is the
+                // farewell having left, and that is [Effect.StopSession].
+                if (event is ConnEvent.UserDisconnect) {
+                    pendingDisconnect?.complete(Unit)
+                    pendingDisconnect = null
+                }
             }
-            if (ssid.isNotBlank()) {
-                wifiManager.connect(ssid, dashConfig.password, prefixMatch = false)
-            } else {
-                wifiManager.connect(dashConfig.ssidPrefix, dashConfig.password, prefixMatch = true)
-            }
+        }
+
+        wifiFeedJob?.cancel()
+        wifiFeedJob = scope.launch {
             wifiManager.state.collect { wifi ->
                 RideDiagnostics.log(
                     "wifi",
@@ -351,104 +515,314 @@ class DashEngineController(
                         (wifi.error?.let { " err=$it" } ?: ""),
                 )
                 publishState()
-                if (wifi.status == WifiConnStatus.CONNECTED && !sessionStarted) {
-                    sessionStarted = true
-                    val resolvedSsid = if (ssid.isNotBlank()) ssid else wifi.ssid
-                    session.connect(resolvedSsid, wifiManager.network)
-                } else if (wifi.status != WifiConnStatus.CONNECTED && sessionStarted) {
-                    // The network the running session's sockets are bound to (via
-                    // Network.bindSocket) is gone — whether WifiManager is about to retry
-                    // (REQUESTING) or has given up (ERROR), that session is now sending
-                    // into a dead network and will never notice on its own (see
-                    // DashSocket.send/sendRtp — failures there are swallowed, not fatal).
-                    // Tear it down so the `connect()` branch above starts a fresh one,
-                    // bound to whatever network reconnect eventually resolves.
-                    sessionStarted = false
-                    session.disconnect()
-                }
+                connEvents.trySend(
+                    when (wifi.status) {
+                        WifiConnStatus.CONNECTED -> ConnEvent.WifiUp(wifi.ssid)
+                        // ERROR is the layer saying it has STOPPED, which is a different
+                        // fact from "not connected yet" and needs the opposite response —
+                        // see ConnEvent.WifiGaveUp and scenario B.
+                        WifiConnStatus.ERROR -> ConnEvent.WifiGaveUp(wifi.error ?: "WiFi gave up")
+                        WifiConnStatus.REQUESTING, WifiConnStatus.IDLE -> ConnEvent.WifiDown
+                    },
+                )
             }
         }
 
-        // Tracked and replaced like [wifiWatchJob]: `connect()` is called again
-        // on every "Send to Dash" and on the Dash screen's connect button, and
-        // an untracked collector here survived both `disconnect()` and the next
-        // `connect()` — so the Nth session hit READY with N live collectors and
-        // ran [startStream] N times over.
-        sessionWatchJob?.cancel()
-        sessionWatchJob = scope.launch {
-            session.state.collect { st ->
-                RideDiagnostics.log("session", "→ $st")
-                publishState()
-                if (st == DashState.STREAMING) cancelGiveupTimer() else armGiveupTimer()
-                when (st) {
-                    // Guarded: assembleCurrent() reads the pack directory and
-                    // prepare() parses the style, and either can throw. Uncaught,
-                    // the exception kills this collector, and the session then sits
-                    // in READY with no frame loop behind it until the 120-second
-                    // give-up timer fires — a dash showing nothing while the app
-                    // insists it is connected.
-                    DashState.READY -> {
-                        authRetries = 0
-                        try {
-                            startStream()
-                        } catch (e: CancellationException) {
-                            throw e
-                        } catch (e: Exception) {
-                            DebugLog.e(TAG, { "startStream failed — disconnecting" }, e)
-                            RideDiagnostics.log("stream", "startStream failed: ${e.message}")
-                            disconnect()
-                        }
+        sessionFeedJob?.cancel()
+        // The session [connect] is replacing, if there is one. Its events must not be read
+        // as the new attempt's: `DashSession.events` is an UNLIMITED channel, so one it
+        // queued before this feed relaunched is still waiting — and a buffered
+        // `Failed(handshakeRefused)` arriving once the reducer has reached Handshaking on
+        // the FRESH link blacklists the SSID that link is using. The reducer cannot tell
+        // them apart; only this layer holds the identity.
+        //
+        // **But only a session the reducer has already abandoned is a wreck**, and getting
+        // that wrong wedged the machine for good. `connect()`'s guard lets a tap through
+        // once the session has gone to ERROR or IDLE — which is the ordinary "dash
+        // restarted" case — while the reducer is still in [ConnState.Streaming], because
+        // the `SessionEnded` that would move it is sitting in that very channel. Pinning
+        // that session as the wreck threw the event away; `UserConnect` is a no-op in
+        // Streaming; and the give-up timer was cancelled on the way in. The result was a
+        // rider tapping «Подключить» into a machine with no session, no timers and no
+        // remaining source of events — for ever, on every subsequent tap. Review,
+        // 2026-09-22.
+        //
+        // The read of [connState] is exact rather than merely cheap here: this method and
+        // the reducer loop both run on the scope's `Dispatchers.Main`, and nothing between
+        // the read and the `launch` below suspends.
+        // [ConnState.Streaming] and nothing else. Handshaking was in this list for an hour
+        // and had to come out: there `UserConnect` goes through `restart()`, which emits
+        // StopSession before the new RequestWifi, so the session IS closed and its buffered
+        // events must still be muted — a `Failed(handshakeRefused = true)` arriving after the
+        // reducer has reached Handshaking on the fresh link blacklists the SSID that link is
+        // using. Streaming is the only state where `UserConnect` is a no-op, and therefore
+        // the only one where muting the session leaves nothing to move the machine.
+        val wreck = if (connState is ConnState.Streaming) null else current.value
+        sessionFeedJob = scope.launch {
+            launch {
+                // The `[session] → …` line, and nothing else: the state flow is for the ride
+                // file and for Dart. What the reducer runs on is the session's own events,
+                // which say WHY a session ended — a state flow cannot.
+                current
+                    .flatMapLatest { it?.state ?: flowOf(DashState.IDLE) }
+                    .collect { st ->
+                        RideDiagnostics.log("session", "→ $st")
+                        publishState()
                     }
-                    // The K1G handshake failed but the WiFi link itself is still up — no need
-                    // to tear down and re-request WiFi (which risks the system dialog, see
-                    // spec/wifi_retry_policy.md's "Из живого форка"). Just retry the handshake
-                    // directly, same network, bounded so a genuinely dead dash still ends in
-                    // ERROR rather than retrying forever.
-                    //
-                    // IDLE alongside ERROR, and for the same reason: DashSession.endLink puts a
-                    // link that died under a live WiFi network into IDLE, not ERROR (its own doc
-                    // explains why — the state guard in DashSession.connect must let the retry
-                    // through). That is spec/wifi_retry_policy.md's scenario C, the RX watchdog
-                    // firing while WifiManager still reports CONNECTED, so [wifiWatchJob] never
-                    // sees a state change and nothing at all reconnected: the ride ended at the
-                    // 120-second give-up timer. A deliberate disconnect() never reaches here at
-                    // all — it cancels this job before it touches the session.
-                    //
-                    // Both checks are made AFTER the wait, and the counter is spent only if the
-                    // retry actually happens, because the value that opens this branch can be
-                    // stale before the delay even starts: StateFlow replays its current value to
-                    // a brand-new collector, and on a `connect()` over an already-live WiFi link
-                    // that value is the PREVIOUS attempt's ERROR. Re-reading the state after the
-                    // delay is what tells the two apart: a session that really is dead is still
-                    // IDLE/ERROR, a replayed one has moved on.
-                    //
-                    // The window used to be wider: DashSession.connect() published CONNECTING
-                    // from inside its coroutine on Dispatchers.IO, so this collector could see
-                    // the corpse of a session [wifiWatchJob] had already restarted, and cancel a
-                    // handshake 1.5 s into its life every single time. CONNECTING is published
-                    // synchronously now, which closes that half of it.
-                    DashState.ERROR, DashState.IDLE -> {
-                        val wifi = wifiManager.state.value
-                        if (sessionStarted && wifi.status == WifiConnStatus.CONNECTED && authRetries < MAX_AUTH_RETRIES) {
-                            delay(AUTH_RETRY_DELAY_MS)
-                            val settled = session.state.value
-                            if (wifiManager.state.value.status == WifiConnStatus.CONNECTED &&
-                                (settled == DashState.IDLE || settled == DashState.ERROR)
-                            ) {
-                                authRetries++
-                                session.connect(wifi.ssid, wifiManager.network)
-                            }
-                        }
+            }
+            current
+                .flatMapLatest { s -> if (s == null || s === wreck) emptyFlow() else s.events }
+                .collect { ev ->
+                when (ev) {
+                    is SessionEvent.Button -> onButton?.invoke(ev.code)
+                    SessionEvent.Ready -> {
+                        rememberAcceptedSsid()
+                        connEvents.trySend(ConnEvent.SessionReady)
                     }
-                    else -> {}
+                    is SessionEvent.Failed -> {
+                        publishState(errorMessage = ev.reason)
+                        connEvents.trySend(ConnEvent.SessionEnded(ev.handshakeRefused))
+                    }
+                    SessionEvent.DashSilent -> {
+                        RideDiagnostics.log("session", "dash went silent — reconnecting")
+                        connEvents.trySend(ConnEvent.SessionEnded(handshakeRefused = false))
+                    }
                 }
             }
         }
-
-        startMediaForwarding()
     }
 
-    fun disconnect() {
+    /**
+     * Do what the reducer decided. The only place in this class with a side effect on the
+     * connection, and the only one that knows about `DashWifiManager`, `DashSession`, the
+     * encoder or the timers.
+     */
+    private suspend fun execute(effect: Effect) {
+        when (effect) {
+            is Effect.RequestWifi ->
+                if (dashConfig.ssid.isNotBlank()) {
+                    wifiManager.connect(dashConfig.ssid, dashConfig.password, prefixMatch = false)
+                } else {
+                    wifiManager.connect(effect.ssid, dashConfig.password, prefixMatch = true)
+                }
+            is Effect.ReleaseWifi -> wifiManager.disconnect(allowLinger = effect.linger)
+            is Effect.OpenSession -> openSession(effect.ssid)
+            is Effect.StopSession -> closeSession(effect.farewell)
+            Effect.StartStream -> startStreamGuarded()
+            Effect.ArmGiveUp -> armGiveupTimer()
+            Effect.CancelGiveUp -> cancelGiveupTimer()
+            Effect.ArmAuthRetry -> armAuthRetry()
+            Effect.CancelAuthRetry -> { authRetryJob?.cancel(); authRetryJob = null }
+            Effect.ArmSettle -> armSettleTimer()
+            Effect.CancelSettle -> { settleJob?.cancel(); settleJob = null }
+            // A no-op unless the name came from a scan — only the Wi-Fi layer knows which.
+            Effect.RejectSsidGuess -> if (wifiManager.usingScanGuess) wifiManager.rejectScanGuess()
+            is Effect.Report -> RideDiagnostics.log("connect", effect.reason)
+            Effect.StandDown -> standDown()
+        }
+    }
+
+    /**
+     * Persisted HERE and not when the Wi-Fi link came up, because this is the first moment
+     * the name is known to be right: the dash checks the SSID inside the encrypted
+     * handshake, so a session that reaches Ready has had it accepted. A guess taken from
+     * scan results is never written before this point — otherwise one stale `RE_*` entry
+     * would be remembered across restarts and would disable discovery for good.
+     */
+    private fun rememberAcceptedSsid() {
+        wifiManager.confirmScanGuess()
+        val live = wifiManager.state.value.ssid
+        if (dashConfig.needsDiscovery && live.isNotBlank() && live != dashConfig.ssidPrefix) {
+            dashConfig.ssid = live
+            RideDiagnostics.log("connect", "dash accepted SSID '$live' — remembered")
+        }
+    }
+
+    /**
+     * [startStream] can throw — it reads the pack directory and parses the style — and an
+     * exception inside the reducer loop would take the whole connection with it. Uncaught,
+     * it used to kill the state collector and leave the session in READY with no frame loop
+     * behind it until the 120-second give-up timer fired: a dash showing nothing while the
+     * app insisted it was connected.
+     */
+    private suspend fun startStreamGuarded() {
+        try {
+            startStream()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            DebugLog.e(TAG, { "startStream failed" }, e)
+            RideDiagnostics.log("stream", "startStream failed: ${e.message}")
+            // Reported as a session that ended, NOT as a disconnect. `disconnect()` waits
+            // for a UserDisconnect that only this very coroutine could drain — three
+            // seconds of deadlock and a teardown that then runs out of order, closing the
+            // ride file before the session. Ending the session lets the reducer do what it
+            // does for any other failed attempt: retry it, and give up if it keeps failing.
+            closeSession(farewell = false)
+            connEvents.trySend(ConnEvent.SessionEnded(handshakeRefused = false))
+        }
+    }
+
+    /**
+     * Let go of everything that is not the session or the link.
+     *
+     * Shared by [teardown] and by [Effect.StandDown], because giving up and disconnecting
+     * leave the same things running: the foreground service with its wake locks, GPS, media
+     * forwarding, the memory probe, the snapshotter and the ride file. The give-up timer
+     * used to get all of this by calling `disconnect()`; when the decision moved into the
+     * reducer the work had to move with it, or a phone that had stopped trying would keep a
+     * PARTIAL_WAKE_LOCK and a GPS fix for as long as the app lived.
+     */
+    private fun standDown() {
+        memJob?.cancel(); memJob = null
+        settleJob?.cancel(); settleJob = null
+        stoppingDeliberately = true
+        streamJob?.cancel()
+        stopMediaForwarding()
+        chrome.update { it.copy(nav = null) }
+        locationTracker.stop()
+        snapshots.releaseNow(snapshotGeneration)
+        DashKeepAliveService.stop(context)
+        RideDiagnostics.stop("gave up")
+        // Without a reason on it, and not for want of trying — see [Effect.StandDown]. The
+        // reason reaches the ride file through [Effect.Report]; it reaches the rider nowhere,
+        // because nothing in `lib/` renders `wifiError` or `errorMessage`.
+        publishState()
+    }
+
+    /**
+     * The session and the link, stopped by hand in the order the reducer would have chosen.
+     *
+     * Two callers, both of which cannot use the reducer: [dispose], whose `runBlocking`
+     * parks the thread the loop runs on, and the timeout above, where the loop did not
+     * answer. Kept as one function so the duplication of `ConnEvent.UserDisconnect`'s
+     * effects is in a single place — if that branch ever grows a third effect, this is
+     * where it has to be mirrored.
+     *
+     * Both callers cancel [fsmJob] first, which is what makes the [connState] write below
+     * legal: that field's contract is "written only by the reducer loop", and the loop is
+     * gone by the time this runs.
+     */
+    private suspend fun stopEverythingDirectly() {
+        closeSession(farewell = true)
+        // No linger: both callers are tearing things down by hand because the normal path
+        // did not work, and neither may leave a platform request registered behind them —
+        // [dispose] least of all, since its scope is about to be cancelled and the timer
+        // that would release it would never fire.
+        wifiManager.disconnect(allowLinger = false)
+        connState = ConnState.Idle
+    }
+
+    /** The re-handshake timer: one at a time, and it reports back as an event. */
+    private fun armAuthRetry() {
+        if (authRetryJob?.isActive == true) return
+        authRetryJob = scope.launch {
+            delay(AUTH_RETRY_DELAY_MS)
+            connEvents.trySend(ConnEvent.AuthRetryDue)
+        }
+    }
+
+    /**
+     * Start a connection, replacing whatever was running.
+     *
+     * The close comes first and is awaited, and that ordering IS the invariant: two live
+     * sessions cannot exist, because a second one is not created until the first has stopped
+     * its coroutines and closed its sockets. Without the wait it is not merely untidy — the
+     * sockets bind fixed ports :2000 and :2002, and with SO_REUSEADDR gone a leftover one
+     * makes this throw instead of quietly taking half the dash's traffic.
+     *
+     * No farewell: every caller here is reconnecting because the link or the handshake
+     * failed, so the two farewell packets could only be written into a socket nobody reads.
+     */
+    private suspend fun openSession(ssid: String): Boolean = withContext(Dispatchers.IO) {
+        // The whole thing on IO, and the lock INSIDE it — that order is what keeps
+        // [dispose] from deadlocking. Every caller here is a collector on
+        // Dispatchers.Main; if the lock were taken on Main, releasing it would need Main
+        // to be free, and `dispose`'s runBlocking parks Main for exactly as long as it is
+        // waiting for that lock. Acquired and released on IO, nothing in the chain needs
+        // the main thread at all.
+        //
+        // It also puts the transport back where it used to live. [DashSession.open] runs
+        // the factory inline — three socket binds, three `Network.bindSocket` binder calls
+        // and the synchronous ride-file append in DashSocket.reportSocketOptions — and
+        // before stage 4 all of that happened inside a coroutine already on IO.
+        sessionLock.withLock {
+            // Refuse to replace a session that is still getting somewhere, and do it HERE,
+            // inside the lock, where the answer cannot go stale between the question and
+            // the act. The retry in the state collector asks the same question before its
+            // 1.5 s wait, and on 2026-09-19 that was not enough: three sessions in a row
+            // authenticated in ~200 ms and were torn down by the next retry a second later,
+            // because reaching READY also needs the 1790 ms of captured nav-entry pauses.
+            // The dash had started answering; the app spent five seconds destroying its own
+            // successful handshakes.
+            val live = current.value
+            if (live != null &&
+                live.state.value != DashState.IDLE &&
+                live.state.value != DashState.ERROR
+            ) {
+                RideDiagnostics.log(
+                    "connect",
+                    "not replacing a session that is still ${live.state.value} — letting it finish",
+                )
+                return@withLock false
+            }
+            closeCurrent(farewell = false)
+            current.value = DashSession.open(
+                ssid = ssid,
+                chrome = chrome,
+                clock = ::monotonicMs,
+                parent = scope.coroutineContext.job,
+                // The plugin's handler, carried over deliberately: the session's
+                // SupervisorJob keeps one dying child from taking its siblings, but an
+                // unhandled throw still reaches Android's default handler — a crash
+                // mid-ride — unless the handler travels with the context.
+                context = Dispatchers.IO +
+                    (scope.coroutineContext[CoroutineExceptionHandler] ?: EmptyCoroutineContext),
+            ) { DashSocket(wifiManager.network) }
+            true
+        }
+    }
+
+    /** Ends the current session, if any, and waits for it. Safe to call with none. */
+    private suspend fun closeSession(farewell: Boolean) = withContext(Dispatchers.IO) {
+        sessionLock.withLock { closeCurrent(farewell) }
+    }
+
+    /**
+     * The close itself, without the lock — for [openSession], which already holds it.
+     *
+     * [current] is cleared AFTER the close returns, not before. Clearing first looks tidier
+     * and breaks the invariant: a concurrent [openSession] would read null, skip the wait,
+     * and build a [DashSocket] over ports the dying session still has bound — a
+     * `BindException` now that SO_REUSEADDR is gone.
+     */
+    private suspend fun closeCurrent(farewell: Boolean) {
+        val live = current.value ?: return
+        live.close(farewell)
+        current.value = null
+    }
+
+    /**
+     * Stop everything and tell the dash we are going.
+     *
+     * Suspends now, and every caller had to change for it. The farewell —
+     * `projectionStop` + `projectionOff` — is two datagrams that must actually leave before
+     * the socket closes, or the dash sits in projection on its last frame until its own
+     * timeout, which a rider reads as "the map froze". The previous version reached for
+     * `runBlocking` on the main thread to get that; waiting properly is the same guarantee
+     * without stalling the UI.
+     */
+    suspend fun disconnect() = teardown(viaFsm = true)
+
+    /**
+     * Everything a disconnect does, with one choice in the middle.
+     *
+     * @param viaFsm let the reducer order the session close against the Wi-Fi release —
+     *   scenario D, and the normal path. [dispose] passes false because its `runBlocking`
+     *   parks the main thread the reducer loop runs on, so the event would sit in the queue
+     *   until the timeout expired: the one caller that has to do the work itself.
+     */
+    private suspend fun teardown(viaFsm: Boolean) {
         RideDiagnostics.log("connect", "disconnect() called")
         // No farewell [mem] sample here, and that IS the decision — one stood here for a day
         // and came out. It cannot be taken on this thread (memorySummary walks
@@ -466,6 +840,7 @@ class DashEngineController(
         // connect() before anything is allocated again. Review, 2026-09-16.
         memJob?.cancel(); memJob = null
         giveupJob?.cancel(); giveupJob = null
+        settleJob?.cancel(); settleJob = null
         // Cancelled but deliberately NOT nulled, unlike every other job here. cancel() is
         // cooperative: the frame loop keeps running on its own `dash-frame` thread until its next
         // suspension point, and [FrameStreamer.run]'s finally releases the encoder. Dropping
@@ -477,12 +852,72 @@ class DashEngineController(
         // finished Job returns at once) and restores the invariant [startStream] documents.
         stoppingDeliberately = true
         streamJob?.cancel()
-        sessionWatchJob?.cancel(); sessionWatchJob = null
-        wifiWatchJob?.cancel(); wifiWatchJob = null
-        sessionStarted = false
         stopMediaForwarding()
-        session.disconnect()
-        wifiManager.disconnect()
+        // The one reset that moving the cards out of the session dropped: the old
+        // DashSession.disconnect() did `navActive = false`. Without it a rider who taps
+        // «Отключить» while navigating and «Подключить» later — neither of which touches
+        // the destination — gets the PREVIOUS route's maneuver glyph, distance and ETA
+        // repeated at 1 Hz for the whole next ride, with no NavLoop running to correct
+        // them. The destination itself stays: it is the rider's, not the session's.
+        chrome.update { it.copy(nav = null) }
+        // Through the reducer, like every other decision — it knows that the farewell comes
+        // before the link is released, and scenario D is the one place that order matters.
+        // NonCancellable because this method is reachable FROM the coroutines it is tearing
+        // down, and a farewell cancelled halfway is the exact failure it exists to prevent.
+        withContext(NonCancellable) {
+            if (viaFsm) {
+                // Shared, not replaced. Two overlapping disconnects — the button is not
+                // debounced — used to leave the first caller waiting out the whole timeout
+                // and writing the warning below, because the reducer completed only the
+                // second one's slot. Both now await the same signal.
+                val done = pendingDisconnect
+                    ?: CompletableDeferred<Unit>().also { pendingDisconnect = it }
+                connEvents.send(ConnEvent.UserDisconnect)
+                // Bounded: [DashSession.close] gives the farewell its own second and then
+                // cancels regardless, so anything past this is the reducer loop being
+                // starved — and a disconnect that never returns leaves the button spinning.
+                if (withTimeoutOrNull(DISCONNECT_TIMEOUT_MS) { done.await() } == null) {
+                    RideDiagnostics.warn(
+                        "connect",
+                        "disconnect: the state machine did not answer in ${DISCONNECT_TIMEOUT_MS}ms " +
+                            "— tearing the session and the link down directly",
+                    )
+                    pendingDisconnect = null
+                    // The loop is not answering, so take it out before touching what it
+                    // owns. [connState] is documented as written only by [fsmJob], and
+                    // [stopEverythingDirectly] writes it; a loop still mid-iteration would
+                    // otherwise finish that iteration afterwards — writing its own `next`
+                    // over the Idle below and arming timers on the controller's scope after
+                    // the rider has been told they are disconnected.
+                    //
+                    // Joined, but only briefly: cancellation is cooperative and this branch
+                    // exists precisely because the loop is not cooperating. Half a second
+                    // covers a loop suspended at an ordinary point and gives up on one that
+                    // is genuinely stuck, which is no worse than not joining at all.
+                    // `withTimeoutOrNull` INSIDE the enclosing NonCancellable, which is the
+                    // nesting that works.
+                    //
+                    // Events left in the UNLIMITED channel are not a problem: the next
+                    // [connect] drains them with [connState] at Idle, where everything but
+                    // UserConnect is a no-op.
+                    fsmJob?.cancel()
+                    withTimeoutOrNull(FSM_JOIN_TIMEOUT_MS) { fsmJob?.join() }
+                    fsmJob = null
+                    // And then do it anyway. Everything AFTER this block — the keep-alive
+                    // service, GPS, the snapshotter, the ride file — is torn down
+                    // regardless, and publishState says `explicitDisconnect`. Leaving the
+                    // session and the Wi-Fi request standing behind all that is the worst
+                    // of both: the rider is told they are disconnected while the dash keeps
+                    // being streamed to over a link nothing will release.
+                    stopEverythingDirectly()
+                }
+            } else {
+                // The same two steps in the same order the reducer would have chosen, by
+                // hand. Kept next to the branch above so the duplication is visible: if
+                // UserDisconnect ever grows a third effect, this is where it is mirrored.
+                stopEverythingDirectly()
+            }
+        }
         locationTracker.stop()
         // The encoder is NOT released here. cancel() above is cooperative — the frame
         // loop runs on `dash-frame` and only stops at its next suspension point,
@@ -514,21 +949,46 @@ class DashEngineController(
         publishState(explicitDisconnect = true)
     }
 
-    /** Start the give-up countdown if it isn't already running (idempotent) — see
-     *  RECONNECT_GIVEUP_MS's doc. */
+    /**
+     * Start the give-up countdown if it isn't already running — see RECONNECT_GIVEUP_MS.
+     *
+     * It reports, it does not decide: the `sessionState != STREAMING` re-check that used to
+     * stand here is gone because the reducer owns both the arming and the cancelling. A
+     * timer that has to re-check the state it was armed by is a timer whose arming nobody
+     * trusts.
+     *
+     * Idempotent, and that is load-bearing rather than tidy: the reducer emits
+     * [Effect.ArmGiveUp] on every exit from a stream, and only the first of those after a
+     * [Effect.CancelGiveUp] is meant to start a countdown.
+     */
     private fun armGiveupTimer() {
         if (giveupJob?.isActive == true) return
         giveupJob = scope.launch {
             delay(RECONNECT_GIVEUP_MS)
-            if (session.state.value != DashState.STREAMING) {
-                DebugLog.w(TAG) { "Giving up — ${RECONNECT_GIVEUP_MS}ms without reaching STREAMING" }
-                RideDiagnostics.log("error", "gave up — ${RECONNECT_GIVEUP_MS}ms without reaching STREAMING")
-                disconnect()
-            }
+            DebugLog.w(TAG) { "Giving up — ${RECONNECT_GIVEUP_MS}ms without a working stream" }
+            RideDiagnostics.log("error", "gave up — ${RECONNECT_GIVEUP_MS}ms without a working stream")
+            connEvents.trySend(ConnEvent.GiveUpDue)
         }
     }
 
     private fun cancelGiveupTimer() { giveupJob?.cancel(); giveupJob = null }
+
+    /**
+     * The settle countdown — see STREAM_SETTLE_MS and [ConnState.Streaming].
+     *
+     * Replaced rather than kept, unlike [armGiveupTimer]: every arming here belongs to one
+     * particular stream, and a leftover timer from the previous one would tell the reducer
+     * that THIS stream has lasted when it has only just started. The reducer stands it down
+     * on every exit from Streaming as well, so this is the second of two guards — cheap, and
+     * the one that holds if an exit is ever added without its [Effect.CancelSettle].
+     */
+    private fun armSettleTimer() {
+        settleJob?.cancel()
+        settleJob = scope.launch {
+            delay(STREAM_SETTLE_MS)
+            connEvents.trySend(ConnEvent.StreamSettled)
+        }
+    }
 
     /**
      * Forwards the phone's now-playing/incoming-call state to the dash via
@@ -542,7 +1002,7 @@ class DashEngineController(
         mediaForwardJob?.cancel()
         mediaForwardJob = scope.launch {
             mediaInfo.nowPlaying.collect { np ->
-                session.updateNowPlaying(np?.title, np?.album.orEmpty(), np?.artist.orEmpty())
+                updateNowPlaying(np?.title, np?.album.orEmpty(), np?.artist.orEmpty())
                 inputs.update { it.copy(nowPlayingTitle = np?.title) }
                 publishState()
             }
@@ -554,7 +1014,7 @@ class DashEngineController(
                 // active/outgoing call has nothing to "answer", so surfacing it
                 // here would show a nonsensical answer button in the dash UI.
                 val incoming = call?.takeIf { it.incoming }
-                session.updateCall(incoming?.caller)
+                updateCall(incoming?.caller)
                 inputs.update {
                     it.copy(incomingCaller = incoming?.caller, hasActiveCall = call != null)
                 }
@@ -583,7 +1043,7 @@ class DashEngineController(
                 navigating = lat != null && lng != null,
             )
         }
-        session.updateRouteCard(name ?: "OpenDash")
+        setRouteCard(name ?: "OpenDash")
         // DashSession reads [DashInputs.navigating] off the state stream for its own
         // chrome/nav-info decisions — push immediately instead of waiting for
         // the next frame-loop tick() so "Send to Dash" takes effect at once.
@@ -594,7 +1054,7 @@ class DashEngineController(
         inputs.update {
             it.copy(destName = null, dest = null, navigating = false, route = RouteGeometry())
         }
-        session.updateRouteCard("OpenDash")
+        setRouteCard("OpenDash")
         publishState()
     }
 
@@ -636,7 +1096,9 @@ class DashEngineController(
         if (remainingMeters != null && nextTurnMeters != null) {
             val (pv, pu) = toDashDistance(nextTurnMeters)
             val (tv, tu) = toDashDistance(remainingMeters)
-            session.updateNavInfo(maneuver, pv, pu, tv, tu, etaHHMM)
+            chrome.update {
+                it.copy(nav = NavFigures(maneuver, pv, pu, tv, tu, etaHHMM))
+            }
         }
     }
 
@@ -684,10 +1146,33 @@ class DashEngineController(
     fun setSsid(ssid: String) { dashConfig.ssid = ssid.trim() }
     fun setWifiPassword(password: String) { dashConfig.password = password }
 
-    fun updateNowPlaying(title: String?, album: String, artist: String) =
-        session.updateNowPlaying(title, album, artist)
+    fun updateNowPlaying(title: String?, album: String, artist: String) {
+        val playing = title?.takeIf { it.isNotBlank() }?.let { NowPlaying(it, album, artist) }
+        chrome.update { it.copy(nowPlaying = playing) }
+    }
 
-    fun updateCall(caller: String?) = session.updateCall(caller)
+    fun updateCall(caller: String?) {
+        chrome.update { it.copy(caller = caller?.takeIf { c -> c.isNotBlank() }) }
+    }
+
+    /**
+     * Point the dash's card at [name] and push one card immediately.
+     *
+     * Immediately, rather than waiting up to a second for the next tick, because this is what
+     * "Send to Dash" looks like from the rider's seat. The nav figures are cleared with it:
+     * a new destination makes the previous route's distances and glyph wrong, and the card
+     * repeats at 1 Hz, so stale figures would be asserted every second until Dart pushed new
+     * ones. Chrome stays on regardless of destination — the dash only opens its decoder as
+     * part of nav mode, so there is no separate idle mode (spec/fsm.md).
+     */
+    private fun setRouteCard(name: String) {
+        val title = name.ifBlank { "OpenDash" }
+        chrome.update { it.copy(destinationName = title, nav = null) }
+        val live = current.value ?: return
+        if (live.state.value == DashState.READY || live.state.value == DashState.STREAMING) {
+            live.send(DashCommand.RouteCard(title, projectionOn = true))
+        }
+    }
 
     /** Answer the current ringing call — requires ANSWER_PHONE_CALLS (API 26+). */
     fun answerCall(): Boolean = callController.answer()
@@ -722,8 +1207,35 @@ class DashEngineController(
         "needsDiscovery" to dashConfig.needsDiscovery,
     )
 
+    /**
+     * The plugin is detaching and the scope goes away on the next line, so this is the one
+     * place `runBlocking` is the right tool: there is no coroutine left to hand the farewell
+     * to.
+     *
+     * It blocks the main thread, so what it waits on has to be incapable of needing Main
+     * back. That is a property of the code, not of a timer: [openSession] and
+     * [closeSession] take [sessionLock] inside `withContext(Dispatchers.IO)`, so the lock
+     * is acquired and released without a Main dispatch, and [DashSession] runs its own
+     * coroutines on IO too.
+     *
+     * A `withTimeoutOrNull` stood here for exactly one review cycle and was removed as a
+     * lie: [disconnect] does its teardown inside `withContext(NonCancellable)`, which
+     * ignores cancellation by definition, so the timeout could not end the wait it claimed
+     * to bound. What actually bounds this is one layer down — `DashSession.close` gives the
+     * farewell `FAREWELL_TIMEOUT_MS` and then cancels regardless, and the transport closes
+     * as the scope cancels rather than after it (see the closer child there), so the join
+     * cannot sit on a blocking `receive`.
+     */
     fun dispose() {
-        disconnect()
+        runBlocking {
+            // The feeds and the loop go first: nothing must post an event into a queue
+            // nobody will drain, and the loop itself cannot run while the line below holds
+            // the main thread.
+            fsmJob?.cancel(); fsmJob = null
+            wifiFeedJob?.cancel(); wifiFeedJob = null
+            sessionFeedJob?.cancel(); sessionFeedJob = null
+            teardown(viaFsm = false)
+        }
         runCatching { toneGenerator?.release() }
     }
 
@@ -736,8 +1248,8 @@ class DashEngineController(
      * on a dead MediaCodec for one more frame, which surfaced as an
      * IllegalStateException storm and a pointless encoder rebuild. The join also
      * guarantees the old loop's finally has already released and cleared the
-     * encoder field by the time the assignment below runs. Only called from the
-     * [sessionWatchJob] collector, which is already a suspend context.
+     * encoder field by the time the assignment below runs. Only called through
+     * [Effect.StartStream], i.e. from the reducer loop, which is already a suspend context.
      */
     private suspend fun startStream() {
         RideDiagnostics.log("stream", "startStream — encoder up, RTP→dash beginning")
@@ -821,8 +1333,8 @@ class DashEngineController(
             streamer = FrameStreamer(
                 source = renderer,
                 encoderFactory = { onEncoded -> DashEncoder(onEncoded).also { it.prepare() } },
-                rtpSender = session::rtpSender,
-                streaming = { session.state.value == DashState.STREAMING },
+                rtpSender = { current.value?.rtpSender() },
+                streaming = { sessionState == DashState.STREAMING },
                 thermal = ::thermalLabel,
                 clock = ::monotonicMs,
                 senderContext = threads.rtp,
@@ -833,7 +1345,7 @@ class DashEngineController(
             // Inside the launched job the same failure would be an uncaught exception in a
             // coroutine and the dash would sit in READY behind a stream that never started.
             streamer.prepareEncoder()
-            session.startStreaming()
+            current.value?.startStreaming()
         } catch (e: Throwable) {
             streamer?.releaseEncoder()
             threads?.close()
@@ -866,28 +1378,36 @@ class DashEngineController(
             if (frameRenderer === renderer) frameRenderer = null
             streamThreads.close()
             // The loop is gone; if the session still thinks it is STREAMING, nobody will
-            // ever notice. `sessionWatchJob` arms the give-up timer on state CHANGES, and
-            // the change to STREAMING is what cancelled it — so a loop that ends by itself
+            // ever notice. The give-up timer is cancelled on entry to [ConnState.Streaming]
+            // and re-armed only on the transitions that LEAVE one — so a loop that ends by
+            // itself, without any of those transitions
             // (a failed encoder rebuild, an Error that `catch (Exception)` does not catch)
             // leaves a dash frozen on its last frame while Dart keeps reporting "connected",
             // with heartbeats holding the link up and the RX watchdog quiet because the dash
             // is still answering. Handing the session to IDLE puts it back under the
             // collector's own retry path, which knows how to restart a dead session on a
             // live link. Found by review, 2026-09-18.
-            if (!stoppingDeliberately && session.state.value == DashState.STREAMING) {
+            if (!stoppingDeliberately && sessionState == DashState.STREAMING) {
                 RideDiagnostics.warn(
                     "stream",
                     "frame loop ended while the session still reports STREAMING — " +
                         "ending the session so it can be retried",
                 )
-                scope.launch { session.disconnect() }
+                scope.launch {
+                    closeSession(farewell = true)
+                    // And TELL the reducer. `DashSession.close()` emits no event — it is the
+                    // owner asking, not the session reporting — so without this the state
+                    // machine stays in Streaming with both timers cancelled: nothing retries
+                    // and `UserConnect` is a no-op there, so not even the rider can recover.
+                    connEvents.trySend(ConnEvent.SessionEnded(handshakeRefused = false))
+                }
             }
         }
     }
 
     private fun toDashDistance(meters: Double): Pair<Int, Int> =
-        if (meters >= 1000) (((meters / 100).toInt())) to DashCommands.NAV_UNIT_KM_TENTHS
-        else meters.toInt() to DashCommands.NAV_UNIT_METERS
+        if (meters >= 1000) (((meters / 100).toInt())) to DashGlyphs.NAV_UNIT_KM_TENTHS
+        else meters.toInt() to DashGlyphs.NAV_UNIT_METERS
 
     /**
      * When the frame tick last published — see [TICK_PUBLISH_INTERVAL_MS].
@@ -934,7 +1454,7 @@ class DashEngineController(
         val gps = gpsFlags(loc, locationTracker.trusted.value)
         onState(
             mapOf(
-                "stage" to session.state.value.name,
+                "stage" to sessionState.name,
                 "explicitDisconnect" to explicitDisconnect,
                 "wifiStatus" to wifiManager.state.value.status.name,
                 "wifiSsid" to wifiManager.state.value.ssid,

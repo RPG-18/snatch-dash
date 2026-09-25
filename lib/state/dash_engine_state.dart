@@ -6,13 +6,13 @@ import 'package:opendash_dash_engine/opendash_dash_engine.dart';
 enum DashStage { idle, connecting, authenticating, ready, streaming, error }
 
 DashStage _stageFrom(String? name) => switch (name) {
-      'CONNECTING' => DashStage.connecting,
-      'AUTHENTICATING' => DashStage.authenticating,
-      'READY' => DashStage.ready,
-      'STREAMING' => DashStage.streaming,
-      'ERROR' => DashStage.error,
-      _ => DashStage.idle,
-    };
+  'CONNECTING' => DashStage.connecting,
+  'AUTHENTICATING' => DashStage.authenticating,
+  'READY' => DashStage.ready,
+  'STREAMING' => DashStage.streaming,
+  'ERROR' => DashStage.error,
+  _ => DashStage.idle,
+};
 
 /// Typed snapshot of the native dash engine's live state stream.
 class DashEngineState {
@@ -84,28 +84,28 @@ class DashEngineState {
   final bool explicitDisconnect;
 
   factory DashEngineState.fromMap(Map<String, dynamic> map) => DashEngineState(
-        stage: _stageFrom(map['stage'] as String?),
-        wifiStatus: map['wifiStatus'] as String?,
-        wifiSsid: map['wifiSsid'] as String?,
-        wifiError: map['wifiError'] as String?,
-        navigating: map['navigating'] as bool? ?? false,
-        hasGps: map['hasGps'] as bool? ?? false,
-        riderLat: (map['riderLat'] as num?)?.toDouble(),
-        riderLng: (map['riderLng'] as num?)?.toDouble(),
-        riderBearing: (map['riderBearing'] as num?)?.toDouble(),
-        riderSpeed: (map['riderSpeed'] as num?)?.toDouble(),
-        remainingKm: (map['remainingKm'] as num?)?.toDouble(),
-        offRoute: map['offRoute'] as bool? ?? false,
-        gpsLost: map['gpsLost'] as bool? ?? false,
-        gpsWeak: map['gpsWeak'] as bool? ?? false,
-        errorMessage: map['errorMessage'] as String?,
-        followMode: map['followMode'] as bool? ?? true,
-        headingUp: map['headingUp'] as bool? ?? true,
-        nowPlayingTitle: map['nowPlayingTitle'] as String?,
-        incomingCaller: map['incomingCaller'] as String?,
-        hasActiveCall: map['hasActiveCall'] as bool? ?? false,
-        explicitDisconnect: map['explicitDisconnect'] as bool? ?? false,
-      );
+    stage: _stageFrom(map['stage'] as String?),
+    wifiStatus: map['wifiStatus'] as String?,
+    wifiSsid: map['wifiSsid'] as String?,
+    wifiError: map['wifiError'] as String?,
+    navigating: map['navigating'] as bool? ?? false,
+    hasGps: map['hasGps'] as bool? ?? false,
+    riderLat: (map['riderLat'] as num?)?.toDouble(),
+    riderLng: (map['riderLng'] as num?)?.toDouble(),
+    riderBearing: (map['riderBearing'] as num?)?.toDouble(),
+    riderSpeed: (map['riderSpeed'] as num?)?.toDouble(),
+    remainingKm: (map['remainingKm'] as num?)?.toDouble(),
+    offRoute: map['offRoute'] as bool? ?? false,
+    gpsLost: map['gpsLost'] as bool? ?? false,
+    gpsWeak: map['gpsWeak'] as bool? ?? false,
+    errorMessage: map['errorMessage'] as String?,
+    followMode: map['followMode'] as bool? ?? true,
+    headingUp: map['headingUp'] as bool? ?? true,
+    nowPlayingTitle: map['nowPlayingTitle'] as String?,
+    incomingCaller: map['incomingCaller'] as String?,
+    hasActiveCall: map['hasActiveCall'] as bool? ?? false,
+    explicitDisconnect: map['explicitDisconnect'] as bool? ?? false,
+  );
 }
 
 /// Raw event map stream from the native engine (state updates + button events).
@@ -137,4 +137,6 @@ class DashEngineStateNotifier extends Notifier<DashEngineState> {
 }
 
 final dashEngineStateProvider =
-    NotifierProvider<DashEngineStateNotifier, DashEngineState>(DashEngineStateNotifier.new);
+    NotifierProvider<DashEngineStateNotifier, DashEngineState>(
+      DashEngineStateNotifier.new,
+    );

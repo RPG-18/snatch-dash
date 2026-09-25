@@ -23,7 +23,9 @@ class UpdateChannelController extends Notifier<UpdateChannel> {
     final saved = prefs.getString(_prefsKeyChannel);
     if (!ref.mounted) return;
     if (generation != _generation) return;
-    state = saved == UpdateChannel.nightly.name ? UpdateChannel.nightly : UpdateChannel.stable;
+    state = saved == UpdateChannel.nightly.name
+        ? UpdateChannel.nightly
+        : UpdateChannel.stable;
   }
 
   Future<void> select(UpdateChannel channel) async {
@@ -35,4 +37,6 @@ class UpdateChannelController extends Notifier<UpdateChannel> {
 }
 
 final updateChannelSettingsProvider =
-    NotifierProvider<UpdateChannelController, UpdateChannel>(UpdateChannelController.new);
+    NotifierProvider<UpdateChannelController, UpdateChannel>(
+      UpdateChannelController.new,
+    );

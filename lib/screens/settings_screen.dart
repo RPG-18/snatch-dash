@@ -36,7 +36,8 @@ class SettingsScreen extends ConsumerStatefulWidget {
   ConsumerState<SettingsScreen> createState() => _SettingsScreenState();
 }
 
-class _SettingsScreenState extends ConsumerState<SettingsScreen> with WidgetsBindingObserver {
+class _SettingsScreenState extends ConsumerState<SettingsScreen>
+    with WidgetsBindingObserver {
   Map<String, dynamic>? _config;
   bool _notificationAccessGranted = false;
 
@@ -90,7 +91,8 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> with WidgetsBin
       // a notification, a phone call — while the state still read
       // needsInstallPermission.
       final status = ref.read(appUpdateControllerProvider).status;
-      if (status == AppUpdateStatus.needsInstallPermission && !_installPermissionRedriven) {
+      if (status == AppUpdateStatus.needsInstallPermission &&
+          !_installPermissionRedriven) {
         _installPermissionRedriven = true;
         ref.read(appUpdateControllerProvider.notifier).downloadAndInstall();
       }
@@ -114,7 +116,8 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> with WidgetsBin
   Widget build(BuildContext context) {
     final engine = ref.watch(dashEngineStateProvider);
     final currency = ref.watch(currencySettingsProvider);
-    final installedPacks = ref.watch(installedPacksProvider) ?? const <InstalledPack>[];
+    final installedPacks =
+        ref.watch(installedPacksProvider) ?? const <InstalledPack>[];
     final mapTheme = ref.watch(mapThemeSettingsProvider);
     final l10n = AppLocalizations.of(context)!;
 
@@ -123,63 +126,87 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> with WidgetsBin
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
-          Text(l10n.settingsDashConnection, style: Theme.of(context).textTheme.labelLarge),
+          Text(
+            l10n.settingsDashConnection,
+            style: Theme.of(context).textTheme.labelLarge,
+          ),
           const SizedBox(height: 8),
           Card(
-            child: Column(children: [
-              ListTile(
-                leading: const Icon(Icons.wifi),
-                title: Text(_config?['ssid']?.toString().isNotEmpty == true
-                    ? _config!['ssid'] as String
-                    : l10n.settingsNotPaired(_config?['ssidPrefix']?.toString() ?? 'RE_')),
-                subtitle: Text(l10n.settingsStageWifi(engine.stage.name, engine.wifiStatus ?? '—')),
-              ),
-              const Divider(height: 1),
-              ListTile(
-                leading: const Icon(Icons.edit_outlined),
-                title: Text(l10n.settingsSetExactSsid),
-                onTap: () => _showSsidDialog(context, l10n),
-              ),
-              const Divider(height: 1),
-              ListTile(
-                leading: const Icon(Icons.password_outlined),
-                title: Text(l10n.settingsSetWifiPassword),
-                subtitle: Text(l10n.settingsDefaultPasswordSub),
-                onTap: () => _showPasswordDialog(context, l10n),
-              ),
-              const Divider(height: 1),
-              ListTile(
-                leading: const Icon(Icons.link_off),
-                title: Text(l10n.settingsForgetDash),
-                subtitle: Text(l10n.settingsForgetDashSub),
-                onTap: () async {
-                  await DashEngine.instance.forgetDash();
-                  await _loadConfig();
-                },
-              ),
-            ]),
+            child: Column(
+              children: [
+                ListTile(
+                  leading: const Icon(Icons.wifi),
+                  title: Text(
+                    _config?['ssid']?.toString().isNotEmpty == true
+                        ? _config!['ssid'] as String
+                        : l10n.settingsNotPaired(
+                            _config?['ssidPrefix']?.toString() ?? 'RE_',
+                          ),
+                  ),
+                  subtitle: Text(
+                    l10n.settingsStageWifi(
+                      engine.stage.name,
+                      engine.wifiStatus ?? '—',
+                    ),
+                  ),
+                ),
+                const Divider(height: 1),
+                ListTile(
+                  leading: const Icon(Icons.edit_outlined),
+                  title: Text(l10n.settingsSetExactSsid),
+                  onTap: () => _showSsidDialog(context, l10n),
+                ),
+                const Divider(height: 1),
+                ListTile(
+                  leading: const Icon(Icons.password_outlined),
+                  title: Text(l10n.settingsSetWifiPassword),
+                  subtitle: Text(l10n.settingsDefaultPasswordSub),
+                  onTap: () => _showPasswordDialog(context, l10n),
+                ),
+                const Divider(height: 1),
+                ListTile(
+                  leading: const Icon(Icons.link_off),
+                  title: Text(l10n.settingsForgetDash),
+                  subtitle: Text(l10n.settingsForgetDashSub),
+                  onTap: () async {
+                    await DashEngine.instance.forgetDash();
+                    await _loadConfig();
+                  },
+                ),
+              ],
+            ),
           ),
           const SizedBox(height: 16),
           Card(
             child: ListTile(
               leading: const Icon(Icons.download_for_offline_outlined),
               title: Text(l10n.settingsOfflineMapsTitle),
-              subtitle: Text(l10n.settingsOfflineMapsSubtitle(
-                installedPacks.length,
-                formatByteSize(l10n, installedPacks.fold<int>(0, (sum, p) => sum + p.sizeBytes)),
-              )),
+              subtitle: Text(
+                l10n.settingsOfflineMapsSubtitle(
+                  installedPacks.length,
+                  formatByteSize(
+                    l10n,
+                    installedPacks.fold<int>(0, (sum, p) => sum + p.sizeBytes),
+                  ),
+                ),
+              ),
               trailing: const Icon(Icons.chevron_right),
               onTap: () => context.push('/more/offline-maps'),
             ),
           ),
           const SizedBox(height: 16),
-          Text(l10n.settingsMapTheme, style: Theme.of(context).textTheme.labelLarge),
+          Text(
+            l10n.settingsMapTheme,
+            style: Theme.of(context).textTheme.labelLarge,
+          ),
           const SizedBox(height: 8),
           Card(
             child: RadioGroup<MapTheme>(
               groupValue: mapTheme,
               onChanged: (v) {
-                if (v != null) ref.read(mapThemeSettingsProvider.notifier).select(v);
+                if (v != null) {
+                  ref.read(mapThemeSettingsProvider.notifier).select(v);
+                }
               },
               child: Column(
                 children: [
@@ -196,7 +223,10 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> with WidgetsBin
             ),
           ),
           const SizedBox(height: 16),
-          Text(l10n.settingsCurrency, style: Theme.of(context).textTheme.labelLarge),
+          Text(
+            l10n.settingsCurrency,
+            style: Theme.of(context).textTheme.labelLarge,
+          ),
           const SizedBox(height: 8),
           Card(
             child: Padding(
@@ -209,11 +239,15 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> with WidgetsBin
                     for (final c in OpenDashCurrency.values)
                       DropdownMenuItem(
                         value: c,
-                        child: Text('${currencyDisplayName(l10n, c)} (${c.symbol})'),
+                        child: Text(
+                          '${currencyDisplayName(l10n, c)} (${c.symbol})',
+                        ),
                       ),
                   ],
                   onChanged: (v) {
-                    if (v != null) ref.read(currencySettingsProvider.notifier).select(v);
+                    if (v != null) {
+                      ref.read(currencySettingsProvider.notifier).select(v);
+                    }
                   },
                 ),
               ),
@@ -222,13 +256,23 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> with WidgetsBin
           const SizedBox(height: 16),
           Card(
             child: ListTile(
-              leading: Icon(_notificationAccessGranted ? Icons.notifications_active_outlined : Icons.notifications_off_outlined),
+              leading: Icon(
+                _notificationAccessGranted
+                    ? Icons.notifications_active_outlined
+                    : Icons.notifications_off_outlined,
+              ),
               title: Text(l10n.settingsMediaAccessTitle),
-              subtitle: Text(_notificationAccessGranted
-                  ? l10n.settingsMediaAccessGranted
-                  : l10n.settingsMediaAccessNotGranted),
-              trailing: _notificationAccessGranted ? const Icon(Icons.check_circle_outline) : null,
-              onTap: _notificationAccessGranted ? null : () => DashEngine.instance.openNotificationAccessSettings(),
+              subtitle: Text(
+                _notificationAccessGranted
+                    ? l10n.settingsMediaAccessGranted
+                    : l10n.settingsMediaAccessNotGranted,
+              ),
+              trailing: _notificationAccessGranted
+                  ? const Icon(Icons.check_circle_outline)
+                  : null,
+              onTap: _notificationAccessGranted
+                  ? null
+                  : () => DashEngine.instance.openNotificationAccessSettings(),
             ),
           ),
           const SizedBox(height: 16),
@@ -248,7 +292,10 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> with WidgetsBin
           const SizedBox(height: 16),
           const _MapCacheCard(),
           const SizedBox(height: 16),
-          Text(l10n.settingsUpdatesTitle, style: Theme.of(context).textTheme.labelLarge),
+          Text(
+            l10n.settingsUpdatesTitle,
+            style: Theme.of(context).textTheme.labelLarge,
+          ),
           const SizedBox(height: 8),
           const _UpdatesCard(),
           const SizedBox(height: 16),
@@ -318,60 +365,77 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> with WidgetsBin
   }
 
   void _showSsidDialog(BuildContext context, AppLocalizations l10n) {
-    final controller = TextEditingController(text: _config?['ssid'] as String? ?? '');
+    final controller = TextEditingController(
+      text: _config?['ssid'] as String? ?? '',
+    );
     // Disposed when the dialog closes, whichever way it closes — a controller
     // holds a change-notifier listener list, and one per dialog opening adds up
     // over a session of fiddling with pairing.
-    unawaited(showDialog<void>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: Text(l10n.settingsSsidDialogTitle),
-        // 32 is the 802.11 cap on an SSID, so nothing longer can name a real
-        // network anyway. Enforced here because the native side puts the SSID
-        // through an RSA-1024 block in DashAuth.buildKeyPacket, which overflows
-        // (and fails the session) somewhere past 85 bytes.
-        content: TextField(
-          controller: controller,
-          maxLength: 32,
-          decoration: InputDecoration(labelText: l10n.settingsExactSsidLabel),
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(dialogContext), child: Text(l10n.actionCancel)),
-          TextButton(
-            onPressed: () async {
-              await DashEngine.instance.setSsid(controller.text.trim());
-              if (!dialogContext.mounted) return;
-              Navigator.pop(dialogContext);
-              await _loadConfig();
-            },
-            child: Text(l10n.actionSave),
+    unawaited(
+      showDialog<void>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: Text(l10n.settingsSsidDialogTitle),
+          // 32 is the 802.11 cap on an SSID, so nothing longer can name a real
+          // network anyway. Enforced here because the native side puts the SSID
+          // through an RSA-1024 block in DashAuth.buildKeyPacket, which overflows
+          // (and fails the session) somewhere past 85 bytes.
+          content: TextField(
+            controller: controller,
+            maxLength: 32,
+            decoration: InputDecoration(labelText: l10n.settingsExactSsidLabel),
           ),
-        ],
-      ),
-    ).whenComplete(controller.dispose));
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: Text(l10n.actionCancel),
+            ),
+            TextButton(
+              onPressed: () async {
+                await DashEngine.instance.setSsid(controller.text.trim());
+                if (!dialogContext.mounted) return;
+                Navigator.pop(dialogContext);
+                await _loadConfig();
+              },
+              child: Text(l10n.actionSave),
+            ),
+          ],
+        ),
+      ).whenComplete(controller.dispose),
+    );
   }
 
   void _showPasswordDialog(BuildContext context, AppLocalizations l10n) {
-    final controller = TextEditingController(text: _config?['password'] as String? ?? '');
-    unawaited(showDialog<void>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: Text(l10n.settingsWifiPasswordDialogTitle),
-        content: TextField(controller: controller, decoration: InputDecoration(labelText: l10n.settingsPasswordLabel)),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(dialogContext), child: Text(l10n.actionCancel)),
-          TextButton(
-            onPressed: () async {
-              await DashEngine.instance.setWifiPassword(controller.text);
-              if (!dialogContext.mounted) return;
-              Navigator.pop(dialogContext);
-              await _loadConfig();
-            },
-            child: Text(l10n.actionSave),
+    final controller = TextEditingController(
+      text: _config?['password'] as String? ?? '',
+    );
+    unawaited(
+      showDialog<void>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: Text(l10n.settingsWifiPasswordDialogTitle),
+          content: TextField(
+            controller: controller,
+            decoration: InputDecoration(labelText: l10n.settingsPasswordLabel),
           ),
-        ],
-      ),
-    ).whenComplete(controller.dispose));
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: Text(l10n.actionCancel),
+            ),
+            TextButton(
+              onPressed: () async {
+                await DashEngine.instance.setWifiPassword(controller.text);
+                if (!dialogContext.mounted) return;
+                Navigator.pop(dialogContext);
+                await _loadConfig();
+              },
+              child: Text(l10n.actionSave),
+            ),
+          ],
+        ),
+      ).whenComplete(controller.dispose),
+    );
   }
 }
 
@@ -398,7 +462,8 @@ class _AboutLink extends StatelessWidget {
           decoration: TextDecoration.underline,
         ),
       ),
-      onTap: () => launchUrl(Uri.parse(url), mode: LaunchMode.externalApplication),
+      onTap: () =>
+          launchUrl(Uri.parse(url), mode: LaunchMode.externalApplication),
     );
   }
 }
@@ -416,8 +481,11 @@ class _MapCacheCard extends ConsumerWidget {
     final l10n = AppLocalizations.of(context)!;
     final cache = ref.watch(mapTileCacheProvider);
     final notifier = ref.read(mapTileCacheProvider.notifier);
-    final busy = cache.status == MapTileCacheStatus.computing || cache.status == MapTileCacheStatus.clearing;
-    final canClear = cache.status == MapTileCacheStatus.idle && (cache.sizeBytes ?? 0) > 0;
+    final busy =
+        cache.status == MapTileCacheStatus.computing ||
+        cache.status == MapTileCacheStatus.clearing;
+    final canClear =
+        cache.status == MapTileCacheStatus.idle && (cache.sizeBytes ?? 0) > 0;
 
     return Card(
       child: ListTile(
@@ -426,10 +494,18 @@ class _MapCacheCard extends ConsumerWidget {
         subtitle: cache.status == MapTileCacheStatus.error
             ? Text(l10n.settingsMapCacheUnknown)
             : cache.sizeBytes != null
-                ? Text(l10n.settingsMapCacheSize(formatByteSize(l10n, cache.sizeBytes!)))
-                : null,
+            ? Text(
+                l10n.settingsMapCacheSize(
+                  formatByteSize(l10n, cache.sizeBytes!),
+                ),
+              )
+            : null,
         trailing: busy
-            ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))
+            ? const SizedBox(
+                width: 20,
+                height: 20,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              )
             : TextButton(
                 onPressed: canClear ? notifier.clear : null,
                 child: Text(l10n.settingsMapCacheClearButton),
@@ -462,7 +538,8 @@ class _UpdatesCard extends ConsumerWidget {
           ListTile(
             leading: const Icon(Icons.system_update_outlined),
             title: packageInfo.when(
-              data: (info) => Text(l10n.settingsUpdatesCurrentVersion(info.version)),
+              data: (info) =>
+                  Text(l10n.settingsUpdatesCurrentVersion(info.version)),
               loading: () => null,
               error: (_, _) => null,
             ),
@@ -478,13 +555,23 @@ class _UpdatesCard extends ConsumerWidget {
                 // Strip the button's own padding/min-size so its label text
                 // starts exactly where the title text above it does, rather
                 // than a button-sized indent further in.
-                style: TextButton.styleFrom(padding: EdgeInsets.zero, minimumSize: Size.zero, tapTargetSize: MaterialTapTargetSize.shrinkWrap),
-                onPressed: update.status == AppUpdateStatus.checking ? null : notifier.checkForUpdate,
+                style: TextButton.styleFrom(
+                  padding: EdgeInsets.zero,
+                  minimumSize: Size.zero,
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                ),
+                onPressed: update.status == AppUpdateStatus.checking
+                    ? null
+                    : notifier.checkForUpdate,
                 child: Text(l10n.settingsUpdatesCheckButton),
               ),
             ),
             trailing: update.status == AppUpdateStatus.checking
-                ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))
+                ? const SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
                 : null,
           ),
           const Divider(height: 1),
@@ -492,7 +579,9 @@ class _UpdatesCard extends ConsumerWidget {
             secondary: const Icon(Icons.autorenew),
             title: Text(l10n.settingsUpdatesAutoUpdate),
             value: autoUpdate,
-            onChanged: (enabled) => ref.read(autoUpdateSettingsProvider.notifier).setEnabled(enabled),
+            onChanged: (enabled) => ref
+                .read(autoUpdateSettingsProvider.notifier)
+                .setEnabled(enabled),
           ),
           // Channel switch + check status only matter once auto-update is on —
           // collapsed (and their state along with them) while it's off.
@@ -509,15 +598,27 @@ class _UpdatesCard extends ConsumerWidget {
                         subtitle: Text(l10n.settingsUpdatesChannelNightlySub),
                         value: channel == UpdateChannel.nightly,
                         onChanged: (nightly) {
-                          ref.read(updateChannelSettingsProvider.notifier).select(nightly ? UpdateChannel.nightly : UpdateChannel.stable);
+                          ref
+                              .read(updateChannelSettingsProvider.notifier)
+                              .select(
+                                nightly
+                                    ? UpdateChannel.nightly
+                                    : UpdateChannel.stable,
+                              );
                           // Old status/release referred to the previous channel — drop it
                           // rather than show it against the new one.
                           ref.invalidate(appUpdateControllerProvider);
                         },
                       ),
-                      if (update.status != AppUpdateStatus.idle && update.status != AppUpdateStatus.checking) ...[
+                      if (update.status != AppUpdateStatus.idle &&
+                          update.status != AppUpdateStatus.checking) ...[
                         const Divider(height: 1),
-                        _UpdateStatusTile(update: update, onDownload: notifier.downloadAndInstall, onGrantPermission: notifier.openInstallPermissionSettings),
+                        _UpdateStatusTile(
+                          update: update,
+                          onDownload: notifier.downloadAndInstall,
+                          onGrantPermission:
+                              notifier.openInstallPermissionSettings,
+                        ),
                       ],
                     ],
                   ),
@@ -529,7 +630,11 @@ class _UpdatesCard extends ConsumerWidget {
 }
 
 class _UpdateStatusTile extends StatelessWidget {
-  const _UpdateStatusTile({required this.update, required this.onDownload, required this.onGrantPermission});
+  const _UpdateStatusTile({
+    required this.update,
+    required this.onDownload,
+    required this.onGrantPermission,
+  });
 
   final AppUpdateState update;
   final VoidCallback onDownload;
@@ -540,37 +645,49 @@ class _UpdateStatusTile extends StatelessWidget {
     final l10n = AppLocalizations.of(context)!;
     return switch (update.status) {
       AppUpdateStatus.upToDate => ListTile(
-          leading: const Icon(Icons.check_circle_outline),
-          title: Text(l10n.settingsUpdatesStatusUpToDate),
-        ),
+        leading: const Icon(Icons.check_circle_outline),
+        title: Text(l10n.settingsUpdatesStatusUpToDate),
+      ),
       AppUpdateStatus.available => ListTile(
-          leading: const Icon(Icons.new_releases_outlined),
-          title: Text(l10n.settingsUpdatesStatusAvailable(update.release!.name)),
-          trailing: FilledButton(onPressed: onDownload, child: Text(l10n.settingsUpdatesDownloadButton)),
+        leading: const Icon(Icons.new_releases_outlined),
+        title: Text(l10n.settingsUpdatesStatusAvailable(update.release!.name)),
+        trailing: FilledButton(
+          onPressed: onDownload,
+          child: Text(l10n.settingsUpdatesDownloadButton),
         ),
+      ),
       AppUpdateStatus.downloading => ListTile(
-          leading: const SizedBox(
-            width: 24,
-            height: 24,
-            child: CircularProgressIndicator(strokeWidth: 2),
-          ),
-          title: LinearProgressIndicator(value: update.downloadProgress),
-          subtitle: Text(
-            update.downloadProgress != null
-                ? l10n.settingsUpdatesDownloading((update.downloadProgress! * 100).toStringAsFixed(0))
-                : l10n.settingsUpdatesDownloadingIndeterminate,
-          ),
+        leading: const SizedBox(
+          width: 24,
+          height: 24,
+          child: CircularProgressIndicator(strokeWidth: 2),
         ),
+        title: LinearProgressIndicator(value: update.downloadProgress),
+        subtitle: Text(
+          update.downloadProgress != null
+              ? l10n.settingsUpdatesDownloading(
+                  (update.downloadProgress! * 100).toStringAsFixed(0),
+                )
+              : l10n.settingsUpdatesDownloadingIndeterminate,
+        ),
+      ),
       AppUpdateStatus.needsInstallPermission => ListTile(
-          leading: const Icon(Icons.lock_outline),
-          title: Text(l10n.settingsUpdatesNeedsPermission),
-          trailing: FilledButton(onPressed: onGrantPermission, child: Text(l10n.settingsUpdatesGrantPermissionButton)),
+        leading: const Icon(Icons.lock_outline),
+        title: Text(l10n.settingsUpdatesNeedsPermission),
+        trailing: FilledButton(
+          onPressed: onGrantPermission,
+          child: Text(l10n.settingsUpdatesGrantPermissionButton),
         ),
+      ),
       AppUpdateStatus.error => ListTile(
-          leading: Icon(Icons.error_outline, color: Theme.of(context).colorScheme.error),
-          title: Text(l10n.settingsUpdatesStatusError(update.errorMessage ?? '')),
+        leading: Icon(
+          Icons.error_outline,
+          color: Theme.of(context).colorScheme.error,
         ),
-      AppUpdateStatus.idle || AppUpdateStatus.checking => const SizedBox.shrink(),
+        title: Text(l10n.settingsUpdatesStatusError(update.errorMessage ?? '')),
+      ),
+      AppUpdateStatus.idle ||
+      AppUpdateStatus.checking => const SizedBox.shrink(),
     };
   }
 }

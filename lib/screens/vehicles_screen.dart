@@ -29,7 +29,8 @@ class VehiclesScreen extends ConsumerWidget {
                     vehicle: state.vehicles[i],
                     active: state.vehicles[i].id == state.activeVehicleId,
                     onSelect: () => notifier.select(state.vehicles[i].id),
-                    onEdit: () => _showEditDialog(context, ref, state.vehicles[i]),
+                    onEdit: () =>
+                        _showEditDialog(context, ref, state.vehicles[i]),
                   ),
                 ],
               ],
@@ -58,7 +59,12 @@ class VehiclesScreen extends ConsumerWidget {
     );
   }
 
-  void _showEditDialog(BuildContext context, WidgetRef ref, VehicleProfile vehicle, {bool isNew = false}) {
+  void _showEditDialog(
+    BuildContext context,
+    WidgetRef ref,
+    VehicleProfile vehicle, {
+    bool isNew = false,
+  }) {
     showDialog<void>(
       context: context,
       builder: (context) => _EditVehicleDialog(vehicle: vehicle, isNew: isNew),
@@ -79,12 +85,14 @@ class _VehicleTile extends StatelessWidget {
   final VoidCallback onSelect;
   final VoidCallback onEdit;
 
-  bool _isProblem(String v) => v.toLowerCase() == 'expired' || v.toLowerCase() == 'na';
+  bool _isProblem(String v) =>
+      v.toLowerCase() == 'expired' || v.toLowerCase() == 'na';
 
   /// [vehicle]'s puc/insurance/service fields store the literal English
   /// sentinel "Not set" when left blank (see [_EditVehicleDialogState]) — only
   /// the displayed text is localized, not the stored value.
-  String _displayValue(AppLocalizations l10n, String value) => value == 'Not set' ? l10n.vehiclesNotSet : value;
+  String _displayValue(AppLocalizations l10n, String value) =>
+      value == 'Not set' ? l10n.vehiclesNotSet : value;
 
   @override
   Widget build(BuildContext context) {
@@ -95,23 +103,48 @@ class _VehicleTile extends StatelessWidget {
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Padding(padding: EdgeInsets.only(top: 4), child: Icon(Icons.two_wheeler)),
+          const Padding(
+            padding: EdgeInsets.only(top: 4),
+            child: Icon(Icons.two_wheeler),
+          ),
           const SizedBox(width: 14),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(vehicle.title, style: theme.textTheme.titleMedium?.copyWith(color: theme.colorScheme.primary)),
+                Text(
+                  vehicle.title,
+                  style: theme.textTheme.titleMedium?.copyWith(
+                    color: theme.colorScheme.primary,
+                  ),
+                ),
                 if (vehicle.nickname.isNotEmpty)
                   Text(vehicle.nickname, style: theme.textTheme.bodySmall),
                 const SizedBox(height: 10),
-                _MetaRow(l10n.vehiclesPucLabel, _displayValue(l10n, vehicle.puc), alert: _isProblem(vehicle.puc)),
-                _MetaRow(l10n.vehiclesInsuranceLabel, _displayValue(l10n, vehicle.insurance), alert: _isProblem(vehicle.insurance)),
-                _MetaRow(l10n.vehiclesServiceLabel, _displayValue(l10n, vehicle.service)),
+                _MetaRow(
+                  l10n.vehiclesPucLabel,
+                  _displayValue(l10n, vehicle.puc),
+                  alert: _isProblem(vehicle.puc),
+                ),
+                _MetaRow(
+                  l10n.vehiclesInsuranceLabel,
+                  _displayValue(l10n, vehicle.insurance),
+                  alert: _isProblem(vehicle.insurance),
+                ),
+                _MetaRow(
+                  l10n.vehiclesServiceLabel,
+                  _displayValue(l10n, vehicle.service),
+                ),
                 const SizedBox(height: 10),
                 active
-                    ? Chip(label: Text(l10n.vehiclesCurrentChip), avatar: const Icon(Icons.check, size: 16))
-                    : OutlinedButton(onPressed: onSelect, child: Text(l10n.vehiclesSetCurrent)),
+                    ? Chip(
+                        label: Text(l10n.vehiclesCurrentChip),
+                        avatar: const Icon(Icons.check, size: 16),
+                      )
+                    : OutlinedButton(
+                        onPressed: onSelect,
+                        child: Text(l10n.vehiclesSetCurrent),
+                      ),
               ],
             ),
           ),
@@ -135,7 +168,10 @@ class _MetaRow extends StatelessWidget {
       padding: const EdgeInsets.symmetric(vertical: 2),
       child: Row(
         children: [
-          SizedBox(width: 90, child: Text(label, style: theme.textTheme.bodySmall)),
+          SizedBox(
+            width: 90,
+            child: Text(label, style: theme.textTheme.bodySmall),
+          ),
           const Text(': '),
           Text(
             value,
@@ -179,24 +215,47 @@ class _EditVehicleDialogState extends ConsumerState<_EditVehicleDialog> {
   Widget build(BuildContext context) {
     final l10n = AppLocalizations.of(context)!;
     return AlertDialog(
-      title: Text(widget.isNew ? l10n.vehiclesAddDialogTitle : l10n.vehiclesEditTitle),
+      title: Text(
+        widget.isNew ? l10n.vehiclesAddDialogTitle : l10n.vehiclesEditTitle,
+      ),
       content: SingleChildScrollView(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            TextField(controller: _title, decoration: InputDecoration(labelText: l10n.vehiclesNameLabel)),
-            TextField(controller: _nickname, decoration: InputDecoration(labelText: l10n.vehiclesNicknameLabel)),
-            TextField(controller: _puc, decoration: InputDecoration(labelText: l10n.vehiclesPucExpiryLabel)),
+            TextField(
+              controller: _title,
+              decoration: InputDecoration(labelText: l10n.vehiclesNameLabel),
+            ),
+            TextField(
+              controller: _nickname,
+              decoration: InputDecoration(
+                labelText: l10n.vehiclesNicknameLabel,
+              ),
+            ),
+            TextField(
+              controller: _puc,
+              decoration: InputDecoration(
+                labelText: l10n.vehiclesPucExpiryLabel,
+              ),
+            ),
             TextField(
               controller: _insurance,
-              decoration: InputDecoration(labelText: l10n.vehiclesInsuranceExpiryLabel),
+              decoration: InputDecoration(
+                labelText: l10n.vehiclesInsuranceExpiryLabel,
+              ),
             ),
-            TextField(controller: _service, decoration: InputDecoration(labelText: l10n.vehiclesServiceLabel)),
+            TextField(
+              controller: _service,
+              decoration: InputDecoration(labelText: l10n.vehiclesServiceLabel),
+            ),
           ],
         ),
       ),
       actions: [
-        TextButton(onPressed: () => Navigator.pop(context), child: Text(l10n.actionCancel)),
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: Text(l10n.actionCancel),
+        ),
         TextButton(
           onPressed: _title.text.trim().isEmpty
               ? null
@@ -205,12 +264,20 @@ class _EditVehicleDialogState extends ConsumerState<_EditVehicleDialog> {
                     id: widget.vehicle.id,
                     title: _title.text.trim(),
                     nickname: _nickname.text.trim(),
-                    puc: _puc.text.trim().isEmpty ? 'Not set' : _puc.text.trim(),
-                    insurance: _insurance.text.trim().isEmpty ? 'Not set' : _insurance.text.trim(),
-                    service: _service.text.trim().isEmpty ? 'Not set' : _service.text.trim(),
+                    puc: _puc.text.trim().isEmpty
+                        ? 'Not set'
+                        : _puc.text.trim(),
+                    insurance: _insurance.text.trim().isEmpty
+                        ? 'Not set'
+                        : _insurance.text.trim(),
+                    service: _service.text.trim().isEmpty
+                        ? 'Not set'
+                        : _service.text.trim(),
                   );
                   final notifier = ref.read(vehicleStoreProvider.notifier);
-                  widget.isNew ? notifier.add(updated) : notifier.update(updated);
+                  widget.isNew
+                      ? notifier.add(updated)
+                      : notifier.update(updated);
                   Navigator.pop(context);
                 },
           child: Text(l10n.actionSave),

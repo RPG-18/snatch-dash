@@ -58,39 +58,48 @@ void main() {
   });
 
   group('NavEngine', () {
-    test('progress snaps onto a straight route and computes remaining distance', () {
-      final geometry = [
-        const GeoPoint(0.0, 0.0),
-        const GeoPoint(0.0, 0.01),
-        const GeoPoint(0.0, 0.02),
-      ];
-      final cumulative = <double>[0.0];
-      for (var i = 1; i < geometry.length; i++) {
-        cumulative.add(cumulative.last + GeoPoint.distMeters(geometry[i - 1], geometry[i]));
-      }
-      final route = Route(
-        geometry: geometry,
-        maneuvers: [
-          Maneuver(
-            type: ManeuverType.arrive,
-            instruction: 'Arrive',
-            location: geometry.last,
-            cumulativeMeters: cumulative.last,
-          ),
-        ],
-        totalMeters: cumulative.last,
-        totalSeconds: 60,
-        cumulative: cumulative,
-      );
+    test(
+      'progress snaps onto a straight route and computes remaining distance',
+      () {
+        final geometry = [
+          const GeoPoint(0.0, 0.0),
+          const GeoPoint(0.0, 0.01),
+          const GeoPoint(0.0, 0.02),
+        ];
+        final cumulative = <double>[0.0];
+        for (var i = 1; i < geometry.length; i++) {
+          cumulative.add(
+            cumulative.last + GeoPoint.distMeters(geometry[i - 1], geometry[i]),
+          );
+        }
+        final route = Route(
+          geometry: geometry,
+          maneuvers: [
+            Maneuver(
+              type: ManeuverType.arrive,
+              instruction: 'Arrive',
+              location: geometry.last,
+              cumulativeMeters: cumulative.last,
+            ),
+          ],
+          totalMeters: cumulative.last,
+          totalSeconds: 60,
+          cumulative: cumulative,
+        );
 
-      // Rider halfway along the first of two equal segments — a quarter of
-      // the way along the route, so 3/4 of the total distance remains.
-      final progress = NavEngine.progress(route, const GeoPoint(0.0, 0.005), 10.0);
+        // Rider halfway along the first of two equal segments — a quarter of
+        // the way along the route, so 3/4 of the total distance remains.
+        final progress = NavEngine.progress(
+          route,
+          const GeoPoint(0.0, 0.005),
+          10.0,
+        );
 
-      expect(progress.offRoute, isFalse);
-      expect(progress.remainingMeters, closeTo(cumulative.last * 0.75, 50));
-      expect(progress.arrived, isFalse);
-    });
+        expect(progress.offRoute, isFalse);
+        expect(progress.remainingMeters, closeTo(cumulative.last * 0.75, 50));
+        expect(progress.arrived, isFalse);
+      },
+    );
 
     test('progress detects off-route when far from the line', () {
       final geometry = [const GeoPoint(0.0, 0.0), const GeoPoint(0.0, 0.02)];
@@ -103,7 +112,11 @@ void main() {
       );
 
       // 1 degree of longitude away — far off the line.
-      final progress = NavEngine.progress(route, const GeoPoint(0.0, 1.0), 10.0);
+      final progress = NavEngine.progress(
+        route,
+        const GeoPoint(0.0, 1.0),
+        10.0,
+      );
 
       expect(progress.offRoute, isTrue);
     });

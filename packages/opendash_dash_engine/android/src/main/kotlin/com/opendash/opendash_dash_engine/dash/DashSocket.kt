@@ -2,6 +2,7 @@ package com.opendash.opendash_dash_engine.dash
 
 import com.opendash.opendash_dash_engine.dash.protocol.K1GPacket
 import com.opendash.opendash_dash_engine.util.DebugLog
+import com.opendash.opendash_dash_engine.util.PacketCapture
 import com.opendash.opendash_dash_engine.util.RideDiagnostics
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -193,6 +194,7 @@ class DashSocket(private val network: android.net.Network? = null) : DashTranspo
         // out in another. In a release build DebugLog compiles the whole thing away; in a
         // debug one it is a hex dump of a few dozen bytes, eight times a second.
         DebugLog.d(TAG) { "TX →$BROADCAST:$CTRL_PORT  ${pkt.size}B  ${pkt.hexFull()}" }
+        PacketCapture.tx(pkt, srcPort = CTRL_PORT, dstIp = BROADCAST, dstPort = CTRL_PORT)
         // UDP fire-and-forget: a dropped/unreachable link (ENETUNREACH, EBADF) must never
         // crash the app — the session will fail and reconnect.
         //
@@ -254,10 +256,27 @@ class DashSocket(private val network: android.net.Network? = null) : DashTranspo
                             "truncated and dropped; further ones this session are silent",
                     )
                 }
+                // Dropped by the SESSION, recorded by the CAPTURE — the two want opposite
+                // things here. Refusing to parse a truncated datagram is right; leaving it
+                // out of the capture is not, because the capture exists to tell a dash that
+                // has gone quiet from one that is talking and not being heard. A firmware
+                // sending these would look like the first while being the second.
+                PacketCapture.rx(
+                    buf.data.copyOf(buf.length.coerceAtMost(rxBuffer.size)),
+                    srcIp = buf.address?.hostAddress ?: DASH_IP,
+                    srcPort = buf.port,
+                    dstPort = RX_PORT,
+                )
                 continue
             }
             val bytes = buf.data.copyOf(buf.length)
             DebugLog.d(TAG) { "RX ←${buf.address?.hostAddress}:${buf.port}  ${bytes.size}B  ${bytes.hexFull()}" }
+            PacketCapture.rx(
+                bytes,
+                srcIp = buf.address?.hostAddress ?: DASH_IP,
+                srcPort = buf.port,
+                dstPort = RX_PORT,
+            )
             return@withContext bytes
         }
         @Suppress("UNREACHABLE_CODE") ByteArray(0)

@@ -92,9 +92,24 @@ code}`) → whatever Dart-side listener is wired to it:
       or a swapped branch stays invisible.
 - [ ] `0x15` and `0x0B` hit **no branch at all**. The 2026-09-05 ride sent them
       nine and six times; `0x15` shows up in the 2026-09-09 logs too. From the
-      saddle that is indistinguishable from a broken control. Find out on the
-      hardware which physical controls these are and whether they should do
-      anything — Dart logs `dash button 0x… has no action` for them.
+      saddle that is indistinguishable from a broken control. Dart logs
+      `dash button 0x… has no action` for them.
+      **Meanings resolved from the official app on 2026-09-22**
+      (`docs/k1g_commands.md`, "Buttons `09 00`"): `0x15` is recenter (it also
+      forces zoom to `16.0` there), `0x0B` is start-navigation. What remains is
+      confirming which physical controls these are, and then wiring them to
+      `recenter()` and a navigation start.
+- [ ] **The meanings of `0x05`/`0x06`/`0x07` are disputed.** Our mapping came
+      from `open-dash` (previous track, answer/reject call); the official app
+      uses the same codes for media play/pause and media volume. Press each with
+      media playing and with a call ringing, and record what the dash actually
+      does — that is the only way to settle it.
+- [ ] **Zoom-limit feedback (`06 0C`) — we send none.** The original answers every
+      zoom press with `06 0C` carrying `30`/`20`/`10` (normal / at the upper bound /
+      at the lower). Check whether firmware 11.63 reacts to that TLV — does it grey
+      out its own "+"/"−"? If so, `DashCameraState.stepZoom` should send it: the
+      2026-09-05 ride with 110 zoom-out presses into the floor is exactly the case
+      where the rider cannot tell a bottomed-out control from a broken one.
 - [ ] Manual pan (if wired) reverts to follow mode after ~8 s idle
       (`MANUAL_IDLE_MS`).
 - [ ] No joystick codes are silently swallowed — full hex dump still logs
@@ -126,6 +141,24 @@ OEM buries it — no in-app shortcut was built for this yet).
       granted at runtime).
 - [ ] Without notification access granted, media/call forwarding no-ops
       silently — no crash, no stuck "loading" state.
+
+Below is what the original sends and the port does not. All four TLVs were
+decoded from the decompilation on 2026-09-22 (`docs/k1g_commands.md`, "Media"),
+and none of them has been tried on hardware yet:
+
+- [ ] **Field order in `05 0D`.** Play a track whose title clearly differs from
+      its album name and see what is drawn where. The original sends
+      `album, title, artist`; we send `title, album, artist`. One look settles
+      it and nothing else will.
+- [ ] **Field length, 19 or 20.** A long title: if the dash takes exactly 19
+      characters, our twentieth eats the separator and the fields run together.
+- [ ] **`05 17 AA` on music stopping** clears the card from the cluster. Today we
+      never clear it — `05 0D` keeps going out at 1 Hz with the last track.
+- [ ] **`05 19`** flips the play/pause indicator on the dash.
+- [ ] **Album art: `05 58 55` plus `05 40` chunks.** The biggest piece: 75×75
+      JPEG quality 50, 1000-byte chunks, housekeeping bytes inside the TLV
+      value. Test once sending exists — today `NowPlaying.art` is read and
+      never used.
 
 ## 7. Power / thermals (screen-off ride)
 

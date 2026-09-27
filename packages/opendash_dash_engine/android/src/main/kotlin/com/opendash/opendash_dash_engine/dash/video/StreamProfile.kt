@@ -89,8 +89,9 @@ internal enum class StreamProfile(
         /**
          * What a freshly configured encoder is already running at.
          *
-         * [DashEncoder.configure] sets `KEY_BIT_RATE` to [DashEncoder.BITRATE], so a new or
-         * rebuilt codec starts on [Moving] whatever the previous one was last told. The
+         * [DashEncoder.prepare] builds its `MediaFormat` with `KEY_BIT_RATE` set to
+         * [DashEncoder.BITRATE] (in the private `videoFormat()`), so a new or rebuilt
+         * codec starts on [Moving] whatever the previous one was last told. The
          * caller has to record that, because the bitrate is only pushed on a CHANGE: a
          * rebuild while parked used to leave the flag claiming "idle" over a codec running
          * at the moving target, and nothing corrected it until the rider set off and

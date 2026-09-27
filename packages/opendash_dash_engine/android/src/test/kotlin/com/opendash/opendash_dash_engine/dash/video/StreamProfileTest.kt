@@ -9,11 +9,14 @@ import kotlin.test.assertTrue
  * The preset table, pinned.
  *
  * `FrameStreamerTest` already drives the loop end to end and proves the flip happens —
- * 2 fps idle, 4 fps moving, bitrates `[100_000, 200_000]` in that order. What it cannot
- * see is whether the numbers being flipped between are the DASH's numbers, because it
- * asserts the same constants the production code reads. So what is checked here is the
- * table against the outside world: the vendor's two presets, the encoder's configured
- * bitrate, and the two words that have been in ride files since before this type existed.
+ * 2 fps idle, 4 fps moving, bitrates `[100_000, 200_000]` in that order, and it asserts
+ * those as literals too. So the values are not why this file exists.
+ *
+ * What it adds is the rest of the table, which the loop test never reaches: that the
+ * intervals divide 1000 exactly (three separate consumers round them), which preset
+ * [StreamProfile.asConfigured] names, and the two ride-file words. Those are properties
+ * of the table rather than of the loop, and a failure here names the table instead of a
+ * frame budget.
  */
 class StreamProfileTest {
 
@@ -55,18 +58,18 @@ class StreamProfileTest {
     @Test
     fun `asConfigured is the moving preset`() {
         // The rebuild path stands on this: after `encoderFactory(...)` the codec runs at
-        // whatever `DashEncoder.configure` wrote into the format, and FrameStreamer
-        // records that WITHOUT asking the codec. Disagreement is silent, because the
+        // whatever `DashEncoder.prepare` put in its MediaFormat (private `videoFormat()`),
+        // and FrameStreamer records that WITHOUT asking the codec. Disagreement is silent, because the
         // bitrate is only pushed on a change — nothing corrects it until the rider sets
         // off and stops again, and no counter in the ride file can see a parked bike
         // streaming at the moving rate.
         //
-        // **That link is not machine-checked here, and cannot be**: `configure()` needs a
+        // **That link is not machine-checked here, and cannot be**: `prepare()` needs a
         // real MediaCodec. What this pins is the half that is testable — which preset
         // `asConfigured` names. The value behind it is pinned by the literals above, and
-        // `configure()` reads the same `DashEncoder.BITRATE` those literals track, so a
-        // change on either side surfaces there. Changing `configure()` to write something
-        // that is NEITHER constant is the hole; it needs an instrumented test.
+        // `videoFormat()` reads the same `DashEncoder.BITRATE` those literals track, so a
+        // change on either side surfaces there. Changing `videoFormat()` to write
+        // something that is NEITHER constant is the hole; it needs an instrumented test.
         assertEquals(StreamProfile.Moving, StreamProfile.asConfigured)
     }
 

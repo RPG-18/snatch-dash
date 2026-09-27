@@ -79,7 +79,7 @@ class DashSessionTest {
         advanceTimeBy(200)
         runCurrent()
 
-        val expected = Scripts.initialBurst("OpenDash", DashCommand.TimeSync(0, 0, 0))
+        val expected = Scripts.initialBurst("Snatch", DashCommand.TimeSync(0, 0, 0))
         val byTime = r.wire.sent.groupBy { it.atMs }
         // Nine packets at 0, 20, 40 … 160 ms — invariant 4. The burst does NOT have the wire
         // to itself and never did: the 1 Hz heartbeat and the 30 s clock sync run from the

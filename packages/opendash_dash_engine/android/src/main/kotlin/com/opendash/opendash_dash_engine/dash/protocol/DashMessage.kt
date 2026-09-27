@@ -148,6 +148,8 @@ internal object K1GCodec {
 
         is DashCommand.ButtonAck -> K1GPacket.build(K1GPacket.tlv(0x06, 0x80, cmd.code))
 
+        is DashCommand.ZoomLimit -> K1GPacket.build(K1GPacket.tlv(0x06, 0x0C, cmd.state.wire))
+
         is DashCommand.Heartbeat -> K1GPacket.build(
             listOf(
                 K1GPacket.tlv(0x06, 0x08, 0x05),

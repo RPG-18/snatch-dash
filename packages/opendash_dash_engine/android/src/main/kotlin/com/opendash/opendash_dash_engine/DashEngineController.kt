@@ -22,6 +22,7 @@ import com.opendash.opendash_dash_engine.dash.map.MapStyleAssembler
 import com.opendash.opendash_dash_engine.dash.map.MapTheme
 import com.opendash.opendash_dash_engine.dash.map.OverlayRenderer
 import com.opendash.opendash_dash_engine.dash.protocol.DashGlyphs
+import com.opendash.opendash_dash_engine.dash.protocol.ZoomState
 import com.opendash.opendash_dash_engine.dash.video.DashEncoder
 import com.opendash.opendash_dash_engine.media.CallController
 import com.opendash.opendash_dash_engine.media.CallInfoProvider
@@ -138,6 +139,19 @@ class DashEngineController(
         private const val MEM_SAMPLE_INTERVAL_MS = 60_000L
 
         /**
+         * The route card's title when there is no destination — `05 01`, once a second.
+         *
+         * One constant for three call sites that used to spell it out separately: the
+         * destination arriving without a name, the rider clearing navigation, and the blank
+         * that [setRouteCard] refuses to send (an empty string reads on the hardware as a
+         * card with no destination at all). They mean different things and look identical
+         * on the panel, so at least let them not be able to drift apart in the source.
+         *
+         * Renamed from "OpenDash" on 2026-09-25 together with [DashSession]'s hostname.
+         */
+        private const val PLACEHOLDER_TITLE = "Snatch"
+
+        /**
          * How often the FRAME TICK is allowed to publish engine state to Dart.
          *
          * Everything else — session transitions, WiFi status, media and call updates,
@@ -180,7 +194,7 @@ class DashEngineController(
      *
      * Owned here and not by the session, because Flutter pushes these at arbitrary times,
      * including while nothing is connected. When they lived on the session, every reconnect
-     * started from defaults and the first cards of a new session showed "OpenDash" with no
+     * started from defaults and the first cards of a new session showed the placeholder with no
      * guidance until Dart happened to push again.
      */
     private val chrome = MutableStateFlow(DashChrome())
@@ -1043,7 +1057,7 @@ class DashEngineController(
                 navigating = lat != null && lng != null,
             )
         }
-        setRouteCard(name ?: "OpenDash")
+        setRouteCard(name ?: PLACEHOLDER_TITLE)
         // DashSession reads [DashInputs.navigating] off the state stream for its own
         // chrome/nav-info decisions — push immediately instead of waiting for
         // the next frame-loop tick() so "Send to Dash" takes effect at once.
@@ -1054,7 +1068,7 @@ class DashEngineController(
         inputs.update {
             it.copy(destName = null, dest = null, navigating = false, route = RouteGeometry())
         }
-        setRouteCard("OpenDash")
+        setRouteCard(PLACEHOLDER_TITLE)
         publishState()
     }
 
@@ -1123,13 +1137,41 @@ class DashEngineController(
     fun panBy(dx: Float, dy: Float) = cameraState.panBy(dx, dy)
 
     fun zoomIn() {
-        cameraState.zoomIn()
+        reportZoom(cameraState.zoomIn())
         publishState()
     }
 
     fun zoomOut() {
-        cameraState.zoomOut()
+        reportZoom(cameraState.zoomOut())
         publishState()
+    }
+
+    /**
+     * Tell the dash what the zoom button actually did — `06 0C`, задача 7.11.
+     *
+     * Up to two packets, and the order is the original's: [ZoomState.Applied] first, the
+     * bound second. A press that moved nothing sends only the bound, because `Applied`
+     * means "the camera moved" — the fact that the button arrived is already covered by the
+     * `06 80` echo, which `DashSession` sends at parse time, i.e. before any of this.
+     *
+     * Silently dropped with no session, like every other command: [DashSession.send] is a
+     * `trySend` into a closed channel, and a zoom press with nothing to tell is not an error
+     * worth a line in the ride file at thumb rate.
+     *
+     * **Gated on READY/STREAMING, same as [setRouteCard].** Not tidiness: `sendLoop` starts
+     * before either `sendScript`, so a zoom press during a mid-ride reconnect would slip up
+     * to two datagrams into the initial burst or the nav-entry script — sequences whose
+     * pauses are the protocol (invariant 4) and which were captured, not designed. And the
+     * packet would be pointless there anyway: it describes a camera the dash is not showing
+     * yet. Review, 2026-09-25.
+     */
+    private fun reportZoom(step: DashCameraState.ZoomStep) {
+        val live = current.value ?: return
+        val st = live.state.value
+        if (st != DashState.READY && st != DashState.STREAMING) return
+        if (step.moved) live.send(DashCommand.ZoomLimit(ZoomState.Applied))
+        if (step.atMax) live.send(DashCommand.ZoomLimit(ZoomState.AtMax))
+        if (step.atMin) live.send(DashCommand.ZoomLimit(ZoomState.AtMin))
     }
 
     fun toggleHeadingUp() {
@@ -1166,7 +1208,7 @@ class DashEngineController(
      * part of nav mode, so there is no separate idle mode (spec/fsm.md).
      */
     private fun setRouteCard(name: String) {
-        val title = name.ifBlank { "OpenDash" }
+        val title = name.ifBlank { PLACEHOLDER_TITLE }
         chrome.update { it.copy(destinationName = title, nav = null) }
         val live = current.value ?: return
         if (live.state.value == DashState.READY || live.state.value == DashState.STREAMING) {

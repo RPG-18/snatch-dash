@@ -86,6 +86,83 @@ class DashCameraStateTest {
         assertEquals(DashCameraState.ZOOM_MIN, cam.zoom, "the floor holds")
     }
 
+    // ── What the dash is told about the zoom (задача 7.11) ──────────────
+
+    @Test
+    fun `a press that moves the camera reports Applied, and only that`() {
+        val cam = camera()
+        cam.zoomOut()                                   // off the ceiling first
+        val step = cam.zoomOut()
+        assertTrue(step.moved)
+        assertFalse(step.atMax, "two steps below the ceiling is not the ceiling")
+        assertFalse(step.atMin)
+    }
+
+    @Test
+    fun `a press that lands on a stop reports both, because the camera did move`() {
+        val cam = camera()
+        // ZOOM_MAX..ZOOM_MIN is 500 hundredths at a step of 50, so the tenth press is the
+        // one that arrives. Stop one short, and the next both moves AND lands on the stop.
+        repeat(9) { cam.zoomOut() }
+        assertTrue(cam.zoom > DashCameraState.ZOOM_MIN, "not there yet")
+        val step = cam.zoomOut()
+        assertEquals(DashCameraState.ZOOM_MIN, cam.zoom)
+        assertTrue(step.moved, "it moved — 'Applied' is about the camera, not about the button")
+        assertTrue(step.atMin)
+        assertFalse(step.atMax)
+    }
+
+    @Test
+    fun `a press into a stop reports the stop and NOT Applied`() {
+        // The whole point of the packet: 110 zoom-out presses went into the floor on the
+        // 2026-09-05 ride and the dash was told nothing about any of them.
+        val cam = camera()
+        repeat(50) { cam.zoomOut() }
+        val step = cam.zoomOut()
+        assertFalse(step.moved, "nothing moved, so the dash must not be told 'applied'")
+        assertTrue(step.atMin)
+
+        // And the same at the other end — where the FIRST press already lands, because
+        // ZOOM_DEFAULT equals ZOOM_MAX.
+        val fresh = camera()
+        val up = fresh.zoomIn()
+        assertFalse(up.moved)
+        assertTrue(up.atMax)
+    }
+
+    @Test
+    fun `the lower stop is the pack floor, not the constant`() {
+        // A rider on z11-14 packs is at the stop at 11.00, whatever ZOOM_MIN says — the
+        // dash has to grey the icon there, not 200 hundredths later.
+        val cam = camera()
+        assertEquals(1100, cam.applyPackFloor(11))
+        repeat(8) { cam.zoomOut() }                     // 1500 → 1100 at a step of 50
+        assertEquals(1100, cam.zoom)
+        val step = cam.zoomOut()
+        assertFalse(step.moved, "the pack floor stops it just as the constant would")
+        assertTrue(step.atMin)
+        assertTrue(cam.zoom > DashCameraState.ZOOM_MIN, "and the stop is genuinely above ZOOM_MIN")
+    }
+
+    @Test
+    fun `a degenerate ladder cannot report both stops at once`() {
+        // applyPackFloor takes a byte out of a pack header, and its own KDoc says that byte
+        // is 0..255 rather than "something sensible". A pack claiming minzoom 15 collapses
+        // the ladder onto ZOOM_MAX, where a direction-agnostic bound would tell the dash
+        // "at the ceiling" and "at the floor" for the same press.
+        val cam = camera()
+        cam.applyPackFloor(15)
+        assertEquals(DashCameraState.ZOOM_MAX, cam.zoom)
+
+        val up = cam.zoomIn()
+        assertTrue(up.atMax)
+        assertFalse(up.atMin, "a zoom-in never reports the floor")
+
+        val down = cam.zoomOut()
+        assertTrue(down.atMin)
+        assertFalse(down.atMax, "a zoom-out never reports the ceiling")
+    }
+
     @Test
     fun `packs raise the floor and pull the current zoom up with it`() {
         val cam = camera()

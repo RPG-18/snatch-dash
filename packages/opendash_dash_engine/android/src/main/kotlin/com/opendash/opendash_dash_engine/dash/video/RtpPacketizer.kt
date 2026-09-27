@@ -10,7 +10,8 @@ import java.util.Random
  *  - FU-A (type 28) fragmentation for NALs larger than MAX_PAYLOAD
  *  - Marker bit only on the LAST RTP packet of each access unit
  *  - 90 kHz RTP clock
- *  - Max payload 1380 bytes (avoids IP fragmentation on 192.168.1.x)
+ *  - Max payload 1380 bytes — see [MAX_PAYLOAD] for where that is and is
+ *    not from, and why it is not being raised
  */
 class RtpPacketizer(private val onPacket: (ByteArray) -> Unit) {
     companion object {
@@ -19,6 +20,50 @@ class RtpPacketizer(private val onPacket: (ByteArray) -> Unit) {
          * has to know it too: it decides whether an SPS+PPS+IDR bundle still
          * fits one packet or must be split, since [fuA] can only fragment a
          * SINGLE NAL unit (see its doc).
+         *
+         * **Where 1380 comes from is not recorded anywhere, and it is not the
+         * vendor's number.** The line above says "from better-dash analysis";
+         * better-dash is not vendored here, so its own derivation cannot be
+         * checked from this repo. What the 2026-09-27 decompile of
+         * `com.royalenfield.reprime` 10.1.22 does settle is that the original
+         * app arrived at something else, by a chain that is fully consistent
+         * (classes named by their own string constants — jadx names shift
+         * between runs):
+         *
+         *  - `"Socket"` — RTP buffers are `new byte[1400]`, RTP header 12.
+         *  - `"H264Packetizer"` — declares 1372 (unused) and fragments at
+         *    1358. Sends `nalLen + 12` for a single NAL and `chunk + 14` for
+         *    an FU-A, with both capped at 1358.
+         *
+         * So: **1400 IP datagram → 1372 UDP payload (1400 − 8 − 20) → 1358 of
+         * H.264 in an FU-A (1372 − 12 − 2)**. Every constant falls out of a
+         * 1400-byte MTU budget, not out of 1500 — which is also why the
+         * "unexplained 80 bytes" in the old task text were never there: they
+         * were measured against the wrong divisor.
+         *
+         * **Ours is 20 bytes bigger than anything the dash has ever been sent
+         * by the stock app**: 1380 + 12 = 1392 UDP → 1420 IP, against the
+         * original's ceiling of exactly 1400.
+         *
+         * **And the prize for raising it is far smaller than the old task
+         * text claimed.** Not ~3% — that is the total header overhead
+         * (40/1420), winnable only at infinite MTU. Going to the largest
+         * payload that still fits a 1500 MTU (1460) moves wire efficiency
+         * from 1380/1420 = 97.18% to 1460/1500 = 97.33%: **0.15% fewer bytes**
+         * for the same video, and ~5.5% fewer packets. That is the whole
+         * prize, and it is paid for by going further past a size the vendor's
+         * own app never produces, on a link whose path MTU nobody has
+         * measured.
+         *
+         * **We also could not see it go wrong if it did.** RTP on :5000 is
+         * deliberately excluded from `PacketCapture`, IP fragmentation happens
+         * in the kernel where the app cannot observe it, and there is no
+         * phone→dash loss counter anywhere. So "1420 has been fine in the
+         * field" is not a claim this project is equipped to make — the honest
+         * statement is that nothing has been attributed to it, which is weaker.
+         * Raising this needs an instrument first, not arithmetic.
+         *
+         * (Task 9 in `network-refactoring.md`.)
          */
         const val MAX_PAYLOAD = 1380
         private const val PT = 96

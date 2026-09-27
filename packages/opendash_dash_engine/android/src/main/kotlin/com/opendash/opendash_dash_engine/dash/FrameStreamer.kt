@@ -2,10 +2,10 @@ package com.opendash.opendash_dash_engine.dash
 
 import android.graphics.Canvas
 import com.opendash.opendash_dash_engine.dash.map.Percentiles
-import com.opendash.opendash_dash_engine.dash.video.DashEncoder
 import com.opendash.opendash_dash_engine.dash.video.FrameEncoder
 import com.opendash.opendash_dash_engine.dash.video.NalProcessor
 import com.opendash.opendash_dash_engine.dash.video.RtpPacketizer
+import com.opendash.opendash_dash_engine.dash.video.StreamProfile
 import com.opendash.opendash_dash_engine.util.DebugLog
 import com.opendash.opendash_dash_engine.util.RideDiagnostics
 import java.util.concurrent.atomic.AtomicInteger
@@ -124,8 +124,6 @@ internal class FrameStreamer(
 ) {
     companion object {
         private const val TAG = "FrameStreamer"
-        private const val FPS_MOVING = 4
-        private const val FPS_IDLE = 2
 
         // How often the loop reports encoder/RTP output — the OTHER half of the
         // frame-decode-ack counter in DashSession: that one proves the dash decoded a frame,
@@ -167,7 +165,7 @@ internal class FrameStreamer(
 
     // Bytes, not just packets. The packet count alone cannot answer the only
     // question that matters about this stream — are we inside the dash's own
-    // ~200 kbps profile (see DashEncoder.BITRATE) — because a packet is
+    // ~200 kbps profile (see StreamProfile.Moving) — because a packet is
     // anywhere from a few bytes to 1392. On 2026-09-06 that left the measured
     // rate somewhere between 168 and 470 kbps, which is the difference between
     // "fine" and "twice the dash's profile", and nothing in the log could
@@ -301,9 +299,16 @@ internal class FrameStreamer(
     // to the outbox as a unit. Only ever touched from the frame-loop coroutine.
     private val auPackets = ArrayList<ByteArray>(32)
 
-    // Which profile the encoder is currently on, so it is poked only on a
+    // Which profile the encoder is currently ON, as opposed to the one the signal WANTS
+    // this iteration. Keeping them apart is what lets the bitrate be pushed on a
     // transition rather than every frame.
-    private var idleBitrate = false
+    //
+    // They normally reconverge on the next iteration, but NOT always: the push lives
+    // inside `if (haveFrame && enc != null)`, so while the first snapshot is still coming
+    // (up to 8 s) or the encoder is being rebuilt, this can sit on `moving` over a parked
+    // bike — and that is what `[stream] bitrate=` prints, because it prints what was
+    // applied rather than what was wanted.
+    private var appliedProfile = StreamProfile.asConfigured
 
     // One-shot timing, paired with DashSession's own "dash DECODED first IDR" line — the
     // gap between the two is exactly the dash's own decode latency for this session. Ported
@@ -335,7 +340,7 @@ internal class FrameStreamer(
      * scheme mis-stamped that same frame more coarsely, and neither is worth carrying a
      * per-frame step around for.
      */
-    private var ptsStepMs = 1000L / FPS_IDLE
+    private var ptsStepMs = StreamProfile.Idle.frameIntervalMs
 
     // Collects rather than sends. `DatagramSocket.send` is a syscall that blocks when the
     // Wi-Fi driver's queue is full, and the frame loop calling it inline put the render
@@ -520,7 +525,7 @@ internal class FrameStreamer(
             // cadence drift apart from each other. Starts at the conservative (idle)
             // interval; only matters for a hypothetical exception inside [FrameSource.advance]
             // itself, before the real value below gets assigned.
-            var frameIntervalMs = 1000L / FPS_IDLE
+            var frameIntervalMs = StreamProfile.Idle.frameIntervalMs
             while (isActive && streaming() && !senderStopped) {
                 // Top of the iteration, so the trailing delay() can pace to a DEADLINE
                 // rather than sleep a whole interval on top of the work: the body waits
@@ -535,22 +540,29 @@ internal class FrameStreamer(
                 // fault from a snapshotter fault. Found by review, 2026-09-18.
                 var inEncodeSection = false
                 try {
-                    frameIntervalMs = 1000L / (if (source.moving) FPS_MOVING else FPS_IDLE)
+                    // One decision, one place: [StreamProfile] carries both halves of the
+                    // dash's preset and says which signal picks it and why.
+                    //
+                    // ONE snapshot of `moving`, taken before [FrameSource.advance], and it
+                    // feeds both halves. That is a deliberate change from the code this
+                    // replaced, which read the flag twice — once here for the rate and
+                    // again after `advance()` for the bitrate, where `MapFrameRenderer`
+                    // had just refreshed it. The two halves of one preset therefore came
+                    // from two different instants, and the bitrate led the frame rate by
+                    // an iteration on every flip. Now they agree, at the cost of the
+                    // bitrate retarget landing 250-500 ms later than it used to — the lag
+                    // the frame rate already had.
+                    val wantProfile = StreamProfile.forMotion(source.moving)
+                    frameIntervalMs = wantProfile.frameIntervalMs
                     val haveFrame = source.advance(frameIntervalMs)
                     val enc = encoder
                     if (haveFrame && enc != null) {
                         inEncodeSection = true
-                        // Match the encoder's target to the dash's own two profiles,
-                        // on the transition only. [FrameSource.moving] is already what picks
-                        // the frame rate, so reusing it keeps one notion of "the map
-                        // is going somewhere" instead of introducing a second that
-                        // could disagree with the first.
-                        if (source.moving && idleBitrate) {
-                            enc.requestBitrate(DashEncoder.BITRATE)
-                            idleBitrate = false
-                        } else if (!source.moving && !idleBitrate) {
-                            enc.requestBitrate(DashEncoder.BITRATE_IDLE)
-                            idleBitrate = true
+                        // Pushed on a transition only — `setParameters` is a codec round
+                        // trip and the rate above already changed with the same signal.
+                        if (wantProfile != appliedProfile) {
+                            enc.requestBitrate(wantProfile.bitrateBps)
+                            appliedProfile = wantProfile
                         }
                         val encodeStart = clock()
                         enc.renderFrame { canvas -> source.drawInto(canvas) }
@@ -626,14 +638,11 @@ internal class FrameStreamer(
                             )
                             return@coroutineScope
                         }
-                        // A fresh encoder is configured at DashEncoder.BITRATE, i.e. the
-                        // moving profile, whatever the old one was last told. Without
-                        // this the flag can claim "idle" over a codec running at the
-                        // moving target, and since requestBitrate only fires on a
-                        // TRANSITION, nothing corrects it until the rider stops and
-                        // starts again — a rebuild while parked would stream at the
-                        // moving rate for as long as the bike stands still.
-                        idleBitrate = false
+                        // A fresh encoder comes up on whatever configure() set, whatever
+                        // the old one was last told — see [StreamProfile.asConfigured] for
+                        // why forgetting this leaves a parked bike streaming at the moving
+                        // rate until it sets off and stops again.
+                        appliedProfile = StreamProfile.asConfigured
                         source.invalidate()
                         failures = 0
                     }
@@ -726,7 +735,7 @@ internal class FrameStreamer(
                                 "overrun=${overruns.getAndSet(0)} " +
                                 "poolLate=${drainPoolLate()} " +
                                 "fpsFlips=$dFlips " +
-                                "bitrate=${if (idleBitrate) "idle" else "moving"} " +
+                                "bitrate=${appliedProfile.logName} " +
                                 "thermal=$thermalLabel in the last ${intervalS}s",
                         )
                     }

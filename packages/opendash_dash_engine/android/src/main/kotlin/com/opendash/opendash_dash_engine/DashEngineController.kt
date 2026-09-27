@@ -792,7 +792,10 @@ class DashEngineController(
                 // mid-ride — unless the handler travels with the context.
                 context = Dispatchers.IO +
                     (scope.coroutineContext[CoroutineExceptionHandler] ?: EmptyCoroutineContext),
-            ) { DashSocket(wifiManager.network) }
+                // ONE read of the volatile `network`: the socket and its addresses must
+                // describe the same link, and a flap between two reads would bind to one
+                // network and send to another's addresses.
+            ) { wifiManager.network.let { net -> DashSocket(net, wifiManager.dashAddresses(net)) } }
             true
         }
     }

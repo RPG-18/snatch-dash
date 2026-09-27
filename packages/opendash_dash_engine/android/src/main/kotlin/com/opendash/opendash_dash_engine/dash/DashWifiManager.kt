@@ -1151,6 +1151,56 @@ class DashWifiManager(
         if (context == POLL_CONTEXT) DebugLog.i(TAG) { line } else RideDiagnostics.log(TAG, line)
     }
 
+    /**
+     * The two addresses to send to on [net]: the control-plane broadcast and the dash.
+     *
+     * [net] is passed in rather than read from [network] so the caller can bind the
+     * socket and resolve its addresses from ONE read of that volatile field. Reading it
+     * twice let a flap in between hand the socket one network and the addresses another.
+     *
+     * Falls back to [DashAddresses.FALLBACK] whenever the platform has nothing to say —
+     * no network, no usable IPv4 on it, or a `LinkProperties` lookup that throws, which
+     * it can when the network has just gone away underneath us.
+     */
+    internal fun dashAddresses(net: Network? = network): DashAddresses {
+        if (net == null) return DashAddresses.FALLBACK
+        val lp = runCatching { cm.getLinkProperties(net) }.getOrNull()
+            ?: return DashAddresses.FALLBACK
+
+        // A non-link-local IPv4 first. 169.254/16 is what the platform leaves behind when
+        // DHCP did not answer, and taking it merely because it sorts first would discard
+        // a real address further down the list — [DashAddresses] would then reject it and
+        // fall back, on a link that could have been described.
+        val v4 = lp.linkAddresses
+            .filter { it.address is java.net.Inet4Address }
+            .let { all -> all.firstOrNull { !it.address.isLinkLocalAddress } ?: all.firstOrNull() }
+
+        // The dash, as the platform knows it. `dhcpServerAddress` is the direct answer and
+        // needs API 30; below that the default route's gateway is the same box, reached
+        // the long way round.
+        //
+        // `hasGateway()` rather than a null check on `gateway`: AOSP substitutes the
+        // wildcard 0.0.0.0 for an on-link route's absent gateway, and it IS an
+        // Inet4Address — so a null check accepts it, stops the search before a real
+        // gateway route, and lands in the ride file mislabelled as "off-subnet".
+        val gateway: String? =
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                lp.dhcpServerAddress?.hostAddress
+            } else {
+                null
+            } ?: lp.routes
+                .firstOrNull {
+                    it.isDefaultRoute && it.hasGateway() && it.gateway is java.net.Inet4Address
+                }
+                ?.gateway?.hostAddress
+
+        return DashAddresses.resolve(
+            ipv4 = v4?.address?.hostAddress,
+            prefixLength = v4?.prefixLength ?: 0,
+            gateway = gateway,
+        )
+    }
+
     private fun startRssiPolling() {
         rssiPollJob?.cancel()
         rssiPollJob = scope.launch {

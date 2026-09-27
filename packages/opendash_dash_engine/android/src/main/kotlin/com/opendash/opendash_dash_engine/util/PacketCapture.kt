@@ -38,10 +38,18 @@ internal object PacketCapture {
     /**
      * Stand-in for the phone's address on the dash's network.
      *
-     * Not looked up: the sockets bind the wildcard, so `localAddress` is 0.0.0.0, and the
-     * real one would have to come from `LinkProperties` through two layers that have no
-     * other use for it. Wireshark needs *an* address to render a conversation; this one is
-     * consistent, obviously synthetic, and documented as such right here.
+     * Not looked up: the sockets bind the wildcard, so `localAddress` is 0.0.0.0.
+     * Wireshark needs *an* address to render a conversation; this one is consistent,
+     * obviously synthetic, and documented as such right here.
+     *
+     * **It can now disagree with the destination.** Since 2026-09-28 the dash and
+     * broadcast addresses are derived from `LinkProperties` ([DashAddresses]), so on a
+     * dash that is not on 192.168.1.0/24 a capture shows this constant source against a
+     * real destination — two subnets in one conversation. Left alone deliberately: the
+     * header this file writes was never evidence about the wire (the class KDoc says so),
+     * the payload is, and plumbing the real address down here to make a synthetic field
+     * prettier is not worth a third layer knowing about it. If it ever misleads someone,
+     * `DashAddresses` already has the number and the fix is to pass it in.
      */
     private const val LOCAL_IP = "192.168.1.2"
 

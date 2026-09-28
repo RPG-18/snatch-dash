@@ -104,7 +104,21 @@ internal class DashSocket(
     // `getByName` on a dotted quad is a parse, not a lookup — [DashAddresses] only ever
     // produces literals, so nothing here can block on DNS.
     private val broadcastAddr: InetAddress = InetAddress.getByName(addresses.broadcast)
-    private val dashAddr:      InetAddress = InetAddress.getByName(addresses.dashIp)
+
+    /**
+     * Where RTP goes, and the rule for moving it — see [DashPeerLatch], which holds both
+     * so they can be tested without binding a socket.
+     *
+     * Volatile because the frame thread reads the destination while the RX loop writes
+     * the sender and, once, the destination itself.
+     */
+    @Volatile private var peer = DashPeerLatch(
+        initial = InetAddress.getByName(addresses.dashIp),
+        // Whether the address we start from came from the interface or from the
+        // constant. Only this class can tell, and the ride file must not later claim
+        // "as derived" over a number nothing derived.
+        derived = addresses.source.contains("dash from gateway"),
+    )
     private val txSocket:  DatagramSocket
     private val rxSocket:  DatagramSocket
     private val rtpSocket: DatagramSocket
@@ -234,7 +248,7 @@ internal class DashSocket(
         // IOException only — see the note in [send] on why a broad catch hid a
         // NetworkOnMainThreadException as a link failure.
         try {
-            rtpSocket.send(DatagramPacket(data, data.size, dashAddr, RTP_PORT))
+            rtpSocket.send(DatagramPacket(data, data.size, peer.dash, RTP_PORT))
         } catch (e: IOException) {
             DebugLog.d(TAG) { "RTP send failed (link down?): ${e.message}" }
         }
@@ -289,6 +303,7 @@ internal class DashSocket(
                 continue
             }
             val bytes = buf.data.copyOf(buf.length)
+            peer.lastSender = buf.address
             DebugLog.d(TAG) { "RX ←${buf.address?.hostAddress}:${buf.port}  ${bytes.size}B  ${bytes.hexFull()}" }
             PacketCapture.rx(
                 bytes,
@@ -299,6 +314,19 @@ internal class DashSocket(
             return@withContext bytes
         }
         @Suppress("UNREACHABLE_CODE") ByteArray(0)
+    }
+
+    override fun adoptSenderAsDash() {
+        // `stream`, not TAG, on both lines: they belong with the `addresses:` line this
+        // same socket wrote at open, and spec/frame_pipeline.md lists them together. A
+        // grep for `[stream]` that missed half the addressing story would be worse than
+        // none. The WARN is not a fault — it means the link and the dash disagreed, and
+        // before 2026-09-28 RTP went nowhere in that case, silently.
+        when (val outcome = peer.adopt()) {
+            is DashPeerLatch.Outcome.Confirmed -> RideDiagnostics.log("stream", outcome.note)
+            is DashPeerLatch.Outcome.Moved -> RideDiagnostics.warn("stream", outcome.note)
+            DashPeerLatch.Outcome.Ignored -> Unit
+        }
     }
 
     override fun close() {

@@ -17,6 +17,11 @@ package com.opendash.opendash_dash_engine.dash
  * [source] is for the ride file. Every path sets it, including the fallbacks, because "we
  * used the constants" and "we derived 192.168.1.255 from the interface" produce identical
  * traffic and have to be told apart after the fact.
+ *
+ * **[dashIp] is provisional.** It is where RTP would go if it started right now, which it
+ * never does: the handshake comes first, and [DashTransport.adoptSenderAsDash] then
+ * replaces this with the address the dash answered from. [broadcast] has no such second
+ * chance — control is the handshake, so it has to be right the first time.
  */
 internal data class DashAddresses(
     val broadcast: String,
@@ -85,47 +90,46 @@ internal data class DashAddresses(
          * @param gateway the dash's address as the platform knows it — the DHCP server on
          *   API 30+, otherwise the default route's gateway — or null.
          *
-         * **The two are answered together, never mixed.** An earlier version let each half
-         * fall back on its own, and review found what that produces: a 10.42.0.0/24 dash
-         * with no gateway got the derived broadcast `10.42.0.255` paired with the constant
-         * `192.168.1.1`. Control would work, RTP would go to an address that cannot exist
-         * on that link, and the rider would get a dash that connects and shows nothing —
-         * strictly worse than the clean handshake failure the constants used to give. So
-         * either the link explains both addresses or neither is taken from it.
+         * **[dashIp] is a starting value, not a verdict.** Since task 13 the handshake
+         * replaces it with the address the dash actually answered from
+         * ([DashTransport.adoptSenderAsDash]), and nothing unicast is sent before that —
+         * control is broadcast (инвариант 9), RTP waits for auth. So being wrong here
+         * costs nothing, and the two halves fall back independently again.
          *
-         * **Considered and not done: assuming the `.1` of whatever subnet we are on.** It
-         * would rescue exactly the case above, and the dash IS the access point, so `.1`
-         * is a decent bet. But it is a bet, the task asked for the constants when
-         * derivation fails, and a wrong guess here fails the same silent way. Falling back
-         * whole costs nothing we have ever observed.
+         * They did not, briefly: between 2026-09-28 and task 13 the pair had to describe
+         * one subnet, because a derived broadcast `10.42.0.255` next to the constant
+         * `192.168.1.1` meant control worked while RTP went nowhere — a dash that
+         * connects and shows nothing. That coupling threw away a correct broadcast to
+         * avoid a wrong dash address, which is no longer a trade worth making: the wrong
+         * dash address corrects itself one packet after it would have mattered.
          */
         fun resolve(ipv4: String?, prefixLength: Int, gateway: String?): DashAddresses {
             val host = parseIpv4(ipv4)
             val derivedBroadcast = broadcastFor(host, prefixLength)
                 ?: return fallback(whyNoBroadcast(ipv4, host, prefixLength))
             // A successful broadcast proves `host` is non-null; the compiler cannot see
-            // that through the helper, so say it once here instead of in both takeIfs.
+            // that through the helper.
             val me = requireNotNull(host)
-            fun onLink(addr: Int): Boolean = sameSubnet(me, addr, prefixLength)
 
-            // A gateway outside our own subnet is not our dash — it is a stale route, or a
-            // second interface's default.
-            val gw = parseIpv4(gateway)?.takeIf(::onLink)
+            // A gateway outside our own subnet is not our dash — it is a stale route, or
+            // a second interface's default. Still refused, even though the handshake
+            // would correct it: an address we can already tell is wrong should not be
+            // the one the first RTP packet would have gone to if the order ever changes.
+            val gw = parseIpv4(gateway)?.takeIf { sameSubnet(me, it, prefixLength) }
 
-            // No gateway: the constant is only usable if it is on THIS link. Off-link it is
-            // the mixed pair described above.
-            val constantOnLink = parseIpv4(FALLBACK_DASH)?.takeIf(::onLink)
-            val dash = gw ?: constantOnLink
-                ?: return fallback("dash unlocatable on $ipv4/$prefixLength")
-
+            // Three causes, not two: `gw` is null both when the gateway is off-subnet
+            // and when it did not parse as a dotted quad at all. Calling an IPv6 or
+            // malformed gateway "off-subnet" sends a field engineer after a routing
+            // problem that does not exist.
             val dashSource = when {
                 gw != null -> "dash from gateway"
-                gateway == null -> "dash default (no gateway, on-link)"
-                else -> "dash default (gateway $gateway is off-subnet)"
+                gateway == null -> "dash provisional (no gateway)"
+                parseIpv4(gateway) == null -> "dash provisional (gateway '$gateway' is not IPv4)"
+                else -> "dash provisional (gateway $gateway is off-subnet)"
             }
             return DashAddresses(
                 broadcast = format(derivedBroadcast),
-                dashIp = format(dash),
+                dashIp = gw?.let { format(it) } ?: FALLBACK_DASH,
                 source = "broadcast from $ipv4/$prefixLength, $dashSource",
             )
         }

@@ -501,6 +501,7 @@ internal class DashSession private constructor(
             DebugLog.i(TAG) { "Authenticated ✓" }
             RideDiagnostics.log("auth", "authenticated (07 01 01) — entering nav mode")
 
+
             // Always nav-mode entry, idle or not: the dash opens its video decoder only as
             // part of nav mode, so there is no separate idle mode (see spec/fsm.md).
             sendScript(Scripts.enterNavMode(chrome.value.destinationName))
@@ -804,7 +805,16 @@ internal class DashSession private constructor(
                         DebugLog.i(TAG) { "Got RSA pubkey — sending q3c.d" }
                         outbox.trySend(DashCommand.AuthSendKey(ev.cipher))
                     }
-                    AuthEvent.Confirmed -> authConfirmed.complete(Unit)
+                    AuthEvent.Confirmed -> {
+                        // HERE, not after `authConfirmed.await()` in run(): that is a
+                        // different coroutine, both are on Dispatchers.IO, and the RX
+                        // loop re-enters `receive()` the moment this returns — so any
+                        // datagram landing in between would have been the one adopted.
+                        // Review, 2026-09-28; the first version's KDoc claimed the two
+                        // could not overlap, which was simply false.
+                        transport?.adoptSenderAsDash()
+                        authConfirmed.complete(Unit)
+                    }
                     AuthEvent.Rejected -> {
                         authRejectRetries++
                         DebugLog.w(TAG) { "Auth rejected — retry #$authRejectRetries" }

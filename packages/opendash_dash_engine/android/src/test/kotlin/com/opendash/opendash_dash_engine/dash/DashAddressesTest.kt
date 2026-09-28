@@ -77,50 +77,25 @@ class DashAddressesTest {
     }
 
     @Test
-    fun `an off-subnet gateway is refused while the broadcast is still derived`() {
-        // A stale default route is no reason to throw away a broadcast we can compute —
-        // and here the constant dash IP is on this very link, so the pair stays coherent.
-        // (When it would NOT be, the whole thing falls back; see the test below.)
+    fun `a correct broadcast is kept even when the dash cannot be placed`() {
+        // Until task 13 this fell back whole, because a derived broadcast next to the
+        // constant dash IP meant control worked while RTP went nowhere. Now the dash
+        // address is provisional — the handshake replaces it before RTP exists — so
+        // throwing away a broadcast that is provably right is the worse trade.
+        val a = DashAddresses.resolve(ipv4 = "10.42.0.99", prefixLength = 24, gateway = null)
+        assertEquals("10.42.0.255", a.broadcast)
+        assertEquals(DashAddresses.FALLBACK_DASH, a.dashIp)
+        assertTrue("provisional" in a.source, "the ride file must say it is a guess: ${a.source}")
+    }
+
+    @Test
+    fun `an off-subnet gateway is still refused, provisional or not`() {
+        // It would self-correct at the handshake, but an address we can already tell is
+        // wrong should not be the one a future reordering sends the first packet to.
         val a = DashAddresses.resolve("192.168.1.37", 24, "10.0.0.1")
         assertEquals("192.168.1.255", a.broadcast)
         assertEquals(DashAddresses.FALLBACK_DASH, a.dashIp)
         assertTrue("off-subnet" in a.source, a.source)
-    }
-
-    @Test
-    fun `an off-subnet dash with no gateway falls back WHOLE, never half`() {
-        // The regression review caught: deriving 10.42.0.255 and pairing it with the
-        // constant 192.168.1.1 gives a dash that connects (control is broadcast, so the
-        // handshake works) and then shows nothing, because RTP goes to an address that
-        // cannot exist on the link. The constants alone fail at the handshake instead,
-        // which is the failure the rider can actually act on.
-        val a = DashAddresses.resolve(ipv4 = "10.42.0.99", prefixLength = 24, gateway = null)
-        assertEquals(DashAddresses.FALLBACK_BROADCAST, a.broadcast)
-        assertEquals(DashAddresses.FALLBACK_DASH, a.dashIp)
-        assertTrue("unlocatable" in a.source, a.source)
-    }
-
-    @Test
-    fun `broadcast and dash always name one subnet`() {
-        // The invariant behind the test above, stated once over every case in this file.
-        for (case in listOf(
-            Triple("192.168.1.37", 24, "192.168.1.1"),
-            Triple("10.42.0.99", 24, "10.42.0.1"),
-            Triple("10.42.0.99", 24, null),
-            Triple("10.42.0.99", 24, "10.0.0.1"),
-            Triple("192.168.1.37", 31, "192.168.1.36"),
-            Triple("169.254.1.2", 16, "169.254.0.1"),
-            Triple(null, 0, null),
-        )) {
-            val (ip, prefix, gw) = case
-            val a = DashAddresses.resolve(ip, prefix, gw)
-            // Same /24 is enough to catch a cross-subnet pair for every case here.
-            assertEquals(
-                a.broadcast.substringBeforeLast('.'),
-                a.dashIp.substringBeforeLast('.'),
-                "mixed subnets for $ip/$prefix gw=$gw: ${a.broadcast} vs ${a.dashIp}",
-            )
-        }
     }
 
     @Test
@@ -177,8 +152,9 @@ class DashAddressesTest {
     @Test
     fun `a real address is preferred over a link-local one whatever the order`() {
         // 10.42, deliberately: on 192.168.1.x the derived broadcast equals the constant,
-        // so falling back looks identical to succeeding and the test proves nothing. The
-        // first draft of this test made exactly that mistake and a mutation walked past it.
+        // so a wrong answer looks identical to a right one and the test proves nothing.
+        // The first draft of this test made exactly that mistake and a mutation walked
+        // past it.
         val real = v4("10.42.0.99")
         val apipa = v4("169.254.7.7", 16)
         for (list in listOf(listOf(apipa, real), listOf(real, apipa))) {

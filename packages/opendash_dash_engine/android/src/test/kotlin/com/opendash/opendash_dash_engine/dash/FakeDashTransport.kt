@@ -66,6 +66,14 @@ internal class FakeDashTransport(private val clock: () -> Long) : DashTransport 
         if (!closed) rtpOut.add(data)
     }
 
+    /** Counted, not acted on: this fake has no notion of a peer address. */
+    var adoptions = 0
+        private set
+
+    override fun adoptSenderAsDash() {
+        adoptions++
+    }
+
     override suspend fun receive(): ByteArray = suspendCoroutine { cont ->
         synchronized(lock) {
             val next = pending.removeFirstOrNull()

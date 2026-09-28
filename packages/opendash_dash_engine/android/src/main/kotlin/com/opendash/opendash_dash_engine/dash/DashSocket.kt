@@ -104,7 +104,17 @@ internal class DashSocket(
     // `getByName` on a dotted quad is a parse, not a lookup — [DashAddresses] only ever
     // produces literals, so nothing here can block on DNS.
     private val broadcastAddr: InetAddress = InetAddress.getByName(addresses.broadcast)
-    private val dashAddr:      InetAddress = InetAddress.getByName(addresses.dashIp)
+
+    /**
+     * Where RTP goes. Starts at what [DashAddresses] worked out from the link and is
+     * replaced by [adoptSenderAsDash] once the handshake proves who the dash is.
+     *
+     * Volatile because the frame thread sends RTP while the RX loop adopts.
+     */
+    @Volatile private var dashAddr: InetAddress = InetAddress.getByName(addresses.dashIp)
+
+    /** Sender of the datagram [receive] returned last, for [adoptSenderAsDash]. */
+    @Volatile private var lastSender: InetAddress? = null
     private val txSocket:  DatagramSocket
     private val rxSocket:  DatagramSocket
     private val rtpSocket: DatagramSocket
@@ -289,6 +299,7 @@ internal class DashSocket(
                 continue
             }
             val bytes = buf.data.copyOf(buf.length)
+            lastSender = buf.address
             DebugLog.d(TAG) { "RX ←${buf.address?.hostAddress}:${buf.port}  ${bytes.size}B  ${bytes.hexFull()}" }
             PacketCapture.rx(
                 bytes,
@@ -299,6 +310,30 @@ internal class DashSocket(
             return@withContext bytes
         }
         @Suppress("UNREACHABLE_CODE") ByteArray(0)
+    }
+
+    override fun adoptSenderAsDash() {
+        val peer = lastSender ?: return
+        if (peer == dashAddr) {
+            RideDiagnostics.log(
+            "stream",
+            "dash confirmed at ${peer.hostAddress} (as derived)",
+        )
+            return
+        }
+        // Worth a line at WARN, not because it is a fault but because it means the link
+        // and the dash disagreed: `DashAddresses` picked one address from LinkProperties
+        // and the handshake came from another. RTP would have gone nowhere, silently, on
+        // every build before 2026-09-28.
+        RideDiagnostics.warn(
+            // `stream`, not TAG: this belongs with the `addresses:` line the same socket
+            // wrote at open, and spec/frame_pipeline.md lists them together. A grep for
+            // `[stream]` that missed half the addressing story would be worse than none.
+            "stream",
+            "dash answered from ${peer.hostAddress}, not ${dashAddr.hostAddress} — " +
+                "RTP follows the handshake",
+        )
+        dashAddr = peer
     }
 
     override fun close() {

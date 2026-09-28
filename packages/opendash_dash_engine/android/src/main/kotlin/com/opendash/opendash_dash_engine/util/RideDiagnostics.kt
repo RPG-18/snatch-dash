@@ -61,8 +61,13 @@ object RideDiagnostics {
      * With this it needs a `@TempDir`. The production path still goes through [init].
      */
     internal fun useDirectory(d: File?) {
-        dir = d
-        file = null
+        // Closes first, for the same reason [start] does: this is `internal`, not
+        // test-only, and handing anything the one operation start() was just taught
+        // never to perform would put an abandoned file back on the table.
+        synchronized(lock) {
+            if (file != null) stop("directory changed")
+            dir = d
+        }
     }
 
     /**
@@ -73,7 +78,7 @@ object RideDiagnostics {
      * object can be exercised off a device — including the file-lifecycle logic, which
      * has nothing to do with Android at all.
      */
-    internal var clockMs: () -> Long = ::monotonicMs
+    @Volatile internal var clockMs: () -> Long = ::monotonicMs
 
     /** Point the logger at <externalFilesDir>/diag. Safe to call every time; only does work once. */
     fun init(context: Context) {
@@ -95,9 +100,6 @@ object RideDiagnostics {
         DebugLog.i(TAG) { "$deviceLabel, $buildLabel" }
     }
 
-    /** Whether a ride file is currently open, so a caller can write its closing lines. */
-    val isOpen: Boolean get() = file != null
-
     /**
      * Open a fresh session file and rotate old ones. No-op if [init] was never called.
      *
@@ -107,16 +109,23 @@ object RideDiagnostics {
      * `==== session end ====`. That is indistinguishable from the process having been
      * killed — the one case the whole file exists to record. Task 12.
      *
-     * The caller writes the closing lines it owns (the Wi-Fi totals) BEFORE calling this;
-     * [isOpen] is how it knows there is a file to write them into.
+     * The caller writes the closing lines it owns (the Wi-Fi totals) BEFORE calling
+     * this, unconditionally — whether a file is open is this object's business, and a
+     * caller that checked would tie its own bookkeeping to whether storage was writable.
      */
     fun start(reason: String) {
-        if (file != null) stop(SUPERSEDED)
-        // Bumped before the early return: a ride began either way, and a collapsing
-        // writer has to notice that even when no file could be opened for it.
-        synchronized(lock) { session++ }
-        val d = dir ?: return
+        // ONE lock for the whole thing, close included. With the close outside it, a
+        // write() from any of the engine's threads could land between `file = null` and
+        // the reassignment and be dropped by [write]'s null guard; and two concurrent
+        // starts could both see a file to close, no-op the second, and leave two headers
+        // against one end marker — the shape RideDiagnosticsTest asserts cannot happen.
+        // The monitor is reentrant, so [stop]'s own `synchronized` nests fine.
         synchronized(lock) {
+            if (file != null) stop(SUPERSEDED)
+            // Bumped before the early return: a ride began either way, and a collapsing
+            // writer has to notice that even when no file could be opened for it.
+            session++
+            val d = dir ?: return
             // Monotonic: this is the origin of the "+NNNms" column on every line below, i.e.
             // a duration. On the wall clock an NTP step mid-ride shifts every subsequent
             // offset — and those offsets are what a post-mortem measures intervals with.

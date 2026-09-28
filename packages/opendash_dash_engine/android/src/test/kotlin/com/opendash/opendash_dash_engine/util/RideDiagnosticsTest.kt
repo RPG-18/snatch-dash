@@ -5,6 +5,7 @@ import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
@@ -23,7 +24,11 @@ class RideDiagnosticsTest {
 
     @BeforeTest
     fun setUp() {
-        dir = File.createTempFile("diag", "").let { it.delete(); it.mkdirs(); it }
+        // Asserted, not assumed: a fixture that silently failed to create the directory
+        // would make every count below zero, and two of these tests compare counts.
+        dir = File.createTempFile("diag", "").also {
+            assertTrue(it.delete() && it.mkdirs(), "could not build a temp diag dir at $it")
+        }
         RideDiagnostics.useDirectory(dir)
         // `SystemClock.elapsedRealtime` throws off a device. Advancing it by hand also
         // keeps the `+NNNms` column deterministic.
@@ -60,8 +65,14 @@ class RideDiagnosticsTest {
         assertEquals(2, Regex("==== session start").findAll(all).count(), all)
         assertEquals(2, Regex("==== session end").findAll(all).count(), all)
         assertTrue(RideDiagnostics.SUPERSEDED in all, "the first close must say why:\n$all")
+        // Presence first. `indexOf` returns -1 for a line that never arrived, and -1 is
+        // less than any real index — so the ordering assertion alone passes loudest
+        // exactly when the behaviour it pins is gone.
+        val summaryAt = all.indexOf("summary of the first")
+        val closedAt = all.indexOf(RideDiagnostics.SUPERSEDED)
+        assertTrue(summaryAt >= 0, "the caller's closing line never reached a file:\n$all")
         assertTrue(
-            all.indexOf("summary of the first") < all.indexOf(RideDiagnostics.SUPERSEDED),
+            summaryAt < closedAt,
             "the caller's closing line must precede the end marker:\n$all",
         )
     }
@@ -74,11 +85,10 @@ class RideDiagnosticsTest {
         }
         RideDiagnostics.stop("disconnect")
         val all = rides().joinToString("\n") { it.readText() }
-        assertEquals(
-            Regex("==== session start").findAll(all).count(),
-            Regex("==== session end").findAll(all).count(),
-            all,
-        )
+        // The expected number, not just "the two agree": zero equals zero, so a fixture
+        // that wrote nothing would pass a bare comparison while guaranteeing nothing.
+        assertEquals(4, Regex("==== session start").findAll(all).count(), all)
+        assertEquals(4, Regex("==== session end").findAll(all).count(), all)
     }
 
     @Test
@@ -90,11 +100,37 @@ class RideDiagnosticsTest {
     }
 
     @Test
-    fun `isOpen tracks the file, which is what the caller keys its summary on`() {
-        assertTrue(!RideDiagnostics.isOpen, "nothing open before the first start")
+    fun `nothing is written after stop, and nothing before start`() {
+        RideDiagnostics.log("test", "before any session")
         RideDiagnostics.start("connect")
-        assertTrue(RideDiagnostics.isOpen)
+        RideDiagnostics.log("test", "inside")
         RideDiagnostics.stop("disconnect")
-        assertTrue(!RideDiagnostics.isOpen, "stop() must clear it or the next summary is misfiled")
+        RideDiagnostics.log("test", "after the end marker")
+
+        val all = rides().joinToString("\n") { it.readText() }
+        assertTrue("inside" in all, all)
+        assertFalse("before any session" in all, "a line escaped into a file:\n$all")
+        assertFalse(
+            "after the end marker" in all,
+            "a line landed after `session end`, which is what makes the marker mean " +
+                "anything:\n$all",
+        )
+    }
+
+    @Test
+    fun `changing the directory closes the open file instead of abandoning it`() {
+        RideDiagnostics.start("connect")
+        RideDiagnostics.log("test", "first")
+        val other = File.createTempFile("diag2", "").also {
+            assertTrue(it.delete() && it.mkdirs())
+        }
+        try {
+            RideDiagnostics.useDirectory(other)
+            val all = rides().joinToString("\n") { it.readText() }
+            assertEquals(1, Regex("==== session end").findAll(all).count(), all)
+        } finally {
+            RideDiagnostics.useDirectory(dir)
+            other.deleteRecursively()
+        }
     }
 }

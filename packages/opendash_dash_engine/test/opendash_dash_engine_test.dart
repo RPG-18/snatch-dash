@@ -70,6 +70,12 @@ class MockOpendashDashEnginePlatform
   Future<Map<String, dynamic>> getConfig() async => {};
 
   @override
+  Future<Map<String, dynamic>> batteryOptimisationStatus() async => {};
+
+  @override
+  Future<bool> requestIgnoreBatteryOptimisations() async => false;
+
+  @override
   Future<void> updateNowPlaying({
     String? title,
     String album = '',

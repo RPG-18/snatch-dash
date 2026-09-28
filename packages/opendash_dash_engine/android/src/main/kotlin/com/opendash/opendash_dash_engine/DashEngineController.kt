@@ -28,6 +28,7 @@ import com.opendash.opendash_dash_engine.media.CallController
 import com.opendash.opendash_dash_engine.media.CallInfoProvider
 import com.opendash.opendash_dash_engine.media.MediaInfoProvider
 import com.opendash.opendash_dash_engine.util.DebugLog
+import com.opendash.opendash_dash_engine.util.BatteryOptimisation
 import com.opendash.opendash_dash_engine.util.RideDiagnostics
 import com.opendash.opendash_dash_engine.util.memorySummary
 import com.opendash.opendash_dash_engine.util.monotonicMs
@@ -446,6 +447,16 @@ class DashEngineController(
             "connect",
             "ssid='${dashConfig.ssid}' needsDiscovery=${dashConfig.needsDiscovery} " +
                 "dest=${inputs.value.destName}",
+        )
+        // Into the ride file, once per session, because this is the one thing the
+        // post-mortem could never answer. A ride where the map froze looks identical
+        // whether Doze stopped the service or a socket stalled — the app logs no error
+        // in either case, which is the whole reason task 7 exists. Release builds keep
+        // `diag/` and nothing else, so it has to go through RideDiagnostics (CLAUDE.md).
+        RideDiagnostics.log(
+            "connect",
+            "background: exempt=${BatteryOptimisation.isIgnoring(context)} " +
+                "emuiWorkaroundNeeded=${BatteryOptimisation.emuiWorkaroundNeeded()}",
         )
         DashKeepAliveService.start(context)
         // Started here, right after the ride file opens, so its lines cannot land in the

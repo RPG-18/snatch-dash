@@ -41,6 +41,21 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
   Map<String, dynamic>? _config;
   bool _notificationAccessGranted = false;
 
+  /// Battery-optimisation status, or null until the first answer arrives.
+  ///
+  /// Here rather than inside `_BackgroundWorkCard` because this class is
+  /// already a [WidgetsBindingObserver] re-reading a permission on resume for
+  /// [_notificationAccessGranted] — the identical hook for the identical
+  /// reason. A second observer on one screen is two copies of the same
+  /// lifecycle logic to keep in step.
+  Map<String, dynamic>? _backgroundStatus;
+
+  /// Same race as [_configGeneration], and it bites in the same place: a
+  /// resume right after `initState` puts two reads in flight, and the older
+  /// answer landing last reverts the card to "restricted" just after the
+  /// exemption was granted — which is what the resume hook exists to prevent.
+  int _backgroundGeneration = 0;
+
   // `_loadConfig` is called from `initState` and from three separate onTap
   // handlers below (forget/ssid/password) — without this guard, whichever
   // call happens to resolve last wins, which can flash a stale config back
@@ -58,6 +73,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
     WidgetsBinding.instance.addObserver(this);
     _loadConfig();
     _loadNotificationAccess();
+    _loadBackgroundStatus();
     // Deferred a tick: refresh() writes Riverpod state synchronously before
     // its first await, and doing that straight from initState() (still part
     // of this frame's widget-tree build) trips Riverpod's "modified a
@@ -83,6 +99,8 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
     // app; re-check when they come back so the status stays current.
     if (state == AppLifecycleState.resumed) {
       _loadNotificationAccess();
+      // The battery prompt is another activity too — see [_backgroundStatus].
+      _loadBackgroundStatus();
       // Same story for "install unknown apps": granted in system settings,
       // outside the app. There's no install-time callback, so re-drive the flow
       // on return — but only once, and only for a resume that plausibly *is* the
@@ -110,6 +128,30 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
   Future<void> _loadNotificationAccess() async {
     final granted = await DashEngine.instance.isNotificationAccessGranted();
     if (mounted) setState(() => _notificationAccessGranted = granted);
+  }
+
+  Future<void> _loadBackgroundStatus() async {
+    final generation = ++_backgroundGeneration;
+    final Map<String, dynamic> status;
+    try {
+      status = await DashEngine.instance.batteryOptimisationStatus();
+    } catch (_) {
+      // The plugin answers NO_ENGINE while the controller is being rebuilt.
+      // Retrying once matters because the alternative is not "a stale card" —
+      // with no answer at all the card never renders, so a rider who opens
+      // Settings and never backgrounds the app never sees it, and on a Huawei
+      // never sees the EMUI steps either.
+      if (_backgroundStatus == null && mounted) {
+        await Future<void>.delayed(const Duration(milliseconds: 400));
+        if (mounted && generation == _backgroundGeneration) {
+          unawaited(_loadBackgroundStatus());
+        }
+      }
+      return;
+    }
+    if (!mounted) return;
+    if (generation != _backgroundGeneration) return; // superseded
+    setState(() => _backgroundStatus = status);
   }
 
   @override
@@ -177,6 +219,18 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
             ),
           ),
           const SizedBox(height: 16),
+          // Here, under the dash card, because that is what it is about: the
+          // system stopping this app is indistinguishable from the dash going
+          // quiet, and a rider looking for "why did the map freeze" looks here.
+          //
+          // It owns the gap BELOW itself and has no spacer around it: the card
+          // renders nothing until the first status arrives, and a spacer on
+          // each side would leave 32px of blank that reflows on first paint —
+          // permanently, if the status never comes.
+          _BackgroundWorkCard(
+            status: _backgroundStatus,
+            onChanged: _loadBackgroundStatus,
+          ),
           Card(
             child: ListTile(
               leading: const Icon(Icons.download_for_offline_outlined),
@@ -464,6 +518,147 @@ class _AboutLink extends StatelessWidget {
       ),
       onTap: () =>
           launchUrl(Uri.parse(url), mode: LaunchMode.externalApplication),
+    );
+  }
+}
+
+/// Whether the system will let the app keep feeding the dash with the screen
+/// off, and the button that asks it to.
+///
+/// Stateless over [status] — the screen owns the reading and the resume hook,
+/// because it already had both for notification access (see
+/// `_SettingsScreenState._backgroundStatus`).
+///
+/// Renders nothing until the first answer: a card that flashes "restricted"
+/// and then corrects itself teaches the rider not to read it.
+class _BackgroundWorkCard extends StatefulWidget {
+  const _BackgroundWorkCard({required this.status, required this.onChanged});
+
+  final Map<String, dynamic>? status;
+
+  /// Re-read the status. Called when the prompt could not be shown, and when
+  /// the platform says there was nothing to ask for.
+  final Future<void> Function() onChanged;
+
+  @override
+  State<_BackgroundWorkCard> createState() => _BackgroundWorkCardState();
+}
+
+class _BackgroundWorkCardState extends State<_BackgroundWorkCard> {
+  /// Disables the button while the prompt is being opened.
+  ///
+  /// The system prompt is a translucent dialog activity, so the app only goes
+  /// `inactive` and the button stays hittable for the frames before it is
+  /// covered — a double tap on a button that looks inert for ~200 ms opens two
+  /// dialogs, and the rider dismisses one exemption prompt to find another
+  /// behind it.
+  bool _asking = false;
+
+  Future<void> _ask() async {
+    setState(() => _asking = true);
+    try {
+      final shown = await DashEngine.instance
+          .requestIgnoreBatteryOptimisations();
+      // `false` is the platform saying "already exempt, nothing to ask" — it
+      // avoids an error code precisely so the UI can refresh instead of
+      // reporting a failure. Without this the button would do nothing at all
+      // when the exemption was granted between the last read and the tap.
+      if (!shown) await widget.onChanged();
+    } catch (_) {
+      // When the prompt DOES open, the app is backgrounded and the screen's
+      // resume hook brings the state back. When it does not — no activity,
+      // nothing handling the intent — there is no resume, so a silent catch
+      // made the button do literally nothing.
+      if (!mounted) return;
+      final l10n = AppLocalizations.of(context)!;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(l10n.settingsBackgroundUnavailable)),
+      );
+      await widget.onChanged();
+    } finally {
+      if (mounted) setState(() => _asking = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final l10n = AppLocalizations.of(context)!;
+    final theme = Theme.of(context);
+    final status = widget.status;
+    if (status == null) return const SizedBox.shrink();
+
+    final ignoring = status['ignoring'] as bool? ?? false;
+    final canAsk = status['canAsk'] as bool? ?? false;
+    final emui = status['emuiWorkaroundNeeded'] as bool? ?? false;
+
+    return Padding(
+      // Only when visible — see the call site for why the spacing lives here.
+      padding: const EdgeInsets.only(bottom: 16),
+      child: Card(
+        child: Column(
+          children: [
+            ListTile(
+              leading: Icon(
+                ignoring
+                    ? Icons.check_circle_outline
+                    : Icons.battery_alert_outlined,
+                color: ignoring ? null : theme.colorScheme.error,
+              ),
+              title: Text(l10n.settingsBackgroundTitle),
+              subtitle: Text(
+                ignoring
+                    ? l10n.settingsBackgroundAllowed
+                    : l10n.settingsBackgroundRestricted,
+              ),
+            ),
+            if (!ignoring)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    canAsk
+                        ? l10n.settingsBackgroundWhy
+                        : l10n.settingsBackgroundUnavailable,
+                    style: theme.textTheme.bodySmall,
+                  ),
+                ),
+              ),
+            if (!ignoring && canAsk)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
+                child: Align(
+                  alignment: Alignment.centerRight,
+                  child: FilledButton(
+                    onPressed: _asking ? null : _ask,
+                    child: Text(l10n.settingsBackgroundButton),
+                  ),
+                ),
+              ),
+            // Shown even when the exemption IS granted: on these phones
+            // PowerGenie kills background apps independently of Doze, so the
+            // exemption is only half of what keeps a ride alive.
+            if (emui)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      l10n.settingsBackgroundEmuiTitle,
+                      style: theme.textTheme.labelLarge,
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      l10n.settingsBackgroundEmuiBody,
+                      style: theme.textTheme.bodySmall,
+                    ),
+                  ],
+                ),
+              ),
+          ],
+        ),
+      ),
     );
   }
 }

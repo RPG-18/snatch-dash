@@ -1154,6 +1154,54 @@ abstract class AppLocalizations {
   /// **'Noto Sans (SIL Open Font License 1.1)'**
   String get settingsAboutFontsLink;
 
+  /// No description provided for @settingsBackgroundTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Background operation'**
+  String get settingsBackgroundTitle;
+
+  /// No description provided for @settingsBackgroundAllowed.
+  ///
+  /// In en, this message translates to:
+  /// **'Allowed — the system will not stop the dash while the screen is off'**
+  String get settingsBackgroundAllowed;
+
+  /// No description provided for @settingsBackgroundRestricted.
+  ///
+  /// In en, this message translates to:
+  /// **'Restricted — the system may stop the dash mid-ride'**
+  String get settingsBackgroundRestricted;
+
+  /// No description provided for @settingsBackgroundWhy.
+  ///
+  /// In en, this message translates to:
+  /// **'The app feeds the dash with the screen off. Battery optimisation stops exactly that, and the dash simply freezes on its last frame — with no error in the app.'**
+  String get settingsBackgroundWhy;
+
+  /// No description provided for @settingsBackgroundButton.
+  ///
+  /// In en, this message translates to:
+  /// **'Allow background operation'**
+  String get settingsBackgroundButton;
+
+  /// No description provided for @settingsBackgroundUnavailable.
+  ///
+  /// In en, this message translates to:
+  /// **'This device does not show the system prompt. Look for the setting in the battery settings by hand.'**
+  String get settingsBackgroundUnavailable;
+
+  /// No description provided for @settingsBackgroundEmuiTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'On this phone the exemption is not enough'**
+  String get settingsBackgroundEmuiTitle;
+
+  /// No description provided for @settingsBackgroundEmuiBody.
+  ///
+  /// In en, this message translates to:
+  /// **'EMUI stops background apps separately from the system battery optimisation. Settings → Battery → App launch → SnatchDash → turn off “Manage automatically”, then enable auto-launch, secondary launch and run in background.'**
+  String get settingsBackgroundEmuiBody;
+
   /// No description provided for @settingsUpdatesTitle.
   ///
   /// In en, this message translates to:

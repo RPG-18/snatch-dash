@@ -608,6 +608,36 @@ class AppLocalizationsRu extends AppLocalizations {
   String get settingsAboutFontsLink => 'Noto Sans (SIL Open Font License 1.1)';
 
   @override
+  String get settingsBackgroundTitle => 'Работа в фоне';
+
+  @override
+  String get settingsBackgroundAllowed =>
+      'Разрешена — система не остановит приборку при погашенном экране';
+
+  @override
+  String get settingsBackgroundRestricted =>
+      'Ограничена — система может остановить приборку посреди поездки';
+
+  @override
+  String get settingsBackgroundWhy =>
+      'Приложение кормит дэш при выключенном экране. Экономия батареи останавливает именно это, и на дэше просто замирает карта — без ошибки в приложении.';
+
+  @override
+  String get settingsBackgroundButton => 'Разрешить работу в фоне';
+
+  @override
+  String get settingsBackgroundUnavailable =>
+      'Это устройство не показывает системный запрос. Разрешение ищите в настройках батареи вручную.';
+
+  @override
+  String get settingsBackgroundEmuiTitle =>
+      'На этом телефоне одного разрешения мало';
+
+  @override
+  String get settingsBackgroundEmuiBody =>
+      'EMUI останавливает фоновые приложения отдельно от системной экономии батареи. Настройки → Батарея → Запуск приложений → SnatchDash → выключить «Управлять автоматически», затем включить «Автозапуск», «Вторичный запуск» и «Работа в фоне».';
+
+  @override
   String get settingsUpdatesTitle => 'Обновления';
 
   @override

@@ -148,6 +148,13 @@ drop= dropIdr= drainMiss= drainDouble= wakeLate=p50/p95/maxms overrun=
 poolLate=max/over50/n fpsFlips= bitrate=idle|moving thermal=
 ```
 
+Раз на сессию, тегом `[connect]`:
+`background: exempt=… emuiWorkaroundNeeded=…` — разрешила ли система работать
+при погашенном экране. Без этой строки замерзшая карта выглядела одинаково,
+остановил ли нас Doze или встал сокет: приложение в обоих случаях не пишет
+ошибку, потому что в приложении ничего не ломается. Управляется карточкой
+«Работа в фоне» (`spec/settings_screen.md`).
+
 Плюс по одной строке на стрим: `addresses: …`, `threads: …`, `encoder …`,
 `parameter sets …`, `first video frame sent`, `first map frame ready`.
 

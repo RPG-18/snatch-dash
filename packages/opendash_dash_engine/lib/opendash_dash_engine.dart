@@ -89,6 +89,21 @@ class DashEngine {
   Future<Map<String, dynamic>> getConfig() =>
       OpendashDashEnginePlatform.instance.getConfig();
 
+  /// Whether the system will let the app keep feeding the dash with the screen
+  /// off — see `BatteryOptimisation` (Kotlin) for why the app asks at all and
+  /// why Play policy allows it here.
+  ///
+  /// Keys: `ignoring`, `canAsk`, `emuiWorkaroundNeeded`.
+  Future<Map<String, dynamic>> batteryOptimisationStatus() =>
+      OpendashDashEnginePlatform.instance.batteryOptimisationStatus();
+
+  /// Shows the system battery-optimisation prompt.
+  ///
+  /// Returns false when there was nothing to ask — already exempt. Throws a
+  /// [PlatformException] when the prompt cannot be shown at all.
+  Future<bool> requestIgnoreBatteryOptimisations() =>
+      OpendashDashEnginePlatform.instance.requestIgnoreBatteryOptimisations();
+
   Future<void> updateNowPlaying({
     String? title,
     String album = '',

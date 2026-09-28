@@ -68,6 +68,17 @@ abstract class OpendashDashEnginePlatform extends PlatformInterface {
   Future<void> setWifiPassword(String password) => throw UnimplementedError();
   Future<Map<String, dynamic>> getConfig() => throw UnimplementedError();
 
+  /// Whether the system will let the app keep working with the screen off.
+  ///
+  /// Keys: `ignoring` (already exempt), `canAsk` (a system prompt exists to
+  /// open), `emuiWorkaroundNeeded` (the exemption is necessary but not
+  /// sufficient on this phone — see `BatteryOptimisation`).
+  Future<Map<String, dynamic>> batteryOptimisationStatus() =>
+      throw UnimplementedError();
+
+  /// Shows the system prompt. Returns false when there was nothing to ask.
+  Future<bool> requestIgnoreBatteryOptimisations() => throw UnimplementedError();
+
   Future<void> updateNowPlaying({
     String? title,
     String album = '',

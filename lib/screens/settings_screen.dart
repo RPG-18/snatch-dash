@@ -177,6 +177,15 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
             ),
           ),
           const SizedBox(height: 16),
+          // Here, under the dash card, because that is what it is about: the
+          // system stopping this app is indistinguishable from the dash going
+          // quiet, and a rider looking for "why did the map freeze" looks here.
+          //
+          // It owns the gap BELOW itself and has no spacer around it: the card
+          // renders nothing until the first status arrives, and a spacer on
+          // each side would leave 32px of blank that reflows on first paint —
+          // permanently, if the status never comes.
+          const _BackgroundWorkCard(),
           Card(
             child: ListTile(
               leading: const Icon(Icons.download_for_offline_outlined),
@@ -464,6 +473,162 @@ class _AboutLink extends StatelessWidget {
       ),
       onTap: () =>
           launchUrl(Uri.parse(url), mode: LaunchMode.externalApplication),
+    );
+  }
+}
+
+/// Whether the system will let the app keep feeding the dash with the screen
+/// off, and the button that asks it to.
+///
+/// **Re-reads on resume, and that is the point.** The system prompt is another
+/// activity; without [didChangeAppLifecycleState] the card would still say
+/// "restricted" after the rider had just granted it, which reads as the button
+/// having failed.
+class _BackgroundWorkCard extends StatefulWidget {
+  const _BackgroundWorkCard();
+
+  @override
+  State<_BackgroundWorkCard> createState() => _BackgroundWorkCardState();
+}
+
+class _BackgroundWorkCardState extends State<_BackgroundWorkCard>
+    with WidgetsBindingObserver {
+  bool? _ignoring;
+  bool _canAsk = false;
+  bool _emui = false;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    unawaited(_refresh());
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) unawaited(_refresh());
+  }
+
+  Future<void> _refresh() async {
+    // Guarded: the plugin answers `NO_ENGINE` while the controller is being
+    // rebuilt, and an unhandled throw here leaves `_ignoring` null — which
+    // hides the whole card from Settings with nothing but a zone error to say
+    // why. A card stuck on its last known state is far better than no card.
+    final Map<String, dynamic> status;
+    try {
+      status = await DashEngine.instance.batteryOptimisationStatus();
+    } catch (_) {
+      return;
+    }
+    if (!mounted) return;
+    setState(() {
+      _ignoring = status['ignoring'] as bool? ?? false;
+      _canAsk = status['canAsk'] as bool? ?? false;
+      _emui = status['emuiWorkaroundNeeded'] as bool? ?? false;
+    });
+  }
+
+  Future<void> _ask() async {
+    // When the prompt DOES open, the app is backgrounded and `resumed` brings
+    // the state back. When it does not — no activity, nothing handling the
+    // intent — there is no resume, so a silent catch made the button do
+    // literally nothing: no dialog, no change, no message. Say so instead.
+    try {
+      await DashEngine.instance.requestIgnoreBatteryOptimisations();
+    } catch (_) {
+      if (!mounted) return;
+      final l10n = AppLocalizations.of(context)!;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(l10n.settingsBackgroundUnavailable)),
+      );
+      unawaited(_refresh());
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final l10n = AppLocalizations.of(context)!;
+    final theme = Theme.of(context);
+    final ignoring = _ignoring;
+    // Nothing until the first answer: a card that flashes "restricted" and then
+    // corrects itself teaches the rider to ignore it.
+    if (ignoring == null) return const SizedBox.shrink();
+
+    // The EMUI note stays visible even when the exemption is granted — on those
+    // phones it is the half that actually decides whether the ride survives.
+    final showEmui = _emui;
+
+    return Padding(
+      // Only when visible — see the call site for why the spacing lives here.
+      padding: const EdgeInsets.only(bottom: 16),
+      child: Card(
+        child: Column(
+          children: [
+            ListTile(
+              leading: Icon(
+                ignoring
+                    ? Icons.check_circle_outline
+                    : Icons.battery_alert_outlined,
+                color: ignoring ? null : theme.colorScheme.error,
+              ),
+              title: Text(l10n.settingsBackgroundTitle),
+              subtitle: Text(
+                ignoring
+                    ? l10n.settingsBackgroundAllowed
+                    : l10n.settingsBackgroundRestricted,
+              ),
+            ),
+            if (!ignoring)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    _canAsk
+                        ? l10n.settingsBackgroundWhy
+                        : l10n.settingsBackgroundUnavailable,
+                    style: theme.textTheme.bodySmall,
+                  ),
+                ),
+              ),
+            if (!ignoring && _canAsk)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
+                child: Align(
+                  alignment: Alignment.centerRight,
+                  child: FilledButton(
+                    onPressed: _ask,
+                    child: Text(l10n.settingsBackgroundButton),
+                  ),
+                ),
+              ),
+            if (showEmui)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      l10n.settingsBackgroundEmuiTitle,
+                      style: theme.textTheme.labelLarge,
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      l10n.settingsBackgroundEmuiBody,
+                      style: theme.textTheme.bodySmall,
+                    ),
+                  ],
+                ),
+              ),
+          ],
+        ),
+      ),
     );
   }
 }

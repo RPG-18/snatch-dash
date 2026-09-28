@@ -112,6 +112,21 @@ class MethodChannelOpendashDashEngine extends OpendashDashEnginePlatform {
   }
 
   @override
+  Future<Map<String, dynamic>> batteryOptimisationStatus() async {
+    final result = await methodChannel.invokeMethod<Map>(
+      'batteryOptimisationStatus',
+    );
+    return Map<String, dynamic>.from(result ?? {});
+  }
+
+  @override
+  Future<bool> requestIgnoreBatteryOptimisations() async =>
+      await methodChannel.invokeMethod<bool>(
+        'requestIgnoreBatteryOptimisations',
+      ) ??
+      false;
+
+  @override
   Future<void> updateNowPlaying({
     String? title,
     String album = '',

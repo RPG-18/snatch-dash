@@ -599,6 +599,36 @@ class AppLocalizationsEn extends AppLocalizations {
   String get settingsAboutFontsLink => 'Noto Sans (SIL Open Font License 1.1)';
 
   @override
+  String get settingsBackgroundTitle => 'Background operation';
+
+  @override
+  String get settingsBackgroundAllowed =>
+      'Allowed — the system will not stop the dash while the screen is off';
+
+  @override
+  String get settingsBackgroundRestricted =>
+      'Restricted — the system may stop the dash mid-ride';
+
+  @override
+  String get settingsBackgroundWhy =>
+      'The app feeds the dash with the screen off. Battery optimisation stops exactly that, and the dash simply freezes on its last frame — with no error in the app.';
+
+  @override
+  String get settingsBackgroundButton => 'Allow background operation';
+
+  @override
+  String get settingsBackgroundUnavailable =>
+      'This device does not show the system prompt. Look for the setting in the battery settings by hand.';
+
+  @override
+  String get settingsBackgroundEmuiTitle =>
+      'On this phone the exemption is not enough';
+
+  @override
+  String get settingsBackgroundEmuiBody =>
+      'EMUI stops background apps separately from the system battery optimisation. Settings → Battery → App launch → SnatchDash → turn off “Manage automatically”, then enable auto-launch, secondary launch and run in background.';
+
+  @override
   String get settingsUpdatesTitle => 'Updates';
 
   @override

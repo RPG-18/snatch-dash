@@ -23,6 +23,9 @@ internal data class DashAddresses(
     val dashIp: String,
     val source: String,
 ) {
+    /** One IPv4 the platform reports on the link. */
+    data class LinkV4(val address: String?, val prefixLength: Int, val linkLocal: Boolean)
+
     companion object {
         /** What the dash has always been. Used when the link says nothing usable. */
         const val FALLBACK_BROADCAST = "192.168.1.255"
@@ -33,6 +36,45 @@ internal data class DashAddresses(
             dashIp = FALLBACK_DASH,
             source = "defaults (no link properties)",
         )
+
+        /**
+         * The constants, with the reason this ride is using them.
+         *
+         * Every caller passes a different [reason]. A ride file that says only "defaults"
+         * cannot tell "there was no network" from "the lookup threw" from "the platform
+         * had nothing", and those are the three most likely ways this goes wrong — on a
+         * release build, where `DebugLog` is off, this string is the only evidence there
+         * is.
+         */
+        fun fallback(reason: String): DashAddresses = FALLBACK.copy(source = "defaults ($reason)")
+
+        /**
+         * Everything the platform said about the link, turned into two addresses.
+         *
+         * Plain values rather than `LinkProperties`/`LinkAddress`/`RouteInfo` so the
+         * selection rules below are testable without a device. They were not, and they
+         * are where the platform subtleties live: which address to prefer, and which of
+         * two sources names the dash.
+         */
+        fun fromLink(
+            ipv4s: List<LinkV4>,
+            dhcpServer: String?,
+            defaultGateways: List<String>,
+        ): DashAddresses {
+            // A non-link-local address first. 169.254/16 is what the platform leaves
+            // behind when DHCP did not answer, and taking it merely because it sorts
+            // first would discard a real address further down the list — [resolve] would
+            // then reject it and fall back, on a link that could have been described.
+            val v4 = ipv4s.firstOrNull { !it.linkLocal } ?: ipv4s.firstOrNull()
+            // The DHCP server is the direct answer; the default route's gateway is the
+            // same box reached the long way round, and is all API 29 has.
+            val gateway = dhcpServer ?: defaultGateways.firstOrNull()
+            return resolve(
+                ipv4 = v4?.address,
+                prefixLength = v4?.prefixLength ?: 0,
+                gateway = gateway,
+            )
+        }
 
         /**
          * Work out both addresses from what the platform says about the interface.
@@ -60,20 +102,21 @@ internal data class DashAddresses(
         fun resolve(ipv4: String?, prefixLength: Int, gateway: String?): DashAddresses {
             val host = parseIpv4(ipv4)
             val derivedBroadcast = broadcastFor(host, prefixLength)
-                ?: return FALLBACK.copy(source = whyNoBroadcast(ipv4, prefixLength))
+                ?: return fallback(whyNoBroadcast(ipv4, host, prefixLength))
+            // A successful broadcast proves `host` is non-null; the compiler cannot see
+            // that through the helper, so say it once here instead of in both takeIfs.
+            val me = requireNotNull(host)
+            fun onLink(addr: Int): Boolean = sameSubnet(me, addr, prefixLength)
 
             // A gateway outside our own subnet is not our dash — it is a stale route, or a
-            // second interface's default. Note this is independent of the broadcast above:
-            // `sameSubnet` validates the prefix itself.
-            val gw = parseIpv4(gateway)?.takeIf { host != null && sameSubnet(host, it, prefixLength) }
+            // second interface's default.
+            val gw = parseIpv4(gateway)?.takeIf(::onLink)
 
             // No gateway: the constant is only usable if it is on THIS link. Off-link it is
             // the mixed pair described above.
-            val constantOnLink = parseIpv4(FALLBACK_DASH)
-                ?.takeIf { host != null && sameSubnet(host, it, prefixLength) }
-            val dash = gw ?: constantOnLink ?: return FALLBACK.copy(
-                source = "defaults (dash unlocatable on $ipv4/$prefixLength)",
-            )
+            val constantOnLink = parseIpv4(FALLBACK_DASH)?.takeIf(::onLink)
+            val dash = gw ?: constantOnLink
+                ?: return fallback("dash unlocatable on $ipv4/$prefixLength")
 
             val dashSource = when {
                 gw != null -> "dash from gateway"
@@ -87,9 +130,18 @@ internal data class DashAddresses(
             )
         }
 
-        private fun whyNoBroadcast(ipv4: String?, prefixLength: Int): String = when (ipv4) {
-            null -> "defaults (link has no IPv4)"
-            else -> "defaults ($ipv4/$prefixLength has no usable broadcast)"
+        /**
+         * Which of [broadcastFor]'s three refusals fired.
+         *
+         * They are not interchangeable to whoever reads the ride file: `169.254` means
+         * the dash's DHCP did not answer, which a rider can act on by power-cycling it.
+         * The other two mean a link no dash has ever presented.
+         */
+        private fun whyNoBroadcast(ipv4: String?, host: Int?, prefixLength: Int): String = when {
+            ipv4 == null -> "link has no IPv4"
+            host == null -> "'$ipv4' is not a dotted quad"
+            isLinkLocal(host) -> "$ipv4 is link-local — the dash's DHCP did not answer"
+            else -> "/$prefixLength has no usable broadcast"
         }
 
         /**
@@ -114,8 +166,15 @@ internal data class DashAddresses(
             return host or mask.inv()
         }
 
-        private fun maskFor(prefixLength: Int): Int =
-            if (prefixLength == 0) 0 else -1 shl (32 - prefixLength)
+        /**
+         * Prefix to netmask, for prefixes of 1..32 only.
+         *
+         * No `prefixLength == 0` branch: both callers exclude it ([broadcastFor] refuses
+         * below 8, [sameSubnet] outside 1..32), and `-1 shl 32` is `-1` rather than 0
+         * because Kotlin's shift takes its count modulo 32. A guard for an input that
+         * cannot arrive would only suggest this is safe for arbitrary prefixes.
+         */
+        private fun maskFor(prefixLength: Int): Int = -1 shl (32 - prefixLength)
 
         private fun sameSubnet(a: Int, b: Int, prefixLength: Int): Boolean {
             if (prefixLength !in 1..32) return false

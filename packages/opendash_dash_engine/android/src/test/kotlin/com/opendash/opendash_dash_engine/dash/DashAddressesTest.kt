@@ -163,6 +163,77 @@ class DashAddressesTest {
         assertEquals("240.0.0.1", a.dashIp)
     }
 
+    // ── fromLink: the selection half, which used to have no tests at all ──────
+    //
+    // Everything above pins the arithmetic. These pin the rules that decide what the
+    // arithmetic is given — which address to prefer and which source names the dash.
+    // Both were platform-shaped and therefore untested until review pointed out that an
+    // inverted link-local check or a dropped wildcard guard would pass every gate the
+    // project has and surface only as a handshake that times out in the field.
+
+    private fun v4(addr: String, prefix: Int = 24) =
+        DashAddresses.LinkV4(addr, prefix, linkLocal = addr.startsWith("169.254."))
+
+    @Test
+    fun `a real address is preferred over a link-local one whatever the order`() {
+        // 10.42, deliberately: on 192.168.1.x the derived broadcast equals the constant,
+        // so falling back looks identical to succeeding and the test proves nothing. The
+        // first draft of this test made exactly that mistake and a mutation walked past it.
+        val real = v4("10.42.0.99")
+        val apipa = v4("169.254.7.7", 16)
+        for (list in listOf(listOf(apipa, real), listOf(real, apipa))) {
+            val a = DashAddresses.fromLink(list, dhcpServer = "10.42.0.1", defaultGateways = emptyList())
+            assertEquals("10.42.0.255", a.broadcast, "order: ${list.map { it.address }}")
+            assertEquals("10.42.0.1", a.dashIp)
+        }
+    }
+
+    @Test
+    fun `a link-local-only link still reports why, instead of pretending`() {
+        val a = DashAddresses.fromLink(listOf(v4("169.254.7.7", 16)), null, emptyList())
+        assertEquals(DashAddresses.FALLBACK_BROADCAST, a.broadcast)
+        assertTrue("DHCP did not answer" in a.source, a.source)
+    }
+
+    @Test
+    fun `the DHCP server wins over the default route, and the route is the fallback`() {
+        // On API 30+ both can be present and they are the same box; below 30 only the
+        // route exists. Pinning the precedence means the API gate cannot quietly invert.
+        val withBoth = DashAddresses.fromLink(
+            listOf(v4("10.42.0.99")), dhcpServer = "10.42.0.1", defaultGateways = listOf("10.42.0.254"),
+        )
+        assertEquals("10.42.0.1", withBoth.dashIp)
+
+        val routeOnly = DashAddresses.fromLink(
+            listOf(v4("10.42.0.99")), dhcpServer = null, defaultGateways = listOf("10.42.0.254"),
+        )
+        assertEquals("10.42.0.254", routeOnly.dashIp)
+    }
+
+    @Test
+    fun `an empty link is the fallback, not a crash`() {
+        val a = DashAddresses.fromLink(emptyList(), null, emptyList())
+        assertEquals(DashAddresses.FALLBACK_BROADCAST, a.broadcast)
+        assertEquals(DashAddresses.FALLBACK_DASH, a.dashIp)
+        assertTrue("no IPv4" in a.source, a.source)
+    }
+
+    @Test
+    fun `every fallback names its own cause`() {
+        // On a release build DebugLog is off and this string is the only evidence. Three
+        // fallbacks that read alike would erase the difference between "no network",
+        // "the lookup threw" and "the platform had nothing".
+        val reasons = listOf("no network", "link properties threw", "no link properties")
+            .map { DashAddresses.fallback(it).source }
+        assertEquals(reasons.size, reasons.toSet().size, "collapsed: $reasons")
+        for ((i, r) in reasons.withIndex()) {
+            assertTrue(
+                listOf("no network", "threw", "no link properties")[i] in r,
+                "reason $i lost its cause: $r",
+            )
+        }
+    }
+
     @Test
     fun `the source string always says which way each half went`() {
         // It is the only way to tell "we used the constants" from "we derived the same

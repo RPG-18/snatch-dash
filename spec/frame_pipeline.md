@@ -148,8 +148,15 @@ drop= dropIdr= drainMiss= drainDouble= wakeLate=p50/p95/maxms overrun=
 poolLate=max/over50/n fpsFlips= bitrate=idle|moving thermal=
 ```
 
-Плюс по одной строке на стрим: `threads: …`, `encoder …`, `parameter sets …`,
-`first video frame sent`, `first map frame ready`.
+Плюс по одной строке на стрим: `addresses: …`, `threads: …`, `encoder …`,
+`parameter sets …`, `first video frame sent`, `first map frame ready`.
+
+`addresses: broadcast=… dash=… (источник)` пишет `DashSocket` при открытии
+сокетов. С 28.09.2026 адреса выводятся из `LinkProperties`, а прежние
+константы остались запасным вариантом — и вычисленный `192.168.1.255`
+неотличим от запасного по трафику, так что скобка с источником и есть
+содержание строки. Она же отделяет адресную причину молчания дэша от
+Wi-Fi-причины: без неё и то и другое выглядит как `still unavailable`.
 
 Как читать неочевидное:
 

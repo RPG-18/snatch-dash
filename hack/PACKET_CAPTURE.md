@@ -9,9 +9,17 @@ Lua-диссектором [`k1g_dissector.lua`](k1g_dissector.lua) из это�
 
 | Назначение | Порт | Направление | Адресация |
 |---|---|---|---|
-| Control TX | 2000 | app → dash | **broadcast** на `192.168.1.255` |
+| Control TX | 2000 | app → dash | **broadcast**, обычно `192.168.1.255` |
 | Control RX | 2002 | dash → app | unicast на телефон |
-| Видео (RTP/H.264) | 5000 | **app → dash** | unicast на `192.168.1.1` |
+| Видео (RTP/H.264) | 5000 | **app → dash** | unicast, обычно `192.168.1.1` |
+
+**«Обычно» — с 28.09.2026 не фигура речи.** Адреса выводятся из
+`LinkProperties` (`DashAddresses`), а `192.168.1.255` / `192.168.1.1`
+остались запасным вариантом. Порты и способ адресации (control —
+широковещательно, RTP — unicast) не меняются, но фильтры по конкретным
+адресам на дэше из другой подсети не сработают. Что именно взято, пишет сам
+ride-файл строкой `[stream] addresses: broadcast=… dash=… (…)` — брать
+адреса оттуда, а не отсюда.
 
 Направление видео здесь раньше было записано наоборот. Проверено по
 [`DashSocket.kt`](../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/DashSocket.kt):

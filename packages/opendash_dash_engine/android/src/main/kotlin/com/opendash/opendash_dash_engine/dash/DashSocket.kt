@@ -30,8 +30,11 @@ import java.net.InetSocketAddress
  * Every control packet gets the rolling K1G seq byte patched on send.
  */
 internal class DashSocket(
-    private val network: android.net.Network? = null,
-    private val addresses: DashAddresses = DashAddresses.FALLBACK,
+    private val network: android.net.Network?,
+    // No default. A construction site that forgot this argument would silently ship the
+    // 192.168.1.x constants instead of failing to compile, and the difference is invisible
+    // on any link where those constants happen to be right — which is every link we own.
+    private val addresses: DashAddresses,
 ) : DashTransport {
     companion object {
         const val CTRL_PORT  = 2000

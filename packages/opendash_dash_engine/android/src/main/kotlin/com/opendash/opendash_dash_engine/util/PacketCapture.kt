@@ -48,8 +48,10 @@ internal object PacketCapture {
      * real destination — two subnets in one conversation. Left alone deliberately: the
      * header this file writes was never evidence about the wire (the class KDoc says so),
      * the payload is, and plumbing the real address down here to make a synthetic field
-     * prettier is not worth a third layer knowing about it. If it ever misleads someone,
-     * `DashAddresses` already has the number and the fix is to pass it in.
+     * prettier is not worth a third layer knowing about it. Note that nothing currently
+     * HOLDS the phone's address either — [DashAddresses] takes it as an input to
+     * `resolve` and keeps only its `source` text — so fixing this means carrying it from
+     * `LinkProperties` as a new field, not reading one that exists.
      */
     private const val LOCAL_IP = "192.168.1.2"
 

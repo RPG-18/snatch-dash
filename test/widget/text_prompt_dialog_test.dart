@@ -158,10 +158,14 @@ void main() {
 
     expect(find.byType(TextField), findsOneWidget, reason: 'still open');
     expect(find.text('RE_OLD'), findsOneWidget, reason: 'value not lost');
+    // On the FIELD, not in a snackbar: a snackbar paints into the Scaffold
+    // below the dialog's barrier, where the rider would never see it. A
+    // `find.text` cannot tell the two apart — it ignores paint order — so
+    // this checks the decoration instead.
     expect(
-      find.text('could not save'),
-      findsOneWidget,
-      reason: 'and it said so',
+      tester.widget<TextField>(find.byType(TextField)).decoration?.errorText,
+      'could not save',
+      reason: 'the message must be inside the dialog',
     );
     expect(
       tester
@@ -174,6 +178,14 @@ void main() {
           .onPressed,
       isNotNull,
       reason: 'a retry must be one tap away',
+    );
+
+    // …and the stale message goes as soon as the value changes under it.
+    await tester.enterText(find.byType(TextField), 'RE_NEW');
+    await tester.pump();
+    expect(
+      tester.widget<TextField>(find.byType(TextField)).decoration?.errorText,
+      isNull,
     );
   });
 

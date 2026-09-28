@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../l10n/app_localizations.dart';
+import '../util/app_logger.dart';
 
 /// One-field prompt used by the SSID and WiFi-password dialogs.
 ///
@@ -67,6 +68,7 @@ class TextPromptDialogState extends State<TextPromptDialog> {
     text: widget.initial,
   );
   bool _saving = false;
+  String? _error;
 
   @override
   void initState() {
@@ -84,18 +86,30 @@ class TextPromptDialogState extends State<TextPromptDialog> {
     setState(() => _saving = true);
     try {
       await widget.onSave(_controller.text);
-    } catch (_) {
+    } catch (e, st) {
       // The engine answers NO_ENGINE whenever its controller is between
       // lives, and nothing in this app installs a zone handler — so without
-      // this the throw escaped, `_saving` stayed true, and BOTH buttons were
-      // dead for good. The old dialogs at least kept Cancel alive across the
-      // await; leaving the rider locked in with their typed value would be a
-      // regression, not a fix. Review, 2026-09-28.
+      // catching, the throw escaped, `_saving` stayed true, and BOTH buttons
+      // were dead for good. The old dialogs at least kept Cancel alive
+      // across the await; leaving the rider locked in with their typed value
+      // would be a regression, not a fix. Review, 2026-09-28.
+      //
+      // Logged, not swallowed. Before this widget existed the throw at least
+      // reached the framework's console dump; a bare `catch (_)` would leave
+      // "pairing won't save" with no evidence in Talker, `app_log.txt` or
+      // `diag/` — which is exactly how the crash this widget was built for
+      // stayed invisible for a day.
+      talker.error('[TextPromptDialog] save failed', e, st);
       if (!mounted) return;
-      setState(() => _saving = false);
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text(widget.saveFailed)));
+      // Inline, not a snackbar: `ScaffoldMessenger` paints into the Scaffold
+      // BELOW the dialog's barrier, so the message would sit behind a
+      // black54 scrim — or under the keyboard — and the rider would see the
+      // dialog simply refuse to close. A widget test cannot catch that,
+      // because `find.text` ignores paint order. Review, 2026-09-28.
+      setState(() {
+        _saving = false;
+        _error = widget.saveFailed;
+      });
       // Deliberately still open: the value the rider typed is here and
       // nowhere else, and a retry costs one tap.
       return;
@@ -115,7 +129,10 @@ class TextPromptDialogState extends State<TextPromptDialog> {
       content: TextField(
         controller: _controller,
         maxLength: widget.maxLength,
-        decoration: InputDecoration(labelText: widget.label),
+        decoration: InputDecoration(labelText: widget.label, errorText: _error),
+        // Cleared on the next keystroke: a stale "could not save" under a
+        // value the rider has since changed is worse than none.
+        onChanged: _error == null ? null : (_) => setState(() => _error = null),
       ),
       actions: [
         TextButton(

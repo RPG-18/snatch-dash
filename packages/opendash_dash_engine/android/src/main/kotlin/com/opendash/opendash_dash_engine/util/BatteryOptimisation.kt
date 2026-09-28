@@ -40,17 +40,19 @@ internal object BatteryOptimisation {
     /**
      * The intent that opens the system prompt, or null when it cannot be shown.
      *
-     * Null on two counts, and they are different: nothing on the device can handle the
-     * action (some stripped builds), or we are already exempt and asking again would show
-     * the rider a dialog with nothing to decide.
+     * Null when nothing on the device can handle the action — some stripped builds.
+     *
+     * Does NOT check [isIgnoring]: every caller has just computed it, and doing it again
+     * here was a second binder round trip to `DeviceIdleController` per call, on the
+     * platform thread the frame pipeline shares.
      */
     // `BatteryLife` is Lint telling us Play restricts this prompt. It does, and this app
-    // is on the documented exception list — see the class doc and the manifest. Suppressed
-    // here rather than left as a warning so the next person reads the reason instead of
-    // rediscovering the policy.
+    // is on the documented exception list — see the class doc. Suppressed here AND on the
+    // manifest declaration (`tools:ignore`), because Lint reports both and the manifest
+    // hit is the one a Play reviewer or a new contributor meets first. The module keeps no
+    // baseline (CLAUDE.md), so a warning left standing is a warning that stays.
     @android.annotation.SuppressLint("BatteryLife")
     fun requestIntent(context: Context): Intent? {
-        if (isIgnoring(context)) return null
         val intent = Intent(
             Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
             Uri.parse("package:${context.packageName}"),

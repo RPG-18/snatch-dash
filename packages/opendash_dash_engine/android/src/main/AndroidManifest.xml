@@ -1,4 +1,5 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+  xmlns:tools="http://schemas.android.com/tools"
   package="com.opendash.opendash_dash_engine">
 
   <!-- DashWifiManager reads ConnectivityManager.getNetworkCapabilities on every signal
@@ -17,7 +18,9 @@
        exactly this one: the dash is fed with the phone's screen off, and Doze stopping
        the foreground service stops the map mid-ride. Declared in the plugin rather than
        the app because the code that asks lives here. -->
-  <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+  <uses-permission
+    android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"
+    tools:ignore="BatteryLife" />
 
   <!-- So `resolveActivity` can see who handles the prompt. Under targetSdk 30+ package
        visibility, an app sees only force-queryable packages unless it declares otherwise;
@@ -28,6 +31,11 @@
   <queries>
     <intent>
       <action android:name="android.settings.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+      <!-- The scheme is not decoration. AOSP's filter declares
+           `<data android:scheme="package"/>`, and visibility matching runs ordinary
+           intent resolution: a query with no URI only matches a filter with no data
+           element, so without this the block matches nothing and grants nothing. -->
+      <data android:scheme="package" />
     </intent>
   </queries>
 </manifest>

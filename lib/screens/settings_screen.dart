@@ -41,6 +41,21 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
   Map<String, dynamic>? _config;
   bool _notificationAccessGranted = false;
 
+  /// Battery-optimisation status, or null until the first answer arrives.
+  ///
+  /// Here rather than inside `_BackgroundWorkCard` because this class is
+  /// already a [WidgetsBindingObserver] re-reading a permission on resume for
+  /// [_notificationAccessGranted] — the identical hook for the identical
+  /// reason. A second observer on one screen is two copies of the same
+  /// lifecycle logic to keep in step.
+  Map<String, dynamic>? _backgroundStatus;
+
+  /// Same race as [_configGeneration], and it bites in the same place: a
+  /// resume right after `initState` puts two reads in flight, and the older
+  /// answer landing last reverts the card to "restricted" just after the
+  /// exemption was granted — which is what the resume hook exists to prevent.
+  int _backgroundGeneration = 0;
+
   // `_loadConfig` is called from `initState` and from three separate onTap
   // handlers below (forget/ssid/password) — without this guard, whichever
   // call happens to resolve last wins, which can flash a stale config back
@@ -58,6 +73,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
     WidgetsBinding.instance.addObserver(this);
     _loadConfig();
     _loadNotificationAccess();
+    _loadBackgroundStatus();
     // Deferred a tick: refresh() writes Riverpod state synchronously before
     // its first await, and doing that straight from initState() (still part
     // of this frame's widget-tree build) trips Riverpod's "modified a
@@ -83,6 +99,8 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
     // app; re-check when they come back so the status stays current.
     if (state == AppLifecycleState.resumed) {
       _loadNotificationAccess();
+      // The battery prompt is another activity too — see [_backgroundStatus].
+      _loadBackgroundStatus();
       // Same story for "install unknown apps": granted in system settings,
       // outside the app. There's no install-time callback, so re-drive the flow
       // on return — but only once, and only for a resume that plausibly *is* the
@@ -110,6 +128,30 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
   Future<void> _loadNotificationAccess() async {
     final granted = await DashEngine.instance.isNotificationAccessGranted();
     if (mounted) setState(() => _notificationAccessGranted = granted);
+  }
+
+  Future<void> _loadBackgroundStatus() async {
+    final generation = ++_backgroundGeneration;
+    final Map<String, dynamic> status;
+    try {
+      status = await DashEngine.instance.batteryOptimisationStatus();
+    } catch (_) {
+      // The plugin answers NO_ENGINE while the controller is being rebuilt.
+      // Retrying once matters because the alternative is not "a stale card" —
+      // with no answer at all the card never renders, so a rider who opens
+      // Settings and never backgrounds the app never sees it, and on a Huawei
+      // never sees the EMUI steps either.
+      if (_backgroundStatus == null && mounted) {
+        await Future<void>.delayed(const Duration(milliseconds: 400));
+        if (mounted && generation == _backgroundGeneration) {
+          unawaited(_loadBackgroundStatus());
+        }
+      }
+      return;
+    }
+    if (!mounted) return;
+    if (generation != _backgroundGeneration) return; // superseded
+    setState(() => _backgroundStatus = status);
   }
 
   @override
@@ -185,7 +227,10 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
           // renders nothing until the first status arrives, and a spacer on
           // each side would leave 32px of blank that reflows on first paint —
           // permanently, if the status never comes.
-          const _BackgroundWorkCard(),
+          _BackgroundWorkCard(
+            status: _backgroundStatus,
+            onChanged: _loadBackgroundStatus,
+          ),
           Card(
             child: ListTile(
               leading: const Icon(Icons.download_for_offline_outlined),
@@ -480,74 +525,58 @@ class _AboutLink extends StatelessWidget {
 /// Whether the system will let the app keep feeding the dash with the screen
 /// off, and the button that asks it to.
 ///
-/// **Re-reads on resume, and that is the point.** The system prompt is another
-/// activity; without [didChangeAppLifecycleState] the card would still say
-/// "restricted" after the rider had just granted it, which reads as the button
-/// having failed.
+/// Stateless over [status] — the screen owns the reading and the resume hook,
+/// because it already had both for notification access (see
+/// `_SettingsScreenState._backgroundStatus`).
+///
+/// Renders nothing until the first answer: a card that flashes "restricted"
+/// and then corrects itself teaches the rider not to read it.
 class _BackgroundWorkCard extends StatefulWidget {
-  const _BackgroundWorkCard();
+  const _BackgroundWorkCard({required this.status, required this.onChanged});
+
+  final Map<String, dynamic>? status;
+
+  /// Re-read the status. Called when the prompt could not be shown, and when
+  /// the platform says there was nothing to ask for.
+  final Future<void> Function() onChanged;
 
   @override
   State<_BackgroundWorkCard> createState() => _BackgroundWorkCardState();
 }
 
-class _BackgroundWorkCardState extends State<_BackgroundWorkCard>
-    with WidgetsBindingObserver {
-  bool? _ignoring;
-  bool _canAsk = false;
-  bool _emui = false;
-
-  @override
-  void initState() {
-    super.initState();
-    WidgetsBinding.instance.addObserver(this);
-    unawaited(_refresh());
-  }
-
-  @override
-  void dispose() {
-    WidgetsBinding.instance.removeObserver(this);
-    super.dispose();
-  }
-
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) unawaited(_refresh());
-  }
-
-  Future<void> _refresh() async {
-    // Guarded: the plugin answers `NO_ENGINE` while the controller is being
-    // rebuilt, and an unhandled throw here leaves `_ignoring` null — which
-    // hides the whole card from Settings with nothing but a zone error to say
-    // why. A card stuck on its last known state is far better than no card.
-    final Map<String, dynamic> status;
-    try {
-      status = await DashEngine.instance.batteryOptimisationStatus();
-    } catch (_) {
-      return;
-    }
-    if (!mounted) return;
-    setState(() {
-      _ignoring = status['ignoring'] as bool? ?? false;
-      _canAsk = status['canAsk'] as bool? ?? false;
-      _emui = status['emuiWorkaroundNeeded'] as bool? ?? false;
-    });
-  }
+class _BackgroundWorkCardState extends State<_BackgroundWorkCard> {
+  /// Disables the button while the prompt is being opened.
+  ///
+  /// The system prompt is a translucent dialog activity, so the app only goes
+  /// `inactive` and the button stays hittable for the frames before it is
+  /// covered — a double tap on a button that looks inert for ~200 ms opens two
+  /// dialogs, and the rider dismisses one exemption prompt to find another
+  /// behind it.
+  bool _asking = false;
 
   Future<void> _ask() async {
-    // When the prompt DOES open, the app is backgrounded and `resumed` brings
-    // the state back. When it does not — no activity, nothing handling the
-    // intent — there is no resume, so a silent catch made the button do
-    // literally nothing: no dialog, no change, no message. Say so instead.
+    setState(() => _asking = true);
     try {
-      await DashEngine.instance.requestIgnoreBatteryOptimisations();
+      final shown = await DashEngine.instance
+          .requestIgnoreBatteryOptimisations();
+      // `false` is the platform saying "already exempt, nothing to ask" — it
+      // avoids an error code precisely so the UI can refresh instead of
+      // reporting a failure. Without this the button would do nothing at all
+      // when the exemption was granted between the last read and the tap.
+      if (!shown) await widget.onChanged();
     } catch (_) {
+      // When the prompt DOES open, the app is backgrounded and the screen's
+      // resume hook brings the state back. When it does not — no activity,
+      // nothing handling the intent — there is no resume, so a silent catch
+      // made the button do literally nothing.
       if (!mounted) return;
       final l10n = AppLocalizations.of(context)!;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(l10n.settingsBackgroundUnavailable)),
       );
-      unawaited(_refresh());
+      await widget.onChanged();
+    } finally {
+      if (mounted) setState(() => _asking = false);
     }
   }
 
@@ -555,14 +584,12 @@ class _BackgroundWorkCardState extends State<_BackgroundWorkCard>
   Widget build(BuildContext context) {
     final l10n = AppLocalizations.of(context)!;
     final theme = Theme.of(context);
-    final ignoring = _ignoring;
-    // Nothing until the first answer: a card that flashes "restricted" and then
-    // corrects itself teaches the rider to ignore it.
-    if (ignoring == null) return const SizedBox.shrink();
+    final status = widget.status;
+    if (status == null) return const SizedBox.shrink();
 
-    // The EMUI note stays visible even when the exemption is granted — on those
-    // phones it is the half that actually decides whether the ride survives.
-    final showEmui = _emui;
+    final ignoring = status['ignoring'] as bool? ?? false;
+    final canAsk = status['canAsk'] as bool? ?? false;
+    final emui = status['emuiWorkaroundNeeded'] as bool? ?? false;
 
     return Padding(
       // Only when visible — see the call site for why the spacing lives here.
@@ -590,25 +617,28 @@ class _BackgroundWorkCardState extends State<_BackgroundWorkCard>
                 child: Align(
                   alignment: Alignment.centerLeft,
                   child: Text(
-                    _canAsk
+                    canAsk
                         ? l10n.settingsBackgroundWhy
                         : l10n.settingsBackgroundUnavailable,
                     style: theme.textTheme.bodySmall,
                   ),
                 ),
               ),
-            if (!ignoring && _canAsk)
+            if (!ignoring && canAsk)
               Padding(
                 padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
                 child: Align(
                   alignment: Alignment.centerRight,
                   child: FilledButton(
-                    onPressed: _ask,
+                    onPressed: _asking ? null : _ask,
                     child: Text(l10n.settingsBackgroundButton),
                   ),
                 ),
               ),
-            if (showEmui)
+            // Shown even when the exemption IS granted: on these phones
+            // PowerGenie kills background apps independently of Doze, so the
+            // exemption is only half of what keeps a ride alive.
+            if (emui)
               Padding(
                 padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
                 child: Column(

@@ -4,6 +4,7 @@ import androidx.annotation.NonNull
 import com.opendash.opendash_dash_engine.dash.map.GeoPoint
 import com.opendash.opendash_dash_engine.dash.protocol.DashGlyphs
 import com.opendash.opendash_dash_engine.util.DebugLog
+import com.opendash.opendash_dash_engine.media.MediaInfoProvider
 import com.opendash.opendash_dash_engine.util.BatteryOptimisation
 import io.flutter.embedding.engine.plugins.activity.ActivityAware
 import io.flutter.embedding.engine.plugins.activity.ActivityPluginBinding
@@ -158,7 +159,58 @@ class OpendashDashEnginePlugin :
         eventSink = null
     }
 
+    /**
+     * The two power-state calls, answered without the engine.
+     *
+     * One [BatteryOptimisation.isIgnoring] per call and at most one
+     * `resolveActivity`: both are binder round trips, this runs on the platform thread
+     * that the frame pipeline's own calls share, and the status is re-read on every
+     * resume while Settings is open.
+     */
+    private fun handleBatteryCall(call: MethodCall, result: Result) {
+        val ctx = appContext
+            ?: return result.error("no_context", "Plugin is detached", null)
+        val ignoring = BatteryOptimisation.isIgnoring(ctx)
+        val intent = if (ignoring) null else BatteryOptimisation.requestIntent(ctx)
+        when (call.method) {
+            "batteryOptimisationStatus" -> result.success(
+                mapOf(
+                    "ignoring" to ignoring,
+                    // Separate from `ignoring`: a device with no handler for the action
+                    // is neither exempt NOR askable, and a button that opens nothing is
+                    // worse than no button.
+                    "canAsk" to (intent != null),
+                    "emuiWorkaroundNeeded" to BatteryOptimisation.emuiWorkaroundNeeded(),
+                ),
+            )
+            else -> {
+                val a = activity
+                when {
+                    // Not an error: the caller asked for something already true. Saying
+                    // so lets the UI refresh instead of showing a failure.
+                    ignoring -> result.success(false)
+                    intent == null ->
+                        result.error("no_handler", "Nothing handles the battery prompt", null)
+                    a == null ->
+                        result.error("no_activity", "No activity to show the prompt over", null)
+                    else -> runCatching { a.startActivity(intent) }
+                        .onSuccess { result.success(true) }
+                        .onFailure { result.error("launch_failed", it.message, null) }
+                }
+            }
+        }
+    }
+
     override fun onMethodCall(call: MethodCall, result: Result) {
+        // Ahead of the controller guard, deliberately: these two ask the platform about
+        // the app's own power state and touch nothing the engine owns. Behind it they
+        // failed with NO_ENGINE whenever the controller was between lives, and the
+        // settings card — whose whole job is to explain why a ride died — vanished.
+        if (call.method == "batteryOptimisationStatus" ||
+            call.method == "requestIgnoreBatteryOptimisations"
+        ) {
+            return handleBatteryCall(call, result)
+        }
         val c = controller ?: return result.error("NO_ENGINE", "Engine not attached", null)
         when (call.method) {
             "getPlatformVersion" -> result.success("Android ${android.os.Build.VERSION.RELEASE}")
@@ -246,44 +298,6 @@ class OpendashDashEnginePlugin :
             "setWifiPassword" -> { c.setWifiPassword(call.argument<String>("password") ?: ""); result.success(null) }
             "getConfig" -> result.success(c.currentConfig())
 
-            // Three facts in one call, because the UI needs all three to decide what to
-            // draw and a second round trip would let them disagree mid-frame.
-            "batteryOptimisationStatus" -> {
-                val ctx = appContext
-                if (ctx == null) {
-                    result.error("no_context", "Plugin is detached", null)
-                } else {
-                    result.success(
-                        mapOf(
-                            "ignoring" to BatteryOptimisation.isIgnoring(ctx),
-                            // Separate from `ignoring`: a device with no handler for the
-                            // action is neither exempt NOR askable, and a button that
-                            // opens nothing is worse than no button.
-                            "canAsk" to (BatteryOptimisation.requestIntent(ctx) != null),
-                            "emuiWorkaroundNeeded" to BatteryOptimisation.emuiWorkaroundNeeded(),
-                        ),
-                    )
-                }
-            }
-            "requestIgnoreBatteryOptimisations" -> {
-                val ctx = appContext
-                val a = activity
-                val intent = ctx?.let { BatteryOptimisation.requestIntent(it) }
-                when {
-                    ctx == null -> result.error("no_context", "Plugin is detached", null)
-                    // Not an error: the caller asked for something already true. Saying
-                    // so lets the UI refresh instead of showing a failure.
-                    intent == null && BatteryOptimisation.isIgnoring(ctx) -> result.success(false)
-                    intent == null ->
-                        result.error("no_handler", "Nothing handles the battery prompt", null)
-                    a == null ->
-                        result.error("no_activity", "No activity to show the prompt over", null)
-                    else -> runCatching { a.startActivity(intent) }
-                        .onSuccess { result.success(true) }
-                        .onFailure { result.error("launch_failed", it.message, null) }
-                }
-            }
-
             "updateNowPlaying" -> {
                 c.updateNowPlaying(
                     call.argument<String>("title"),
@@ -300,7 +314,21 @@ class OpendashDashEnginePlugin :
             "skipNext" -> result.success(c.skipNext())
             "skipPrevious" -> result.success(c.skipPrevious())
             "isNotificationAccessGranted" -> result.success(c.isNotificationAccessGranted())
-            "openNotificationAccessSettings" -> { c.openNotificationAccessSettings(); result.success(null) }
+            // Through the Activity when there is one, for the same reason the battery
+            // prompt is: a system screen started from the application context gets its
+            // own task, and several OEM skins then put it behind the app. The controller
+            // keeps its app-context path as the fallback — it predates this and works —
+            // so the two are no longer inconsistent, just ordered.
+            "openNotificationAccessSettings" -> {
+                val a = activity
+                if (a != null) {
+                    runCatching { a.startActivity(MediaInfoProvider.accessSettingsIntent()) }
+                        .onFailure { c.openNotificationAccessSettings() }
+                } else {
+                    c.openNotificationAccessSettings()
+                }
+                result.success(null)
+            }
 
             else -> result.notImplemented()
         }

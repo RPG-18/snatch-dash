@@ -283,15 +283,16 @@ class DashWifiManager(
     private val rejectedGuesses = mutableSetOf<String>()
 
     /**
-     * Session-level connection-quality counters, reset in [connect] and reported once in
-     * [disconnect] — see spec/wifi_retry_policy.md's 2026-08-28 log analysis, where both
-     * numbers had to be reconstructed by hand from timestamps across dozens of log lines.
-     * [downSinceMs] is nonzero for exactly as long as we're NOT [WifiConnStatus.CONNECTED]
-     * while [wantConnected] — zero means "currently connected" or "never started counting".
+     * Session-level connection-quality counters — see spec/wifi_retry_policy.md's
+     * 2026-08-28 log analysis, where both numbers had to be reconstructed by hand from
+     * timestamps across dozens of log lines.
+     *
+     * Reset on a new target ([connect]) and on [disconnect]; rolled, not reset, when the
+     * ride file rotates under a connection that continues ([rollSessionCounters]).
+     * Reported by [logSessionSummary] and on every `link up`. The arithmetic lives in
+     * [OutageLedger] so it can be tested without a `Context` — this class cannot be.
      */
-    private var reconnectCount = 0
-    private var downtimeAccumMs = 0L
-    private var downSinceMs = 0L
+    private val outage = OutageLedger()
 
     /**
      * Set once [connect] reaches CONNECTED for the first time this session, cleared on
@@ -383,9 +384,7 @@ class DashWifiManager(
             // line for that session has already been written, and carrying the totals over
             // would make the next ride file's first `link up` report the previous ride's.
             if (lingering) {
-                reconnectCount = 0
-                downtimeAccumMs = 0
-                downSinceMs = 0
+                outage.reset(startDown = false)
             }
             wantConnected   = true
             pendingSsid     = ssid
@@ -443,18 +442,38 @@ class DashWifiManager(
         rejectedGuesses.clear()
         if (!sameTarget) {
             hasConnectedOnce = false
-            reconnectCount   = 0
-            downtimeAccumMs  = 0L
             // Monotonic: this is the origin of `downtime=Xms`, a duration measured across
             // exactly the dead-zone-then-reconnect window where an NTP correction lands.
             // Missed by the first sweep of 2026-09-14; found by review.
-            downSinceMs      = monotonicMs() // "down" until the first markConnected
-        } else if (downSinceMs == 0L) {
-            // Same target, and the counters stand — but a re-request means the link is
-            // down from here until [markConnected], and nobody else opened this window:
-            // reaching this line with downSinceMs still zero is the shortcut-CONNECTED
-            // case, where the last markConnected closed it.
-            downSinceMs = monotonicMs()
+            outage.reset(startDown = true) // "down" until the first markConnected
+        } else {
+            // **The outage clock restarts on a deliberate tap** (decision 2026-09-28,
+            // task 12). It feeds `elapsedMs` and through it [ReconnectPolicy]'s 120 s
+            // `giveUpAfterMs`, and leaving it running made a second tap buy LESS patience
+            // than the first: on the 27.09 bench the third session gave up at
+            // `elapsedMs ≈ 112.1 s`, eight seconds short of failing by deadline instead of
+            // by its own two attempts. The deadline exists to bound AUTOMATIC retrying; a
+            // tap is not automatic, and the rider paid for it with an explicit action.
+            //
+            // This only ever extends patience, so it cannot undo what `sameTarget` is for
+            // (keeping `hasConnectedOnce` so a mid-ride "Send to Dash" does not turn
+            // endless retries into one 30 s attempt).
+            //
+            // The window that is ending is BANKED first. Restarting the clock without
+            // that loses everything the session was already down for — a 55 s outage
+            // would report `downtime=5000ms` — which is the same class of defect this
+            // task is about. Review, 2026-09-28.
+            // Banking is idempotent, and which path did it depends on whether a ride
+            // file was open: [rollSessionCounters] gets there first when one was, this
+            // line when there was not. No log either way — the numbers belong to the
+            // file that is closing, and that file's own summary already carries them.
+            // Only if one was actually running. Reopening a window on a link that is UP
+            // leaves the clock set for the rest of the session — review, 2026-09-28, see
+            // [OutageLedger.roll].
+            if (outage.isDown) {
+                outage.closeWindow()
+                outage.openWindow()
+            }
         }
         requestNetwork()
         requestCellularDefault()
@@ -619,15 +638,12 @@ class DashWifiManager(
      */
     fun disconnect(allowLinger: Boolean = true) {
         DebugLog.i(TAG) { "Disconnect requested (allowLinger=$allowLinger)" }
-        if (downSinceMs != 0L) {
-            downtimeAccumMs += monotonicMs() - downSinceMs
-            downSinceMs = 0L
-        }
+        outage.closeWindow()
         // See the field session this closed the loop on — spec/wifi_retry_policy.md's
         // 2026-08-28 log analysis, where reconstructing these two numbers by hand from raw
         // timestamps was most of the work. Logged unconditionally (even reconnectCount=0 is
         // useful — it says the WiFi link never dropped once this whole time).
-        RideDiagnostics.log(TAG, "session summary: reconnects=$reconnectCount downtime=${downtimeAccumMs}ms")
+        logSessionSummary()
         wantConnected = false
         hasConnectedOnce = false
         scanGuess = null
@@ -1009,7 +1025,7 @@ class DashWifiManager(
      */
     private fun scheduleReconnect(reason: String) {
         reconnectJob?.cancel()
-        val outageMs = if (downSinceMs == 0L) 0L else monotonicMs() - downSinceMs
+        val outageMs = outage.totalMs() - outage.accumMs
         when (
             val decision = reconnectPolicy.next(
                 attempt = outageAttempts,
@@ -1067,11 +1083,11 @@ class DashWifiManager(
                 val spaced = if (waitMs > decision.delayMs) " (spaced out; policy asked ${decision.delayMs}ms)" else ""
                 RideDiagnostics.warn(
                     TAG,
-                    "$reason — reconnect #${reconnectCount + 1} in ${waitMs}ms$spaced",
+                    "$reason — reconnect #${outage.reconnects + 1} in ${waitMs}ms$spaced",
                 )
-                reconnectCount++
+                outage.countReconnect()
                 outageAttempts++
-                if (downSinceMs == 0L) downSinceMs = monotonicMs()
+                outage.openWindow()
                 _state.value = WifiState(
                     status = WifiConnStatus.REQUESTING,
                     ssid   = pendingSsid,
@@ -1100,10 +1116,7 @@ class DashWifiManager(
         hasConnectedOnce = true
         // The outage is over, so the backoff starts from the bottom again next time.
         outageAttempts = 0
-        if (downSinceMs != 0L) {
-            downtimeAccumMs += monotonicMs() - downSinceMs
-            downSinceMs = 0L
-        }
+        outage.closeWindow()
         _state.value = WifiState(status = WifiConnStatus.CONNECTED, ssid = ssid)
         // Into the ride file, and from here rather than from each of the five call
         // sites that reach CONNECTED (callback, exact SSID, capabilities, the
@@ -1112,7 +1125,7 @@ class DashWifiManager(
         // between them nor "did it ever recover" can be read off it.
         RideDiagnostics.log(
             TAG,
-            "link up on '${maskSsid(ssid)}' — reconnects=$reconnectCount downtime=${downtimeAccumMs}ms",
+            "link up on '${maskSsid(ssid)}' — reconnects=${outage.reconnects} downtime=${outage.accumMs}ms",
         )
         // BSSID at the moment of connecting, not just from the first 5s-later poll tick —
         // see [logSignalInfo]'s doc for why this matters (BSSID-drift theory, spec/wifi_retry_policy.md).
@@ -1149,6 +1162,43 @@ class DashWifiManager(
         // the first one after the link comes back. The full curve stays in
         // app_log.txt, which is a debug-build luxury either way.
         if (context == POLL_CONTEXT) DebugLog.i(TAG) { line } else RideDiagnostics.log(TAG, line)
+    }
+
+    /**
+     * The two numbers a post-mortem starts from, into whichever ride file is open.
+     *
+     * Split out of [disconnect] because that is no longer the only way a ride file ends:
+     * a second `connect()` closes the current one too (task 12), and a file that stops
+     * mid-air with no totals cannot be told from one whose process was killed — which is
+     * the case the file exists for.
+     *
+     * `private`: "one summary per file" is the invariant this establishes, and the
+     * compiler can enforce it as long as nothing outside this class can write the line.
+     */
+    private fun logSessionSummary() {
+        RideDiagnostics.log(
+            TAG,
+            "session summary: reconnects=${outage.reconnects} downtime=${outage.totalMs()}ms",
+        )
+    }
+
+    /**
+     * Write the summary into the ride file that is closing, then start the next file's
+     * counters from zero.
+     *
+     * The counters are session-scoped and the session continues across a re-tap — but
+     * the FILE does not, and a number that counts events the reader cannot see in the
+     * file it is printed in is worse than no number. `downtime=112178ms` stood in a
+     * 62-second file on the 27.09 bench. `hasConnectedOnce` is deliberately NOT rolled:
+     * that one is not a counter, it is the flag `sameTarget` exists to protect.
+     *
+     * Called on every tap, not only when a ride file happens to be open. Gating it on
+     * the logger's state made whether the counters reset depend on whether external
+     * storage was available — review, 2026-09-28.
+     */
+    internal fun rollSessionCounters() {
+        logSessionSummary()
+        outage.roll()
     }
 
     /**

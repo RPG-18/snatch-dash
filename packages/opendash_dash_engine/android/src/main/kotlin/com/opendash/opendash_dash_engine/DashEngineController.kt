@@ -433,6 +433,14 @@ class DashEngineController(
             )
         }
         RideDiagnostics.init(context)
+        // The Wi-Fi totals belong to the file that is ENDING, and only this class knows a
+        // new one is about to open. [RideDiagnostics.start] closes the old file itself,
+        // but it cannot know what to write into it first.
+        // Unconditional: gating this on "is a ride file open" made whether the Wi-Fi
+        // counters roll depend on whether external storage was available, so a phone
+        // whose diag directory could not be created kept accumulating across taps — the
+        // defect task 12 removes, surviving on the path where nobody could see it.
+        wifiManager.rollSessionCounters()
         RideDiagnostics.start("connect")
         RideDiagnostics.log(
             "connect",

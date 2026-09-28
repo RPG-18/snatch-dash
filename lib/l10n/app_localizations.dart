@@ -1154,6 +1154,12 @@ abstract class AppLocalizations {
   /// **'Noto Sans (SIL Open Font License 1.1)'**
   String get settingsAboutFontsLink;
 
+  /// No description provided for @settingsSaveFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Could not save — try again'**
+  String get settingsSaveFailed;
+
   /// No description provided for @settingsBackgroundTitle.
   ///
   /// In en, this message translates to:

@@ -52,6 +52,29 @@ object RideDiagnostics {
     @Volatile private var deviceLabel = "unknown device"
     @Volatile private var buildLabel = "unknown build"
 
+    /**
+     * Point the logger at [d] directly, bypassing [Context].
+     *
+     * A seam, not a backdoor: everything this object does to a file — opening, the
+     * session header, rotation, and since task 12 closing one file before opening the
+     * next — is ordinary logic that needed a directory and therefore a device to reach.
+     * With this it needs a `@TempDir`. The production path still goes through [init].
+     */
+    internal fun useDirectory(d: File?) {
+        dir = d
+        file = null
+    }
+
+    /**
+     * The monotonic clock behind the `+NNNms` column, replaceable for tests.
+     *
+     * `SystemClock.elapsedRealtime` is one of the Android methods that throws rather than
+     * returning a default in a plain JVM unit test, so without this seam nothing in this
+     * object can be exercised off a device — including the file-lifecycle logic, which
+     * has nothing to do with Android at all.
+     */
+    internal var clockMs: () -> Long = ::monotonicMs
+
     /** Point the logger at <externalFilesDir>/diag. Safe to call every time; only does work once. */
     fun init(context: Context) {
         if (dir != null) return
@@ -72,8 +95,23 @@ object RideDiagnostics {
         DebugLog.i(TAG) { "$deviceLabel, $buildLabel" }
     }
 
-    /** Open a fresh session file and rotate old ones. No-op if [init] was never called. */
+    /** Whether a ride file is currently open, so a caller can write its closing lines. */
+    val isOpen: Boolean get() = file != null
+
+    /**
+     * Open a fresh session file and rotate old ones. No-op if [init] was never called.
+     *
+     * **Any file still open is closed first**, with [SUPERSEDED] as its reason. Before
+     * 2026-09-28 it was simply abandoned: a second `connect()` while the first was still
+     * retrying left a ride file ending mid-line, with no `session summary` and no
+     * `==== session end ====`. That is indistinguishable from the process having been
+     * killed — the one case the whole file exists to record. Task 12.
+     *
+     * The caller writes the closing lines it owns (the Wi-Fi totals) BEFORE calling this;
+     * [isOpen] is how it knows there is a file to write them into.
+     */
     fun start(reason: String) {
+        if (file != null) stop(SUPERSEDED)
         // Bumped before the early return: a ride began either way, and a collapsing
         // writer has to notice that even when no file could be opened for it.
         synchronized(lock) { session++ }
@@ -82,7 +120,7 @@ object RideDiagnostics {
             // Monotonic: this is the origin of the "+NNNms" column on every line below, i.e.
             // a duration. On the wall clock an NTP step mid-ride shifts every subsequent
             // offset — and those offsets are what a post-mortem measures intervals with.
-            sessionStartMs = monotonicMs()
+            sessionStartMs = clockMs()
             val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
             file = File(d, "ride-$stamp.log")
             PacketCapture.start(stamp)
@@ -117,10 +155,13 @@ object RideDiagnostics {
     private fun write(tag: String, msg: String) {
         if (file == null) return
         synchronized(lock) {
-            val rel = if (sessionStartMs > 0) "+%6dms".format(monotonicMs() - sessionStartMs) else "         "
+            val rel = if (sessionStartMs > 0) "+%6dms".format(clockMs() - sessionStartMs) else "         "
             raw("$rel  [$tag] $msg")
         }
     }
+
+    /** Reason [start] closes a file that was still open. */
+    const val SUPERSEDED = "superseded by a new connect()"
 
     fun stop(reason: String) {
         if (file == null) return

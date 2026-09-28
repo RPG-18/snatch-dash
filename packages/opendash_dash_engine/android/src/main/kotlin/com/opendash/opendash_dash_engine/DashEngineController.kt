@@ -433,6 +433,10 @@ class DashEngineController(
             )
         }
         RideDiagnostics.init(context)
+        // The Wi-Fi totals belong to the file that is ENDING, and only this class knows a
+        // new one is about to open. [RideDiagnostics.start] closes the old file itself,
+        // but it cannot know what to write into it first.
+        if (RideDiagnostics.isOpen) wifiManager.rollSessionCounters()
         RideDiagnostics.start("connect")
         RideDiagnostics.log(
             "connect",

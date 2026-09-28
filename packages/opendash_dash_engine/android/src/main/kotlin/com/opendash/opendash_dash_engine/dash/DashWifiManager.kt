@@ -449,11 +449,28 @@ class DashWifiManager(
             // exactly the dead-zone-then-reconnect window where an NTP correction lands.
             // Missed by the first sweep of 2026-09-14; found by review.
             downSinceMs      = monotonicMs() // "down" until the first markConnected
-        } else if (downSinceMs == 0L) {
-            // Same target, and the counters stand — but a re-request means the link is
-            // down from here until [markConnected], and nobody else opened this window:
-            // reaching this line with downSinceMs still zero is the shortcut-CONNECTED
-            // case, where the last markConnected closed it.
+        } else {
+            // **The outage clock restarts on a deliberate tap** (decision 2026-09-28,
+            // task 12). It feeds `elapsedMs` and through it [ReconnectPolicy]'s 120 s
+            // `giveUpAfterMs`, and leaving it running made a second tap buy LESS patience
+            // than the first: on the 27.09 bench the third session gave up at
+            // `elapsedMs ≈ 112.1 s`, eight seconds short of failing by deadline instead of
+            // by its own two attempts. The deadline exists to bound AUTOMATIC retrying; a
+            // tap is not automatic, and the rider paid for it with an explicit action.
+            //
+            // This only ever extends patience, so it cannot undo what `sameTarget` is for
+            // (keeping `hasConnectedOnce` so a mid-ride "Send to Dash" does not turn
+            // endless retries into one 30 s attempt).
+            //
+            // The window that is ending is BANKED first. Restarting the clock without
+            // that loses everything the session was already down for — a 55 s outage
+            // would report `downtime=5000ms` — which is the same class of defect this
+            // task is about. Review, 2026-09-28.
+            // Banking is idempotent, and which path did it depends on whether a ride
+            // file was open: [rollSessionCounters] gets there first when one was, this
+            // line when there was not. No log either way — the numbers belong to the
+            // file that is closing, and that file's own summary already carries them.
+            closeOutageWindow()
             downSinceMs = monotonicMs()
         }
         requestNetwork()
@@ -619,15 +636,12 @@ class DashWifiManager(
      */
     fun disconnect(allowLinger: Boolean = true) {
         DebugLog.i(TAG) { "Disconnect requested (allowLinger=$allowLinger)" }
-        if (downSinceMs != 0L) {
-            downtimeAccumMs += monotonicMs() - downSinceMs
-            downSinceMs = 0L
-        }
+        closeOutageWindow()
         // See the field session this closed the loop on — spec/wifi_retry_policy.md's
         // 2026-08-28 log analysis, where reconstructing these two numbers by hand from raw
         // timestamps was most of the work. Logged unconditionally (even reconnectCount=0 is
         // useful — it says the WiFi link never dropped once this whole time).
-        RideDiagnostics.log(TAG, "session summary: reconnects=$reconnectCount downtime=${downtimeAccumMs}ms")
+        logSessionSummary()
         wantConnected = false
         hasConnectedOnce = false
         scanGuess = null
@@ -1100,10 +1114,7 @@ class DashWifiManager(
         hasConnectedOnce = true
         // The outage is over, so the backoff starts from the bottom again next time.
         outageAttempts = 0
-        if (downSinceMs != 0L) {
-            downtimeAccumMs += monotonicMs() - downSinceMs
-            downSinceMs = 0L
-        }
+        closeOutageWindow()
         _state.value = WifiState(status = WifiConnStatus.CONNECTED, ssid = ssid)
         // Into the ride file, and from here rather than from each of the five call
         // sites that reach CONNECTED (callback, exact SSID, capabilities, the
@@ -1149,6 +1160,65 @@ class DashWifiManager(
         // the first one after the link comes back. The full curve stays in
         // app_log.txt, which is a debug-build luxury either way.
         if (context == POLL_CONTEXT) DebugLog.i(TAG) { line } else RideDiagnostics.log(TAG, line)
+    }
+
+    /**
+     * Bank the outage window that is open, if any, and return how long it ran.
+     *
+     * One helper rather than the same four lines in four places: every caller that ends
+     * a window has to add it to the total, and the one that forgot (the tap path, task
+     * 12) threw away the whole outage before it. Idempotent — a second call with no open
+     * window adds nothing.
+     */
+    private fun closeOutageWindow(): Long {
+        if (downSinceMs == 0L) return 0L
+        val ran = monotonicMs() - downSinceMs
+        downtimeAccumMs += ran
+        downSinceMs = 0L
+        return ran
+    }
+
+    /**
+     * The two numbers a post-mortem starts from, into whichever ride file is open.
+     *
+     * Split out of [disconnect] because that is no longer the only way a ride file ends:
+     * a second `connect()` closes the current one too (task 12), and a file that stops
+     * mid-air with no totals cannot be told from one whose process was killed — which is
+     * the case the file exists for.
+     *
+     * **Reads the open window without closing it.** A summary is a report; taking the
+     * total from [downtimeAccumMs] alone would have said `downtime=0ms` for a session
+     * that was down its entire life, because nothing had banked it yet.
+     */
+    internal fun logSessionSummary() {
+        val openFor = if (downSinceMs == 0L) 0L else monotonicMs() - downSinceMs
+        RideDiagnostics.log(
+            TAG,
+            "session summary: reconnects=$reconnectCount " +
+                "downtime=${downtimeAccumMs + openFor}ms",
+        )
+    }
+
+    /**
+     * Write the summary into the ride file that is closing, then start the next file's
+     * counters from zero.
+     *
+     * The counters are session-scoped and the session continues across a re-tap — but
+     * the FILE does not, and a number that counts events the reader cannot see in the
+     * file it is printed in is worse than no number. `downtime=112178ms` stood in a
+     * 62-second file on the 27.09 bench. `hasConnectedOnce` is deliberately NOT reset:
+     * that one is not a counter, it is the flag `sameTarget` exists to protect.
+     */
+    internal fun rollSessionCounters() {
+        // Report BEFORE banking: [logSessionSummary] reads the open window itself, and
+        // the part of the outage that happened before this boundary belongs to the file
+        // being closed.
+        logSessionSummary()
+        closeOutageWindow()
+        reconnectCount = 0
+        downtimeAccumMs = 0L
+        // Still down, and the part from here on belongs to the next file.
+        downSinceMs = monotonicMs()
     }
 
     /**

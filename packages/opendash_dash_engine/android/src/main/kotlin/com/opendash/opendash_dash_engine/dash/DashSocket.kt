@@ -106,15 +106,19 @@ internal class DashSocket(
     private val broadcastAddr: InetAddress = InetAddress.getByName(addresses.broadcast)
 
     /**
-     * Where RTP goes. Starts at what [DashAddresses] worked out from the link and is
-     * replaced by [adoptSenderAsDash] once the handshake proves who the dash is.
+     * Where RTP goes, and the rule for moving it — see [DashPeerLatch], which holds both
+     * so they can be tested without binding a socket.
      *
-     * Volatile because the frame thread sends RTP while the RX loop adopts.
+     * Volatile because the frame thread reads the destination while the RX loop writes
+     * the sender and, once, the destination itself.
      */
-    @Volatile private var dashAddr: InetAddress = InetAddress.getByName(addresses.dashIp)
-
-    /** Sender of the datagram [receive] returned last, for [adoptSenderAsDash]. */
-    @Volatile private var lastSender: InetAddress? = null
+    @Volatile private var peer = DashPeerLatch(
+        initial = InetAddress.getByName(addresses.dashIp),
+        // Whether the address we start from came from the interface or from the
+        // constant. Only this class can tell, and the ride file must not later claim
+        // "as derived" over a number nothing derived.
+        derived = addresses.source.contains("dash from gateway"),
+    )
     private val txSocket:  DatagramSocket
     private val rxSocket:  DatagramSocket
     private val rtpSocket: DatagramSocket
@@ -244,7 +248,7 @@ internal class DashSocket(
         // IOException only — see the note in [send] on why a broad catch hid a
         // NetworkOnMainThreadException as a link failure.
         try {
-            rtpSocket.send(DatagramPacket(data, data.size, dashAddr, RTP_PORT))
+            rtpSocket.send(DatagramPacket(data, data.size, peer.dash, RTP_PORT))
         } catch (e: IOException) {
             DebugLog.d(TAG) { "RTP send failed (link down?): ${e.message}" }
         }
@@ -299,7 +303,7 @@ internal class DashSocket(
                 continue
             }
             val bytes = buf.data.copyOf(buf.length)
-            lastSender = buf.address
+            peer.lastSender = buf.address
             DebugLog.d(TAG) { "RX ←${buf.address?.hostAddress}:${buf.port}  ${bytes.size}B  ${bytes.hexFull()}" }
             PacketCapture.rx(
                 bytes,
@@ -313,27 +317,16 @@ internal class DashSocket(
     }
 
     override fun adoptSenderAsDash() {
-        val peer = lastSender ?: return
-        if (peer == dashAddr) {
-            RideDiagnostics.log(
-            "stream",
-            "dash confirmed at ${peer.hostAddress} (as derived)",
-        )
-            return
+        // `stream`, not TAG, on both lines: they belong with the `addresses:` line this
+        // same socket wrote at open, and spec/frame_pipeline.md lists them together. A
+        // grep for `[stream]` that missed half the addressing story would be worse than
+        // none. The WARN is not a fault — it means the link and the dash disagreed, and
+        // before 2026-09-28 RTP went nowhere in that case, silently.
+        when (val outcome = peer.adopt()) {
+            is DashPeerLatch.Outcome.Confirmed -> RideDiagnostics.log("stream", outcome.note)
+            is DashPeerLatch.Outcome.Moved -> RideDiagnostics.warn("stream", outcome.note)
+            DashPeerLatch.Outcome.Ignored -> Unit
         }
-        // Worth a line at WARN, not because it is a fault but because it means the link
-        // and the dash disagreed: `DashAddresses` picked one address from LinkProperties
-        // and the handshake came from another. RTP would have gone nowhere, silently, on
-        // every build before 2026-09-28.
-        RideDiagnostics.warn(
-            // `stream`, not TAG: this belongs with the `addresses:` line the same socket
-            // wrote at open, and spec/frame_pipeline.md lists them together. A grep for
-            // `[stream]` that missed half the addressing story would be worse than none.
-            "stream",
-            "dash answered from ${peer.hostAddress}, not ${dashAddr.hostAddress} — " +
-                "RTP follows the handshake",
-        )
-        dashAddr = peer
     }
 
     override fun close() {

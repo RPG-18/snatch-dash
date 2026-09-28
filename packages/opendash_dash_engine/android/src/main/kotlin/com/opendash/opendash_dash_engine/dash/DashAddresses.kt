@@ -117,9 +117,14 @@ internal data class DashAddresses(
             // the one the first RTP packet would have gone to if the order ever changes.
             val gw = parseIpv4(gateway)?.takeIf { sameSubnet(me, it, prefixLength) }
 
+            // Three causes, not two: `gw` is null both when the gateway is off-subnet
+            // and when it did not parse as a dotted quad at all. Calling an IPv6 or
+            // malformed gateway "off-subnet" sends a field engineer after a routing
+            // problem that does not exist.
             val dashSource = when {
                 gw != null -> "dash from gateway"
                 gateway == null -> "dash provisional (no gateway)"
+                parseIpv4(gateway) == null -> "dash provisional (gateway '$gateway' is not IPv4)"
                 else -> "dash provisional (gateway $gateway is off-subnet)"
             }
             return DashAddresses(

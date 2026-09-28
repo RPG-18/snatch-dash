@@ -8,9 +8,16 @@ package com.opendash.opendash_dash_engine.dash
  * about *what goes out and when*, and until this interface there was no way to assert any of
  * it: [DashSocket] binds :2000 and :2002 in its constructor, which a JVM unit test cannot do.
  *
- * Deliberately three methods and no more. A session does not configure the link, does not
- * reopen it, and does not ask it anything — it writes control packets, writes RTP, reads
- * datagrams, and closes. Anything else belongs to whoever created the transport.
+ * Deliberately small. A session does not configure the link, does not reopen it, and does
+ * not ask it anything — it writes control packets, writes RTP, reads datagrams, and closes.
+ *
+ * [adoptSenderAsDash] is the one exception, and it is here rather than with whoever created
+ * the transport because of WHEN it has to happen, not what it does. The fact it acts on —
+ * which peer answered the handshake — is known only to the session, and only for as long as
+ * the receive loop is still holding that datagram. Handing the address outwards instead
+ * would mean either widening [receive] to return a sender on every packet, or letting a
+ * second object read "the last one" across a coroutine boundary — which is exactly the race
+ * this method was moved out of. It stays a one-way instruction with no argument.
  */
 internal interface DashTransport : AutoCloseable {
 

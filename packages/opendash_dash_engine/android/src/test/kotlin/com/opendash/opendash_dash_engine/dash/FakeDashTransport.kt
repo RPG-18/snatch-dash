@@ -66,8 +66,16 @@ internal class FakeDashTransport(private val clock: () -> Long) : DashTransport 
         if (!closed) rtpOut.add(data)
     }
 
-    /** Counted, not acted on: this fake has no notion of a peer address. */
-    var adoptions = 0
+    /**
+     * Counted, not acted on: this fake has no notion of a peer address.
+     *
+     * `@Volatile` like every other mutable field here. It is written from whichever
+     * thread runs the session's RX loop and read from the test thread, and while the one
+     * test that reads it today runs on `StandardTestDispatcher`, this fake is also used
+     * on `Dispatchers.Default` — where a plain Int would make the first such assertion
+     * pass or fail at random.
+     */
+    @Volatile var adoptions = 0
         private set
 
     override fun adoptSenderAsDash() {

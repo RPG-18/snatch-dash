@@ -501,7 +501,6 @@ internal class DashSession private constructor(
             DebugLog.i(TAG) { "Authenticated ✓" }
             RideDiagnostics.log("auth", "authenticated (07 01 01) — entering nav mode")
 
-
             // Always nav-mode entry, idle or not: the dash opens its video decoder only as
             // part of nav mode, so there is no separate idle mode (see spec/fsm.md).
             sendScript(Scripts.enterNavMode(chrome.value.destinationName))
@@ -812,8 +811,35 @@ internal class DashSession private constructor(
                         // datagram landing in between would have been the one adopted.
                         // Review, 2026-09-28; the first version's KDoc claimed the two
                         // could not overlap, which was simply false.
-                        transport?.adoptSenderAsDash()
-                        authConfirmed.complete(Unit)
+                        //
+                        // `Confirmed` is weaker than it looks. [DashAuth.ingest] raises
+                        // it for EVERY `07 01 01`, which is a plaintext status byte —
+                        // three bytes anything on the AP can send — and it does not
+                        // consult whether we ever sent a key.
+                        //
+                        // So an answer to a question we never asked is ignored whole,
+                        // not merely barred from adopting. Before this it completed the
+                        // handshake and the session went to READY with
+                        // `auth.sessionKey == null`; the adoption gate alone would have
+                        // left that half-fixed, which is worse than either end.
+                        //
+                        // Safe on observed hardware: the exchange in every capture is
+                        // `AuthRequest → modulus+exponent → SendKey → AuthResult`, so a
+                        // real accept always has a key behind it (pcapng 27.09, all five
+                        // sessions). An accept without one now waits out the auth
+                        // timeout and retries, which is what a dash that never answered
+                        // already does.
+                        if (auth.sessionKey == null) {
+                            RideDiagnostics.warn(
+                                "auth",
+                                "07 01 01 before any key was sent — ignored",
+                            )
+                        } else {
+                            // [DashPeerLatch] enforces "once" on its side too; this keeps
+                            // the pointless call out of the RX loop.
+                            if (!authConfirmed.isCompleted) transport?.adoptSenderAsDash()
+                            authConfirmed.complete(Unit)
+                        }
                     }
                     AuthEvent.Rejected -> {
                         authRejectRetries++

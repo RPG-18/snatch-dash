@@ -683,12 +683,19 @@ class DashSessionTest {
         }
 
     @Test
-    fun `the dash's address is adopted once, and only when the handshake completes`() = runTest {
+    fun `the dash's address is adopted once, and only when we asked for the handshake`() = runTest {
         val r = rig()
         try {
             advanceTimeBy(200)
             runCurrent()
             assertEquals(0, r.wire.adoptions, "no handshake has completed yet")
+
+            // An unsolicited 07 01 01, before we have sent any key. It is three plaintext
+            // bytes anyone on the AP can produce, and until this gate it both completed
+            // auth and captured the video stream.
+            r.wire.deliver(incoming(0x07, 0x01, byteArrayOf(0x01, 0x02)))
+            runCurrent()
+            assertEquals(0, r.wire.adoptions, "we never asked — nothing to confirm")
 
             offerPubKey(r)
             runCurrent()
@@ -705,6 +712,13 @@ class DashSessionTest {
             // authenticates nobody (see DashTransport.adoptSenderAsDash), so the
             // handshake is the strongest signal there is — but only the first one.
             assertEquals(1, r.wire.adoptions, "exactly one adoption, at 07 01 01")
+
+            // The half the first version of this test never checked: it only advanced
+            // through telemetry, so "once" was asserted against a stream that never
+            // offered a second chance to get it wrong.
+            r.wire.deliver(incoming(0x07, 0x01, byteArrayOf(0x01, 0x02)))
+            runCurrent()
+            assertEquals(1, r.wire.adoptions, "a second 07 01 01 must not re-point RTP")
 
             advanceStreaming(r, 5_000)
             assertEquals(1, r.wire.adoptions, "a talking dash does not re-adopt")

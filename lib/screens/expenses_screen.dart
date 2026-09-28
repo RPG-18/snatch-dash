@@ -8,6 +8,7 @@ import '../models/garage_models.dart';
 import '../state/currency_settings.dart';
 import '../state/expense_exporter.dart';
 import '../state/garage_controller.dart';
+import '../widgets/text_controller_scope.dart';
 
 const _categories = [
   'All Expenses',
@@ -285,64 +286,69 @@ class _ExpensesScreenState extends ConsumerState<ExpensesScreen> {
     OpenDashCurrency currency,
   ) {
     var category = _categories.length > 1 ? _categories[1] : 'Fuel';
-    final amount = TextEditingController();
-    final note = TextEditingController();
     showDialog<void>(
       context: context,
-      builder: (dialogContext) => StatefulBuilder(
-        builder: (dialogContext, setState) => AlertDialog(
-          title: Text(l10n.expensesAddTitle),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              DropdownButtonFormField<String>(
-                initialValue: category,
-                items: [
-                  for (final c in _categories.skip(1))
-                    DropdownMenuItem(
-                      value: c,
-                      child: Text(_categoryLabel(l10n, c)),
+      builder: (dialogContext) => TextControllerScope(
+        initial: const {'amount': '', 'note': ''},
+        builder: (dialogContext, f) {
+          final amount = f['amount']!;
+          final note = f['note']!;
+          return StatefulBuilder(
+            builder: (dialogContext, setState) => AlertDialog(
+              title: Text(l10n.expensesAddTitle),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  DropdownButtonFormField<String>(
+                    initialValue: category,
+                    items: [
+                      for (final c in _categories.skip(1))
+                        DropdownMenuItem(
+                          value: c,
+                          child: Text(_categoryLabel(l10n, c)),
+                        ),
+                    ],
+                    onChanged: (v) => setState(() => category = v ?? category),
+                    decoration: InputDecoration(
+                      labelText: l10n.expensesCategoryLabel,
                     ),
+                  ),
+                  TextField(
+                    controller: amount,
+                    keyboardType: TextInputType.number,
+                    decoration: InputDecoration(
+                      labelText: l10n.expensesAmountLabel(currency.symbol),
+                    ),
+                  ),
+                  TextField(
+                    controller: note,
+                    decoration: InputDecoration(
+                      labelText: l10n.expensesNoteOptionalLabel,
+                    ),
+                  ),
                 ],
-                onChanged: (v) => setState(() => category = v ?? category),
-                decoration: InputDecoration(
-                  labelText: l10n.expensesCategoryLabel,
-                ),
               ),
-              TextField(
-                controller: amount,
-                keyboardType: TextInputType.number,
-                decoration: InputDecoration(
-                  labelText: l10n.expensesAmountLabel(currency.symbol),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(dialogContext),
+                  child: Text(l10n.actionCancel),
                 ),
-              ),
-              TextField(
-                controller: note,
-                decoration: InputDecoration(
-                  labelText: l10n.expensesNoteOptionalLabel,
+                TextButton(
+                  onPressed: () {
+                    final a = double.tryParse(amount.text);
+                    if (a != null && a > 0) {
+                      ref
+                          .read(garageControllerProvider.notifier)
+                          .addExpense(category, a, note.text.trim());
+                    }
+                    Navigator.pop(dialogContext);
+                  },
+                  child: Text(l10n.actionSave),
                 ),
-              ),
-            ],
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(dialogContext),
-              child: Text(l10n.actionCancel),
+              ],
             ),
-            TextButton(
-              onPressed: () {
-                final a = double.tryParse(amount.text);
-                if (a != null && a > 0) {
-                  ref
-                      .read(garageControllerProvider.notifier)
-                      .addExpense(category, a, note.text.trim());
-                }
-                Navigator.pop(dialogContext);
-              },
-              child: Text(l10n.actionSave),
-            ),
-          ],
-        ),
+          );
+        },
       ),
     );
   }

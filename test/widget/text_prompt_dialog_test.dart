@@ -20,11 +20,11 @@ import 'package:snatch_dash/widgets/text_prompt_dialog.dart';
 /// is that the controller now belongs to a `State`, which the framework
 /// disposes after unmount by construction.
 ///
-/// Mutation-checked 2026-09-28: dropping the `true` from `Navigator.pop` and
-/// skipping the `_saving` reset on failure both fail here. **Deleting
-/// `_controller.dispose()` does not** — a leaked controller is invisible to a
-/// widget test, which is precisely why `garage_screen.dart` and
-/// `expenses_screen.dart` have leaked theirs unnoticed all along.
+/// Mutation-checked 2026-09-28: dropping the `true` from `Navigator.pop`,
+/// skipping the `_saving` reset on failure, and deleting
+/// `_controller.dispose()` all fail here. The last one only after review
+/// pointed out that disposal IS observable — a disposed `ChangeNotifier`
+/// throws on `addListener` — which an earlier version of this comment denied.
 void main() {
   /// Opens [dialog] and hands back the future `showDialog` returns, so a test
   /// can assert on the popped value.
@@ -105,6 +105,35 @@ void main() {
     await tester.pumpAndSettle();
     expect(calls, 0);
     expect(await result, isFalse, reason: 'cancel must not trigger a reload');
+  });
+
+  testWidgets('the controller dies with the dialog, not before', (
+    tester,
+  ) async {
+    late TextEditingController controller;
+    await open(
+      tester,
+      dialog: TextPromptDialog(
+        title: 'title',
+        label: 'label',
+        saveFailed: 'could not save',
+        initial: 'RE_OLD',
+        onSave: (_) async {},
+        debugOnController: (c) => controller = c,
+      ),
+    );
+
+    // Alive while the dialog is up — the bug this widget exists for was
+    // disposal at pop, while the route was still building.
+    controller.addListener(() {});
+    await tester.tap(find.text('Save'));
+    await tester.pumpAndSettle();
+
+    expect(
+      () => controller.addListener(() {}),
+      throwsFlutterError,
+      reason: 'and released once the route is gone',
+    );
   });
 
   testWidgets('a failing save leaves the dialog open and usable', (

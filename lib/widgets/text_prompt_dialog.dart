@@ -35,6 +35,7 @@ class TextPromptDialog extends StatefulWidget {
     required this.onSave,
     required this.saveFailed,
     this.maxLength,
+    this.debugOnController,
   });
 
   final String title;
@@ -49,6 +50,14 @@ class TextPromptDialog extends StatefulWidget {
   /// not lost.
   final String saveFailed;
 
+  /// Handed the controller on creation, so a test can watch its lifetime.
+  ///
+  /// Not a hook for behaviour: nothing in the app passes it. Disposal is the
+  /// single thing this widget was extracted to get right, and without a way
+  /// to observe the controller from outside it was the one thing no test
+  /// could check — deleting `dispose()` kept them all green.
+  final void Function(TextEditingController)? debugOnController;
+
   @override
   State<TextPromptDialog> createState() => TextPromptDialogState();
 }
@@ -58,6 +67,12 @@ class TextPromptDialogState extends State<TextPromptDialog> {
     text: widget.initial,
   );
   bool _saving = false;
+
+  @override
+  void initState() {
+    super.initState();
+    widget.debugOnController?.call(_controller);
+  }
 
   @override
   void dispose() {

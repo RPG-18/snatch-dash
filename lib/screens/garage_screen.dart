@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../l10n/app_localizations.dart';
 import '../state/garage_controller.dart';
+import '../widgets/text_controller_scope.dart';
 
 /// Icon keys a maintenance item can carry, in the order the picker offers
 /// them. Persisted as the key, not the glyph — `iconKey` is a database column
@@ -78,160 +79,179 @@ class _GarageScreenState extends ConsumerState<GarageScreen>
 
   void _showSetOdometer(BuildContext context, WidgetRef ref, int current) {
     final l10n = AppLocalizations.of(context)!;
-    final controller = TextEditingController(text: current.toString());
     showDialog<void>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: Text(l10n.garageSetOdometerTitle),
-        content: TextField(
-          controller: controller,
-          keyboardType: TextInputType.number,
-          decoration: const InputDecoration(suffixText: 'km'),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: Text(l10n.actionCancel),
-          ),
-          TextButton(
-            onPressed: () {
-              final km = int.tryParse(controller.text);
-              if (km != null) {
-                ref.read(garageControllerProvider.notifier).setOdometer(km);
-              }
-              Navigator.pop(context);
-            },
-            child: Text(l10n.actionSave),
-          ),
-        ],
+      builder: (context) => TextControllerScope(
+        initial: {'odometer': current.toString()},
+        builder: (context, f) {
+          final controller = f['odometer']!;
+          return AlertDialog(
+            title: Text(l10n.garageSetOdometerTitle),
+            content: TextField(
+              controller: controller,
+              keyboardType: TextInputType.number,
+              decoration: const InputDecoration(suffixText: 'km'),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: Text(l10n.actionCancel),
+              ),
+              TextButton(
+                onPressed: () {
+                  final km = int.tryParse(controller.text);
+                  if (km != null) {
+                    ref.read(garageControllerProvider.notifier).setOdometer(km);
+                  }
+                  Navigator.pop(context);
+                },
+                child: Text(l10n.actionSave),
+              ),
+            ],
+          );
+        },
       ),
     );
   }
 
   void _showAddFuel(BuildContext context, WidgetRef ref) {
     final l10n = AppLocalizations.of(context)!;
-    final litres = TextEditingController();
-    final cost = TextEditingController();
-    final odo = TextEditingController();
-    final location = TextEditingController();
     showDialog<void>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: Text(l10n.garageAddFillUpTitle),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              controller: litres,
-              keyboardType: TextInputType.number,
-              decoration: InputDecoration(labelText: l10n.garageLitresLabel),
+      builder: (context) => TextControllerScope(
+        initial: const {'litres': '', 'cost': '', 'odo': '', 'location': ''},
+        builder: (context, f) {
+          final litres = f['litres']!;
+          final cost = f['cost']!;
+          final odo = f['odo']!;
+          final location = f['location']!;
+          return AlertDialog(
+            title: Text(l10n.garageAddFillUpTitle),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(
+                  controller: litres,
+                  keyboardType: TextInputType.number,
+                  decoration: InputDecoration(
+                    labelText: l10n.garageLitresLabel,
+                  ),
+                ),
+                TextField(
+                  controller: cost,
+                  keyboardType: TextInputType.number,
+                  decoration: InputDecoration(labelText: l10n.garageCostLabel),
+                ),
+                TextField(
+                  controller: odo,
+                  keyboardType: TextInputType.number,
+                  decoration: InputDecoration(
+                    labelText: l10n.garageOdometerKmLabel,
+                  ),
+                ),
+                TextField(
+                  controller: location,
+                  decoration: InputDecoration(
+                    labelText: l10n.garageLocationOptionalLabel,
+                  ),
+                ),
+              ],
             ),
-            TextField(
-              controller: cost,
-              keyboardType: TextInputType.number,
-              decoration: InputDecoration(labelText: l10n.garageCostLabel),
-            ),
-            TextField(
-              controller: odo,
-              keyboardType: TextInputType.number,
-              decoration: InputDecoration(
-                labelText: l10n.garageOdometerKmLabel,
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: Text(l10n.actionCancel),
               ),
-            ),
-            TextField(
-              controller: location,
-              decoration: InputDecoration(
-                labelText: l10n.garageLocationOptionalLabel,
+              TextButton(
+                onPressed: () {
+                  final l = double.tryParse(litres.text);
+                  final c = double.tryParse(cost.text);
+                  final o = int.tryParse(odo.text);
+                  if (l != null && c != null && o != null) {
+                    ref
+                        .read(garageControllerProvider.notifier)
+                        .addFuel(l, c, o, location.text.trim());
+                  }
+                  Navigator.pop(context);
+                },
+                child: Text(l10n.actionSave),
               ),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: Text(l10n.actionCancel),
-          ),
-          TextButton(
-            onPressed: () {
-              final l = double.tryParse(litres.text);
-              final c = double.tryParse(cost.text);
-              final o = int.tryParse(odo.text);
-              if (l != null && c != null && o != null) {
-                ref
-                    .read(garageControllerProvider.notifier)
-                    .addFuel(l, c, o, location.text.trim());
-              }
-              Navigator.pop(context);
-            },
-            child: Text(l10n.actionSave),
-          ),
-        ],
+            ],
+          );
+        },
       ),
     );
   }
 
   void _showAddService(BuildContext context, WidgetRef ref) {
     final l10n = AppLocalizations.of(context)!;
-    final name = TextEditingController();
-    final interval = TextEditingController(text: '1000');
     // The icon ends up on the maintenance list next to the name, so the rider
     // picks it here instead of every item silently becoming a wrench.
     var iconKey = _serviceIcons.keys.first;
     showDialog<void>(
       context: context,
-      builder: (context) => StatefulBuilder(
-        builder: (context, setDialogState) => AlertDialog(
-          title: Text(l10n.garageAddIntervalTitle),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              TextField(
-                controller: name,
-                decoration: InputDecoration(labelText: l10n.garageNameLabel),
-              ),
-              TextField(
-                controller: interval,
-                keyboardType: TextInputType.number,
-                decoration: InputDecoration(
-                  labelText: l10n.garageIntervalKmLabel,
-                ),
-              ),
-              const SizedBox(height: 16),
-              Wrap(
-                spacing: 8,
+      builder: (context) => TextControllerScope(
+        initial: const {'name': '', 'interval': '1000'},
+        builder: (context, f) {
+          final name = f['name']!;
+          final interval = f['interval']!;
+          return StatefulBuilder(
+            builder: (context, setDialogState) => AlertDialog(
+              title: Text(l10n.garageAddIntervalTitle),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
                 children: [
-                  for (final entry in _serviceIcons.entries)
-                    ChoiceChip(
-                      label: Icon(entry.value, size: 20),
-                      showCheckmark: false,
-                      selected: entry.key == iconKey,
-                      onSelected: (_) =>
-                          setDialogState(() => iconKey = entry.key),
+                  TextField(
+                    controller: name,
+                    decoration: InputDecoration(
+                      labelText: l10n.garageNameLabel,
                     ),
+                  ),
+                  TextField(
+                    controller: interval,
+                    keyboardType: TextInputType.number,
+                    decoration: InputDecoration(
+                      labelText: l10n.garageIntervalKmLabel,
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  Wrap(
+                    spacing: 8,
+                    children: [
+                      for (final entry in _serviceIcons.entries)
+                        ChoiceChip(
+                          label: Icon(entry.value, size: 20),
+                          showCheckmark: false,
+                          selected: entry.key == iconKey,
+                          onSelected: (_) =>
+                              setDialogState(() => iconKey = entry.key),
+                        ),
+                    ],
+                  ),
                 ],
               ),
-            ],
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: Text(l10n.actionCancel),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: Text(l10n.actionCancel),
+                ),
+                TextButton(
+                  onPressed: () {
+                    final n = name.text.trim();
+                    final i = int.tryParse(interval.text);
+                    if (n.isNotEmpty && i != null) {
+                      ref
+                          .read(garageControllerProvider.notifier)
+                          .addService(n, iconKey, i);
+                    }
+                    Navigator.pop(context);
+                  },
+                  child: Text(l10n.actionSave),
+                ),
+              ],
             ),
-            TextButton(
-              onPressed: () {
-                final n = name.text.trim();
-                final i = int.tryParse(interval.text);
-                if (n.isNotEmpty && i != null) {
-                  ref
-                      .read(garageControllerProvider.notifier)
-                      .addService(n, iconKey, i);
-                }
-                Navigator.pop(context);
-              },
-              child: Text(l10n.actionSave),
-            ),
-          ],
-        ),
+          );
+        },
       ),
     );
   }

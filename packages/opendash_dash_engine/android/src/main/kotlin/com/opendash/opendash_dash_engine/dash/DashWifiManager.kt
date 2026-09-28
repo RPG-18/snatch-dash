@@ -1151,6 +1151,58 @@ class DashWifiManager(
         if (context == POLL_CONTEXT) DebugLog.i(TAG) { line } else RideDiagnostics.log(TAG, line)
     }
 
+    /**
+     * The two addresses to send to on [net]: the control-plane broadcast and the dash.
+     *
+     * [net] is a parameter with **no default** so the caller can bind the socket and
+     * resolve its addresses from ONE read of the volatile [network]. Reading it twice
+     * let a flap in between hand the socket one network and the addresses another — and
+     * a default here would make that mistake compile again, silently.
+     *
+     * This function is only the platform half: it pulls values out of `LinkProperties`
+     * and hands them to [DashAddresses.fromLink], which holds every rule and is tested.
+     */
+    internal fun dashAddresses(net: Network?): DashAddresses {
+        if (net == null) return DashAddresses.fallback("no network")
+        val lp = try {
+            cm.getLinkProperties(net)
+        } catch (e: Exception) {
+            // Routine: the network can go away between the bind and this call. Logged
+            // rather than swallowed, because the fallback addresses it produces are
+            // indistinguishable on the wire from derived ones that happen to match.
+            RideDiagnostics.warn(TAG, "link properties unavailable: ${e.javaClass.simpleName}")
+            return DashAddresses.fallback("link properties threw")
+        } ?: return DashAddresses.fallback("no link properties")
+
+        // `hasGateway()` rather than a null check on `gateway`: AOSP substitutes the
+        // wildcard 0.0.0.0 for an on-link route's absent gateway, and it IS an
+        // Inet4Address — so a null check accepts it, stops the search before a real
+        // gateway route, and lands in the ride file mislabelled as "off-subnet". The
+        // same wildcard can come back from `dhcpServerAddress`, hence `isAnyLocalAddress`
+        // there: without it the elvis below short-circuits on "0.0.0.0" and the real
+        // default route is never consulted.
+        val dhcp = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            lp.dhcpServerAddress?.takeIf { !it.isAnyLocalAddress }?.hostAddress
+        } else {
+            null
+        }
+        return DashAddresses.fromLink(
+            ipv4s = lp.linkAddresses
+                .filter { it.address is java.net.Inet4Address }
+                .map {
+                    DashAddresses.LinkV4(
+                        address = it.address.hostAddress,
+                        prefixLength = it.prefixLength,
+                        linkLocal = it.address.isLinkLocalAddress,
+                    )
+                },
+            dhcpServer = dhcp,
+            defaultGateways = lp.routes
+                .filter { it.isDefaultRoute && it.hasGateway() && it.gateway is java.net.Inet4Address }
+                .mapNotNull { it.gateway?.hostAddress },
+        )
+    }
+
     private fun startRssiPolling() {
         rssiPollJob?.cancel()
         rssiPollJob = scope.launch {

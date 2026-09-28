@@ -14,20 +14,29 @@ import java.net.InetSocketAddress
 
 /**
  * UDP sockets for the Tripper Dash, matching better-dash exactly:
- *   TX  – bound to :2000, SO_BROADCAST, sends to 192.168.1.255:2000.
- *         The bike IP is never used for the control plane.
+ *   TX  – bound to :2000, SO_BROADCAST, sends to the link's broadcast address
+ *         on :2000. The bike IP is never used for the control plane.
  *   RX  – bound to :2002. Must be open BEFORE the first TX packet, both to
  *         catch the early pubkey reply and because unanswered dash→phone
  *         packets generate ICMP port-unreachable, which confuses the dash's
  *         protocol state machine.
- *   RTP – ephemeral, sends H.264 to 192.168.1.1:5000.
+ *   RTP – ephemeral, sends H.264 to the dash on :5000.
+ *
+ * **The two addresses come from [DashAddresses]**, which derives them from the
+ * interface and falls back to `192.168.1.255` / `192.168.1.1` — what they were
+ * hardcoded to until 2026-09-28 — whenever the platform says nothing usable.
+ * Инвариант 9 is unchanged: control broadcast, RTP unicast.
  *
  * Every control packet gets the rolling K1G seq byte patched on send.
  */
-class DashSocket(private val network: android.net.Network? = null) : DashTransport {
+internal class DashSocket(
+    private val network: android.net.Network?,
+    // No default. A construction site that forgot this argument would silently ship the
+    // 192.168.1.x constants instead of failing to compile, and the difference is invisible
+    // on any link where those constants happen to be right — which is every link we own.
+    private val addresses: DashAddresses,
+) : DashTransport {
     companion object {
-        const val DASH_IP    = "192.168.1.1"
-        const val BROADCAST  = "192.168.1.255"
         const val CTRL_PORT  = 2000
         const val RX_PORT    = 2002
         const val RTP_PORT   = 5000
@@ -92,8 +101,10 @@ class DashSocket(private val network: android.net.Network? = null) : DashTranspo
         private const val TAG             = "DashSocket"
     }
 
-    private val broadcastAddr: InetAddress = InetAddress.getByName(BROADCAST)
-    private val dashAddr:      InetAddress = InetAddress.getByName(DASH_IP)
+    // `getByName` on a dotted quad is a parse, not a lookup — [DashAddresses] only ever
+    // produces literals, so nothing here can block on DNS.
+    private val broadcastAddr: InetAddress = InetAddress.getByName(addresses.broadcast)
+    private val dashAddr:      InetAddress = InetAddress.getByName(addresses.dashIp)
     private val txSocket:  DatagramSocket
     private val rxSocket:  DatagramSocket
     private val rtpSocket: DatagramSocket
@@ -150,7 +161,15 @@ class DashSocket(private val network: android.net.Network? = null) : DashTranspo
 
             rtp = DatagramSocket()
             network?.bindSocket(rtp)
-            DebugLog.i(TAG) { "Sockets open — TX :$CTRL_PORT→$BROADCAST:$CTRL_PORT (broadcast), RX :$RX_PORT, RTP→$DASH_IP:$RTP_PORT" }
+            DebugLog.i(TAG) { "Sockets open — TX :$CTRL_PORT→${addresses.broadcast}:$CTRL_PORT (broadcast), RX :$RX_PORT, RTP→${addresses.dashIp}:$RTP_PORT" }
+            // Into the ride file, not just DebugLog: a wrong broadcast makes the handshake
+            // time out with no other symptom, and `still unavailable` on its own points at
+            // Wi-Fi. This line is what separates the two causes on a release build.
+            RideDiagnostics.log(
+                "stream",
+                "addresses: broadcast=${addresses.broadcast} dash=${addresses.dashIp} " +
+                    "(${addresses.source})",
+            )
             txSocket  = tx
             rxSocket  = rx
             rtpSocket = rtp
@@ -193,8 +212,8 @@ class DashSocket(private val network: android.net.Network? = null) : DashTranspo
         // the lock arrive in whatever order the threads take it, describing packets that went
         // out in another. In a release build DebugLog compiles the whole thing away; in a
         // debug one it is a hex dump of a few dozen bytes, eight times a second.
-        DebugLog.d(TAG) { "TX →$BROADCAST:$CTRL_PORT  ${pkt.size}B  ${pkt.hexFull()}" }
-        PacketCapture.tx(pkt, srcPort = CTRL_PORT, dstIp = BROADCAST, dstPort = CTRL_PORT)
+        DebugLog.d(TAG) { "TX →${addresses.broadcast}:$CTRL_PORT  ${pkt.size}B  ${pkt.hexFull()}" }
+        PacketCapture.tx(pkt, srcPort = CTRL_PORT, dstIp = addresses.broadcast, dstPort = CTRL_PORT)
         // UDP fire-and-forget: a dropped/unreachable link (ENETUNREACH, EBADF) must never
         // crash the app — the session will fail and reconnect.
         //
@@ -263,7 +282,7 @@ class DashSocket(private val network: android.net.Network? = null) : DashTranspo
                 // sending these would look like the first while being the second.
                 PacketCapture.rx(
                     buf.data.copyOf(buf.length.coerceAtMost(rxBuffer.size)),
-                    srcIp = buf.address?.hostAddress ?: DASH_IP,
+                    srcIp = buf.address?.hostAddress ?: addresses.dashIp,
                     srcPort = buf.port,
                     dstPort = RX_PORT,
                 )
@@ -273,7 +292,7 @@ class DashSocket(private val network: android.net.Network? = null) : DashTranspo
             DebugLog.d(TAG) { "RX ←${buf.address?.hostAddress}:${buf.port}  ${bytes.size}B  ${bytes.hexFull()}" }
             PacketCapture.rx(
                 bytes,
-                srcIp = buf.address?.hostAddress ?: DASH_IP,
+                srcIp = buf.address?.hostAddress ?: addresses.dashIp,
                 srcPort = buf.port,
                 dstPort = RX_PORT,
             )

@@ -34,9 +34,12 @@ import org.maplibre.android.snapshotter.MapSnapshotter
  *   a dropped link. Note what the deadline does and does not bound: the frame
  *   loop stops waiting, but the snapshotter still owes us that request and takes
  *   no other until it lands or [WEDGED_MS] tears it off, so the map itself can
- *   stand still for far longer than one deadline. [skipped] counts exactly those
+ *   stand still for far longer than one deadline. [SnapshotCounters.skip] counts exactly those
  *   frames — read it before deciding this design holds.
- * - **Everything here runs on the main thread.** `MapSnapshotter` checks for it
+ * - **Everything here runs on the main thread** — with one exception, added 2026-09-29:
+ *   [drainCounters] is called from the frame loop on `dash-frame`. It touches nothing
+ *   but `SnapshotCounters`, whose atomics exist for exactly that crossing.
+ *   `MapSnapshotter` checks for it
  *   in debug builds and delivers both callbacks through a main-looper `Handler`
  *   regardless, so this is where the object already lives.
  */
@@ -105,52 +108,17 @@ class MapSnapshotProvider(private val context: Context) {
      */
     private var snapshotterIssue = 0L
 
-    /** Snapshots that missed their deadline. The frame loop moved on without them. */
-    @Volatile var timeouts = 0L
-        private set
-
     /**
-     * Frames that never even asked for a snapshot because the previous request was
-     * still out — i.e. the map on the dash did not move for that frame.
-     *
-     * This is the number the "wait for the snapshot" design is actually judged on,
-     * and it is NOT [timeouts]: the deadline bounds how long the frame loop waits,
-     * not how long the map stands still. A snapshot that overruns its deadline
-     * keeps the snapshotter (one request at a time) until it lands or [WEDGED_MS]
-     * tears it off, and every frame in between comes back null here. Counted
-     * separately so the threshold for moving MapLibre into a SurfaceTexture
-     * (spec/drawing_from_local_tiles.md) can be taken from measurements instead of
-     * from an argument — timeouts=0 with skipped in the hundreds is exactly the
-     * pattern that would otherwise look healthy in the log.
+     * Snapshotter trouble, per window and per session — see [SnapshotCounters], which
+     * holds the arithmetic so it can be tested without a MapLibre snapshotter.
      */
-    @Volatile var skipped = 0L
-        private set
+    private val counters = SnapshotCounters()
 
-    /**
-     * Snapshots torn off by [WEDGED_MS] because they never came back at all.
-     *
-     * Counted apart from [timeouts] because this is the one path that leaks: a
-     * cancelled request's bitmap is dropped inside MapLibre where we cannot reach
-     * it. Nonzero here means both "something is badly wrong" and "native memory
-     * is growing".
-     */
-    @Volatile var abandoned = 0L
-        private set
+    /** Drains this window's counts for the `[map]` line. */
+    internal fun drainCounters(): SnapshotCounters.Tally = counters.drain()
 
-    /** Failures from MapLibre's own `ErrorHandler`; that path is otherwise silent. */
-    @Volatile var errors = 0L
-        private set
-
-    /**
-     * Times the snapshotter had to be thrown away and built again — see [rebuild].
-     *
-     * Reported next to the others because it is the difference between "the map
-     * came back" and "the map was gone for the rest of the ride": nonzero here
-     * means the session hit the dead-snapshotter state and got out of it, and a
-     * rising count across a ride means it keeps happening.
-     */
-    @Volatile var rebuilds = 0L
-        private set
+    /** Everything this session has accumulated, drained windows included. */
+    internal fun sessionTotals(): SnapshotCounters.Tally = counters.sessionSoFar()
 
     /**
      * Builds the snapshotter for one streaming session.
@@ -190,25 +158,29 @@ class MapSnapshotProvider(private val context: Context) {
      *
      * What the old argument was right about survives as the carry-over line: said
      * once, where "the previous session ended badly" is the whole message, instead
-     * of smeared into every window for the rest of the ride. [abandoned] is the
+     * of smeared into every window for the rest of the ride. [SnapshotCounters.abandon] is the
      * one that genuinely outlives a session — its leaked bitmaps are in the
      * process's native heap, not this object's — and that is exactly what the line
      * reports.
      */
     private fun resetCounters() {
-        if (timeouts + skipped + abandoned + errors + rebuilds > 0) {
+        // The SESSION totals, not this window's — those are drained into them every 30 s
+        // and are normally zero by the time a session ends. Both horizons are kept
+        // because they answer different questions; see [SnapshotCounters].
+        val t = counters.sessionSoFar()
+        if (t.total > 0) {
             RideDiagnostics.log(
                 "map",
-                "previous session left timeouts=$timeouts skipped=$skipped " +
-                    "wedged=$abandoned snapErr=$errors rebuilds=$rebuilds" +
-                    if (abandoned > 0) " — ${abandoned * BITMAP_KB / 1024} MiB of bitmaps leaked and still held" else "",
+                "previous session left timeouts=${t.timeouts} skipped=${t.skipped} " +
+                    "wedged=${t.abandoned} snapErr=${t.errors} rebuilds=${t.rebuilds}" +
+                    if (t.abandoned > 0) {
+                        " — ${t.abandoned * BITMAP_KB / 1024} MiB of bitmaps leaked and still held"
+                    } else {
+                        ""
+                    },
             )
         }
-        timeouts = 0
-        skipped = 0
-        abandoned = 0
-        errors = 0
-        rebuilds = 0
+        counters.reset()
     }
 
     /**
@@ -259,7 +231,7 @@ class MapSnapshotProvider(private val context: Context) {
         // nobody — see the note where this is captured in [capture].
         snapshotterIssue++
         if (json == null) return // never prepared — nothing to rebuild from
-        rebuilds++
+        counters.rebuild()
         rebuildsSinceSuccess++
         lastRebuildAtMs = monotonicMs()
         DebugLog.w(TAG) { "rebuilding the snapshotter: $reason" }
@@ -301,11 +273,11 @@ class MapSnapshotProvider(private val context: Context) {
                 // Still out, but not for long enough to call it dead. Skip this
                 // frame rather than pile a second request on a busy snapshotter —
                 // `start()` throws while a callback is pending.
-                skipped++
+                counters.skip()
                 return@withContext null
             }
             // Long past slow. Tear it off and take the leak: a frozen map is worse.
-            abandoned++
+            counters.abandon()
             DebugLog.w(TAG) { "snapshot wedged for ${now - inFlightSince}ms — cancelling, its bitmap is lost" }
             snapshotter?.let { runCatching { it.cancel() } }
             inFlight = false
@@ -324,11 +296,15 @@ class MapSnapshotProvider(private val context: Context) {
                 // 4 fps through a 60s wait that is 240 guaranteed failures — each
                 // one a warn line in the ride log that the real fault has to be
                 // found in. Skip like any other frame the map could not redraw.
-                skipped++
+                counters.skip()
                 return@withContext null
             }
             rebuild(
-                "after ${abandoned + errors} snapshot failures" +
+                // Session-wide, not this window's: the message is about how bad it has
+                // been, and the window counters are drained every 30 s. Banked plus
+                // still-undrained is the true total at this instant.
+                "after ${counters.sessionSoFar().let { it.abandoned + it.errors }} " +
+                    "snapshot failures" +
                     if (backingOff) " — $rebuildsSinceSuccess rebuilds have not helped, retrying every ${REBUILD_BACKOFF_MS / 1000}s" else "",
             )
         }
@@ -387,7 +363,7 @@ class MapSnapshotProvider(private val context: Context) {
                                 // slow-then-failed snapshot read as two separate problems.
                                 if (cont.isActive) {
                                     failed = true
-                                    errors++
+                                    counters.error()
                                     DebugLog.w(TAG) { "snapshot failed: $reason" }
                                     cont.resume(null)
                                 } else {
@@ -398,7 +374,7 @@ class MapSnapshotProvider(private val context: Context) {
                     } catch (e: Exception) {
                         inFlight = false
                         failed = true
-                        errors++
+                        counters.error()
                         noteFailure()
                         DebugLog.e(TAG, { "snapshotter.start() threw" }, e)
                         if (cont.isActive) cont.resume(null)
@@ -406,7 +382,7 @@ class MapSnapshotProvider(private val context: Context) {
                 }
             }
             if (snapshot == null && !failed) {
-                timeouts++
+                counters.timeout()
                 DebugLog.w(TAG) { "snapshot missed its ${deadlineMs}ms deadline" }
             }
             snapshot
@@ -570,7 +546,7 @@ class MapSnapshotProvider(private val context: Context) {
         private const val REBUILD_BACKOFF_MS = 60_000L
 
         /**
-         * One abandoned snapshot's bitmap, for turning [abandoned] into the number
+         * One abandoned snapshot's bitmap, for turning the abandoned count into the number
          * that actually matters.
          *
          * Sized from what MapLibre actually renders, not from the frame: with

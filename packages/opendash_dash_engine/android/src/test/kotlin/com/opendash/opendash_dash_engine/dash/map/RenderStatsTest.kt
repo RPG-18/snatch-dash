@@ -83,7 +83,7 @@ class RenderStatsTest {
     }
 
     @Test
-    fun `counters reset with the window but the cumulative ones do not`() {
+    fun `own counters reset with the window, passed-in ones are printed as given`() {
         val stats = RenderStats()
         stats.frameSent(intervalMs = 250, encodeMs = 6, intendedIntervalMs = 250)
         stats.mapDrawn(snapshotMs = 400, overlayMs = 4, budgetMs = 250, blank = true)
@@ -96,9 +96,12 @@ class RenderStatsTest {
         // The intended-interval accumulator has to reset too, or the next window
         // is measured against the previous one's pacing.
         assertTrue(second.contains("frames=0/?"), second)
-        // Owned by MapSnapshotProvider and passed straight through: they are
-        // cumulative over the session, and it is the provider — not the window —
-        // that zeroes them for the next one.
+        // Owned by MapSnapshotProvider and passed straight through: this class
+        // prints what it is handed and keeps no memory of them. Since 2026-09-29
+        // the provider drains them per window (`SnapshotCounters`), so in
+        // production the second window's arguments would be zero — here they are
+        // repeated on purpose, to pin that RenderStats does not resettle them
+        // itself.
         assertTrue(second.contains("timeouts=2 skipped=3 wedged=1 snapErr=1"), second)
     }
 

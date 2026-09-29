@@ -190,13 +190,16 @@ internal class MapFrameRenderer(
         // pipeline and has no business knowing what a camera is. It earns the space because
         // every other number on this line is read against it — `blank` especially, which
         // rises with zoom for reasons that are not a missing map.
+        // Drained, not read: these five used to be lifetime totals sitting in a line
+        // whose other half resets every window — see [MapSnapshotProvider.drainCounters].
+        val c = snapshots.drainCounters()
         val line = renderStats.drain(
             periodMs = periodMs,
-            timeouts = snapshots.timeouts,
-            skipped = snapshots.skipped,
-            abandoned = snapshots.abandoned,
-            errors = snapshots.errors,
-            rebuilds = snapshots.rebuilds,
+            timeouts = c.timeouts,
+            skipped = c.skipped,
+            abandoned = c.abandoned,
+            errors = c.errors,
+            rebuilds = c.rebuilds,
         ) + " zoom=${DashCameraState.zoomText(camera.zoom)}" +
             " center=${geoText(camera.lat)},${geoText(camera.lng)}" +
             " moved=${windowMovedM.toInt()}m"
@@ -206,6 +209,23 @@ internal class MapFrameRenderer(
 
     /** Frees this stream's bitmap. The next stream gets a new renderer and a new one. */
     fun release() {
+        // The session's snapshotter totals, written HERE and not only on the next
+        // session's carry-over line. `abandoned` counts bitmaps leaked inside MapLibre,
+        // which is the whole reason the session horizon is kept — and on the two cases
+        // CLAUDE.md documents, a LOW_MEMORY_KILL or a ride that simply never reconnects,
+        // there is no next session and the number would never be written at all. Costs
+        // one line per stream. Review, 2026-09-29.
+        val tail = snapshots.drainCounters()
+        val total = snapshots.sessionTotals()
+        if (total.total > 0) {
+            RideDiagnostics.log(
+                "map",
+                "snapshotter totals for this stream: timeouts=${total.timeouts} " +
+                    "skipped=${total.skipped} wedged=${total.abandoned} " +
+                    "snapErr=${total.errors} rebuilds=${total.rebuilds}" +
+                    if (tail.total > 0) " (incl. ${tail.total} since the last window)" else "",
+            )
+        }
         runCatching { frameBitmap?.recycle() }
         frameBitmap = null
     }

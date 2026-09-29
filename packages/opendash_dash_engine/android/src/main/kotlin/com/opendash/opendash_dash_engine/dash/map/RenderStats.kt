@@ -99,17 +99,24 @@ class RenderStats {
      * window, divided into its length. A window of mixed riding and standing gets
      * an expectation in between, which is the honest answer.
      *
-     * **Two different clocks share this line.** Everything computed here covers
-     * one window, bounded by the renderer's own lifetime — one MapFrameRenderer per stream, so one window per stream. [timeouts],
-     * [skipped], [abandoned], [errors] and [rebuilds] pass straight through from
-     * `MapSnapshotProvider` and are cumulative over the **session**, not the
-     * window — they only ever go up within a ride, and the provider zeroes them
-     * when it prepares the next one, so every figure on this line belongs to the
-     * diagnostics file it is written into. (It was not always so: before
-     * 2026-09-05 they ran for the life of the process, and a fresh session's
-     * first line opened with the previous ride's totals against its own frame
-     * count. A session that ends badly now says so once, on its successor's
-     * carry-over line.)
+     * **One clock, since 2026-09-29.** Every figure on this line covers the same
+     * window. [timeouts], [skipped], [abandoned], [errors] and [rebuilds] still
+     * pass straight through from `MapSnapshotProvider`, but that object now
+     * DRAINS them per window (`SnapshotCounters`) instead of handing over a
+     * running session total.
+     *
+     * They were session totals until then, printed flush against the per-window
+     * fields with nothing to tell them apart, and the 2026-09-29 ride is what
+     * that costs: one wedge at 10:08 made all thirteen later windows read
+     * `timeouts=7 skipped=22 wedged=1 rebuilds=1`, word for word, while the
+     * pipeline was in fact healthy. **Ride files from before that date read by
+     * the old rule.** (And before 2026-09-05 they ran for the life of the
+     * process, so a fresh session's first line opened with the previous ride's
+     * totals against its own frame count.)
+     *
+     * The session horizon did not disappear — `SnapshotCounters` keeps it, and
+     * a session that ends badly still says so once, on its successor's
+     * carry-over line.
      *
      * [skipped] is the one to read for "how often did the map stand still": the
      * deadline bounds the wait, not the freeze, so a run of skipped frames is

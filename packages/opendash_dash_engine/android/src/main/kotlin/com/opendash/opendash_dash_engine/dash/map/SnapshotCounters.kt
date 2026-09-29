@@ -27,8 +27,9 @@ import java.util.concurrent.atomic.AtomicLong
  * looper — so the plain `++` this replaced was never contended, and the first version of
  * this comment was wrong to claim it could lose one. What IS cross-thread is [drain]:
  * `MapFrameRenderer` calls it from `dash-frame` while increments keep arriving on Main.
- * That is what the atomics are for, and why [session] is `@Volatile` — it is written by
- * [drain] on the frame thread and read by [sessionSoFar] and [reset] on Main.
+ * That is what the atomics are for, and why the session total sits behind a lock — the
+ * atomics alone make each field visible but let a reader mix a pre-drain total with
+ * post-drain windows.
  */
 internal class SnapshotCounters {
 
@@ -75,13 +76,20 @@ internal class SnapshotCounters {
     /**
      * What the session has accumulated so far, drained windows included.
      *
-     * `@Volatile` for the cross-thread read described in the class doc. Only [drain]
-     * writes it, and only from the frame loop, so there is no read-modify-write race to
-     * lose — just a visibility one.
+     * Behind [lock], not `@Volatile`: [drain] reads it and writes it back on the frame
+     * loop while [sessionSoFar] reads it together with the atomics on Main. Volatile
+     * would make each field visible and still let a caller see `session` from before a
+     * drain next to atomics from after it — losing a whole window and printing "after 0
+     * snapshot failures" right after the failure that asked. The first version of this
+     * doc also claimed only [drain] writes it; [reset] does too, from Main.
      */
-    @Volatile
-    var session = Tally()
-        private set
+    private var _session = Tally()
+
+    /** What the session has accumulated so far, drained windows included. */
+    val session: Tally get() = synchronized(lock) { _session }
+
+    /** Guards [_session] against the frame loop and Main disagreeing about a drain. */
+    private val lock = Any()
 
     /**
      * Take this window's counts and zero them, banking them into [session].
@@ -90,7 +98,7 @@ internal class SnapshotCounters {
      * is still recoverable — it is the sum down the column, or [session] — and the delta
      * says the thing a total never can: *when*.
      */
-    fun drain(): Tally {
+    fun drain(): Tally = synchronized(lock) {
         val window = Tally(
             timeouts = _timeouts.getAndSet(0),
             skipped = _skipped.getAndSet(0),
@@ -98,8 +106,8 @@ internal class SnapshotCounters {
             errors = _errors.getAndSet(0),
             rebuilds = _rebuilds.getAndSet(0),
         )
-        session += window
-        return window
+        _session += window
+        window
     }
 
     /**
@@ -109,21 +117,23 @@ internal class SnapshotCounters {
      * and reading only the undrained window would have it say "after 1 snapshot
      * failures" every thirty seconds.
      */
-    fun sessionSoFar(): Tally = session + Tally(
-        timeouts = _timeouts.get(),
-        skipped = _skipped.get(),
-        abandoned = _abandoned.get(),
-        errors = _errors.get(),
-        rebuilds = _rebuilds.get(),
-    )
+    fun sessionSoFar(): Tally = synchronized(lock) {
+        _session + Tally(
+            timeouts = _timeouts.get(),
+            skipped = _skipped.get(),
+            abandoned = _abandoned.get(),
+            errors = _errors.get(),
+            rebuilds = _rebuilds.get(),
+        )
+    }
 
     /** A new session starts from nothing, window and totals alike. */
-    fun reset() {
+    fun reset() = synchronized(lock) {
         _timeouts.set(0)
         _skipped.set(0)
         _abandoned.set(0)
         _errors.set(0)
         _rebuilds.set(0)
-        session = Tally()
+        _session = Tally()
     }
 }

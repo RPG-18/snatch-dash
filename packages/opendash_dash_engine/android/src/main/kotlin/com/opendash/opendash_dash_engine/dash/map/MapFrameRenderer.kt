@@ -208,24 +208,30 @@ internal class MapFrameRenderer(
     }
 
     /** Frees this stream's bitmap. The next stream gets a new renderer and a new one. */
+    /**
+     * The session's snapshotter totals, as one line — for the caller to write while the
+     * ride file is still open.
+     *
+     * **Not written from [release], and that was the first attempt.** `release()` runs
+     * from the stream job's completion handler, off Main, while `teardown()` calls
+     * `RideDiagnostics.stop()` synchronously on Main — so the line was dropped in the
+     * common case and landed in the NEXT ride's file on the give-up path. That hazard is
+     * already written down in `DashEngineController.teardown`, where a farewell `[mem]`
+     * sample was removed for exactly it; review pointed out I had walked back into it.
+     *
+     * Reading five longs is cheap, which is what makes this different from the `[mem]`
+     * case: it can be taken on Main, before the file closes, and then the ordering is
+     * not in question.
+     */
+    fun sessionTotalsLine(): String? {
+        val t = snapshots.sessionTotals()
+        if (t.total == 0L) return null
+        return "snapshotter totals for this stream: timeouts=${t.timeouts} " +
+            "skipped=${t.skipped} wedged=${t.abandoned} " +
+            "snapErr=${t.errors} rebuilds=${t.rebuilds}"
+    }
+
     fun release() {
-        // The session's snapshotter totals, written HERE and not only on the next
-        // session's carry-over line. `abandoned` counts bitmaps leaked inside MapLibre,
-        // which is the whole reason the session horizon is kept — and on the two cases
-        // CLAUDE.md documents, a LOW_MEMORY_KILL or a ride that simply never reconnects,
-        // there is no next session and the number would never be written at all. Costs
-        // one line per stream. Review, 2026-09-29.
-        val tail = snapshots.drainCounters()
-        val total = snapshots.sessionTotals()
-        if (total.total > 0) {
-            RideDiagnostics.log(
-                "map",
-                "snapshotter totals for this stream: timeouts=${total.timeouts} " +
-                    "skipped=${total.skipped} wedged=${total.abandoned} " +
-                    "snapErr=${total.errors} rebuilds=${total.rebuilds}" +
-                    if (tail.total > 0) " (incl. ${tail.total} since the last window)" else "",
-            )
-        }
         runCatching { frameBitmap?.recycle() }
         frameBitmap = null
     }

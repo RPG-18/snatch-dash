@@ -599,6 +599,9 @@ class AppLocalizationsEn extends AppLocalizations {
   String get settingsAboutFontsLink => 'Noto Sans (SIL Open Font License 1.1)';
 
   @override
+  String get settingsSaveFailed => 'Could not save — try again';
+
+  @override
   String get settingsBackgroundTitle => 'Background operation';
 
   @override

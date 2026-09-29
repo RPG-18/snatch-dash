@@ -20,6 +20,7 @@ import '../state/update_channel_settings.dart';
 import '../util/app_logger.dart';
 import '../util/byte_size.dart';
 import '../util/github_release.dart';
+import '../widgets/text_prompt_dialog.dart';
 
 /// "More" tab: dash connection/pairing, offline maps, map theme and currency.
 /// Ports `SettingsScreen.kt`'s connection section (`DashConfig` via the native
@@ -419,76 +420,41 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
   }
 
   void _showSsidDialog(BuildContext context, AppLocalizations l10n) {
-    final controller = TextEditingController(
-      text: _config?['ssid'] as String? ?? '',
-    );
-    // Disposed when the dialog closes, whichever way it closes — a controller
-    // holds a change-notifier listener list, and one per dialog opening adds up
-    // over a session of fiddling with pairing.
     unawaited(
-      showDialog<void>(
+      showDialog<bool>(
         context: context,
-        builder: (dialogContext) => AlertDialog(
-          title: Text(l10n.settingsSsidDialogTitle),
+        builder: (dialogContext) => TextPromptDialog(
+          title: l10n.settingsSsidDialogTitle,
+          label: l10n.settingsExactSsidLabel,
+          initial: _config?['ssid'] as String? ?? '',
           // 32 is the 802.11 cap on an SSID, so nothing longer can name a real
           // network anyway. Enforced here because the native side puts the SSID
           // through an RSA-1024 block in DashAuth.buildKeyPacket, which overflows
           // (and fails the session) somewhere past 85 bytes.
-          content: TextField(
-            controller: controller,
-            maxLength: 32,
-            decoration: InputDecoration(labelText: l10n.settingsExactSsidLabel),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(dialogContext),
-              child: Text(l10n.actionCancel),
-            ),
-            TextButton(
-              onPressed: () async {
-                await DashEngine.instance.setSsid(controller.text.trim());
-                if (!dialogContext.mounted) return;
-                Navigator.pop(dialogContext);
-                await _loadConfig();
-              },
-              child: Text(l10n.actionSave),
-            ),
-          ],
+          maxLength: 32,
+          onSave: (value) => DashEngine.instance.setSsid(value.trim()),
+          saveFailed: l10n.settingsSaveFailed,
         ),
-      ).whenComplete(controller.dispose),
+      ).then((saved) async {
+        if (saved ?? false) await _loadConfig();
+      }),
     );
   }
 
   void _showPasswordDialog(BuildContext context, AppLocalizations l10n) {
-    final controller = TextEditingController(
-      text: _config?['password'] as String? ?? '',
-    );
     unawaited(
-      showDialog<void>(
+      showDialog<bool>(
         context: context,
-        builder: (dialogContext) => AlertDialog(
-          title: Text(l10n.settingsWifiPasswordDialogTitle),
-          content: TextField(
-            controller: controller,
-            decoration: InputDecoration(labelText: l10n.settingsPasswordLabel),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(dialogContext),
-              child: Text(l10n.actionCancel),
-            ),
-            TextButton(
-              onPressed: () async {
-                await DashEngine.instance.setWifiPassword(controller.text);
-                if (!dialogContext.mounted) return;
-                Navigator.pop(dialogContext);
-                await _loadConfig();
-              },
-              child: Text(l10n.actionSave),
-            ),
-          ],
+        builder: (dialogContext) => TextPromptDialog(
+          title: l10n.settingsWifiPasswordDialogTitle,
+          label: l10n.settingsPasswordLabel,
+          initial: _config?['password'] as String? ?? '',
+          onSave: DashEngine.instance.setWifiPassword,
+          saveFailed: l10n.settingsSaveFailed,
         ),
-      ).whenComplete(controller.dispose),
+      ).then((saved) async {
+        if (saved ?? false) await _loadConfig();
+      }),
     );
   }
 }

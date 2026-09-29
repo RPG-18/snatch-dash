@@ -205,6 +205,7 @@
   "settingsAboutOpenMapTilesLink": "© OpenMapTiles — style and schema (CC BY 4.0)",
   "settingsAboutMapLibreLink": "MapLibre GL Native (BSD-2-Clause)",
   "settingsAboutFontsLink": "Noto Sans (SIL Open Font License 1.1)",
+  "settingsSaveFailed": "Could not save — try again",
   "settingsBackgroundTitle": "Background operation",
   "settingsBackgroundAllowed": "Allowed — the system will not stop the dash while the screen is off",
   "settingsBackgroundRestricted": "Restricted — the system may stop the dash mid-ride",

@@ -1,0 +1,152 @@
+import 'package:flutter/material.dart';
+
+import '../l10n/app_localizations.dart';
+import '../util/app_logger.dart';
+
+/// One-field prompt used by the SSID and WiFi-password dialogs.
+///
+/// **Exists because the controller has to outlive the pop and die with the
+/// widget.** Both dialogs used to build a `TextEditingController` in the
+/// caller and dispose it from `showDialog(...).whenComplete(...)`. That future
+/// completes the moment the route is popped — while the dialog is still
+/// mounted and still playing its exit transition — so the next rebuild reached
+/// a `TextField` whose controller was already disposed:
+///
+/// ```
+/// A TextEditingController was used after being disposed.
+/// The relevant error-causing widget was: TextField
+/// ```
+///
+/// `EditableText` re-subscribes to the controller in `didUpdateWidget`, the
+/// throw wedged the update, and what the rider actually saw was the SECOND
+/// failure it caused — a full red screen reading
+/// `'_dependents.isEmpty': is not true`, with the first error nowhere in
+/// logcat or `app_log.txt`. Reproduced on both phones 2026-09-28; found with
+/// `flutter run` attached, because that is the only place the first error
+/// printed.
+///
+/// A `State` owning the controller disposes it when the element unmounts,
+/// which is after the transition — the moment that is actually safe.
+class TextPromptDialog extends StatefulWidget {
+  const TextPromptDialog({
+    super.key,
+    required this.title,
+    required this.label,
+    required this.initial,
+    required this.onSave,
+    required this.saveFailed,
+    this.maxLength,
+    this.debugOnController,
+  });
+
+  final String title;
+  final String label;
+  final String initial;
+  final int? maxLength;
+
+  /// Pushes the value to the engine. Awaited before the dialog closes.
+  final Future<void> Function(String value) onSave;
+
+  /// Shown when [onSave] throws; the dialog stays open so the typed value is
+  /// not lost.
+  final String saveFailed;
+
+  /// Handed the controller on creation, so a test can watch its lifetime.
+  ///
+  /// Not a hook for behaviour: nothing in the app passes it. Disposal is the
+  /// single thing this widget was extracted to get right, and without a way
+  /// to observe the controller from outside it was the one thing no test
+  /// could check — deleting `dispose()` kept them all green.
+  final void Function(TextEditingController)? debugOnController;
+
+  @override
+  State<TextPromptDialog> createState() => TextPromptDialogState();
+}
+
+class TextPromptDialogState extends State<TextPromptDialog> {
+  late final TextEditingController _controller = TextEditingController(
+    text: widget.initial,
+  );
+  bool _saving = false;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    widget.debugOnController?.call(_controller);
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  Future<void> _save() async {
+    setState(() => _saving = true);
+    try {
+      await widget.onSave(_controller.text);
+    } catch (e, st) {
+      // The engine answers NO_ENGINE whenever its controller is between
+      // lives, and nothing in this app installs a zone handler — so without
+      // catching, the throw escaped, `_saving` stayed true, and BOTH buttons
+      // were dead for good. The old dialogs at least kept Cancel alive
+      // across the await; leaving the rider locked in with their typed value
+      // would be a regression, not a fix. Review, 2026-09-28.
+      //
+      // Logged, not swallowed. Before this widget existed the throw at least
+      // reached the framework's console dump; a bare `catch (_)` would leave
+      // "pairing won't save" with no evidence in Talker, `app_log.txt` or
+      // `diag/` — which is exactly how the crash this widget was built for
+      // stayed invisible for a day.
+      talker.error('[TextPromptDialog] save failed', e, st);
+      if (!mounted) return;
+      // Inline, not a snackbar: `ScaffoldMessenger` paints into the Scaffold
+      // BELOW the dialog's barrier, so the message would sit behind a
+      // black54 scrim — or under the keyboard — and the rider would see the
+      // dialog simply refuse to close. A widget test cannot catch that,
+      // because `find.text` ignores paint order. Review, 2026-09-28.
+      setState(() {
+        _saving = false;
+        _error = widget.saveFailed;
+      });
+      // Deliberately still open: the value the rider typed is here and
+      // nowhere else, and a retry costs one tap.
+      return;
+    }
+    if (!mounted) return;
+    // `true` is the callers' signal to re-read the config — see the `.then`
+    // in `_showSsidDialog`. Popping without it leaves the tile showing the
+    // old value until something else rebuilds it.
+    Navigator.pop(context, true);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final l10n = AppLocalizations.of(context)!;
+    return AlertDialog(
+      title: Text(widget.title),
+      content: TextField(
+        controller: _controller,
+        maxLength: widget.maxLength,
+        decoration: InputDecoration(labelText: widget.label, errorText: _error),
+        // Cleared on the next keystroke: a stale "could not save" under a
+        // value the rider has since changed is worse than none.
+        onChanged: _error == null ? null : (_) => setState(() => _error = null),
+      ),
+      actions: [
+        TextButton(
+          onPressed: _saving ? null : () => Navigator.pop(context, false),
+          child: Text(l10n.actionCancel),
+        ),
+        TextButton(
+          // Disabled while the platform call is in flight: the old code left
+          // the button live across that await, so a second tap queued a second
+          // write and a second pop.
+          onPressed: _saving ? null : _save,
+          child: Text(l10n.actionSave),
+        ),
+      ],
+    );
+  }
+}

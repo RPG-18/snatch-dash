@@ -187,6 +187,7 @@
   "settingsAboutOpenMapTilesLink": "© OpenMapTiles — стиль и схема (CC BY 4.0)",
   "settingsAboutMapLibreLink": "MapLibre GL Native (BSD-2-Clause)",
   "settingsAboutFontsLink": "Noto Sans (SIL Open Font License 1.1)",
+  "settingsSaveFailed": "Не удалось сохранить — попробуйте ещё раз",
   "settingsBackgroundTitle": "Работа в фоне",
   "settingsBackgroundAllowed": "Разрешена — система не остановит приборку при погашенном экране",
   "settingsBackgroundRestricted": "Ограничена — система может остановить приборку посреди поездки",

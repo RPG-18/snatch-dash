@@ -608,6 +608,9 @@ class AppLocalizationsRu extends AppLocalizations {
   String get settingsAboutFontsLink => 'Noto Sans (SIL Open Font License 1.1)';
 
   @override
+  String get settingsSaveFailed => 'Не удалось сохранить — попробуйте ещё раз';
+
+  @override
   String get settingsBackgroundTitle => 'Работа в фоне';
 
   @override

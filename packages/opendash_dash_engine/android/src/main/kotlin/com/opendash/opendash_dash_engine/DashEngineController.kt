@@ -710,6 +710,13 @@ class DashEngineController(
         memJob?.cancel(); memJob = null
         settleJob?.cancel(); settleJob = null
         stoppingDeliberately = true
+        // Before the cancel and before [RideDiagnostics.stop], on this thread: the
+        // totals are five longs, so unlike the farewell [mem] sample this costs nothing
+        // to take here, and here is the only place it is ordered against the file
+        // closing. `wedged` counts bitmaps leaked inside MapLibre, and on a ride that
+        // never reconnects the next session's carry-over line — the other place it
+        // would appear — never happens. Review, 2026-09-29.
+        frameRenderer?.sessionTotalsLine()?.let { RideDiagnostics.log("map", it) }
         streamJob?.cancel()
         stopMediaForwarding()
         chrome.update { it.copy(nav = null) }
@@ -887,6 +894,13 @@ class DashEngineController(
         // give-up timer is cancelled. Keeping the reference costs nothing (joining an already
         // finished Job returns at once) and restores the invariant [startStream] documents.
         stoppingDeliberately = true
+        // Before the cancel and before [RideDiagnostics.stop], on this thread: the
+        // totals are five longs, so unlike the farewell [mem] sample this costs nothing
+        // to take here, and here is the only place it is ordered against the file
+        // closing. `wedged` counts bitmaps leaked inside MapLibre, and on a ride that
+        // never reconnects the next session's carry-over line — the other place it
+        // would appear — never happens. Review, 2026-09-29.
+        frameRenderer?.sessionTotalsLine()?.let { RideDiagnostics.log("map", it) }
         streamJob?.cancel()
         stopMediaForwarding()
         // The one reset that moving the cards out of the session dropped: the old

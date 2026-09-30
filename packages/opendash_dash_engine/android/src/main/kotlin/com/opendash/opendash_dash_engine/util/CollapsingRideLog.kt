@@ -18,29 +18,21 @@ package com.opendash.opendash_dash_engine.util
  * uncounted. And a window interrupted by a new ride file is dropped outright rather than
  * written into a file its lines were never headed for (see [RideDiagnostics.session]).
  *
- * **Extracted from `MapLibreLogBridge` on 2026-09-29** for the second source that needs
- * exactly this: Flutter's own errors, which a broken build throws once per frame. Writing
- * a second collapser would have meant two sets of these gaps to keep in step.
+ * **Extracted from `MapLibreLogBridge` on 2026-09-29**, when Flutter's own errors looked
+ * like a second source for it. They turned out not to be: they have TWO sinks, and this
+ * class gates only the ride file, so their limit has to run upstream of both — in Dart,
+ * at the source (`lib/util/error_reporting.dart`). Running it here as well would only
+ * make these counters dead, since a repeat swallowed upstream never arrives. The
+ * extraction stays because it made the rule readable and testable apart from MapLibre's
+ * `Logger` plumbing, which needs a device.
  *
- * `@Synchronized` throughout: MapLibre logs from the snapshotter and the tile workers,
- * and Flutter errors arrive on whichever thread threw.
+ * `@Synchronized` throughout: MapLibre logs from the snapshotter and the tile workers.
  */
 internal class CollapsingRideLog(
     private val tag: String,
     private val windowMs: Long,
     private val budget: Int,
     private val clockMs: () -> Long = ::monotonicMs,
-    /**
-     * Hold a line with no ride file open, for the next one — see
-     * [RideDiagnostics.clearPending]'s neighbours. For a source whose lines are worth
-     * keeping outside a session; MapLibre's are not, since it only logs while the
-     * snapshotter is running, i.e. while a session is open.
-     *
-     * Only the written line, never a window summary: "repeated N more time(s)" is a
-     * statement about a file, and carried into the next one it would count repeats of
-     * a line that file never held.
-     */
-    private val keepWhenIdle: Boolean = false,
 ) {
     private var windowStartMs = 0L
     private var windowSession = -1L
@@ -81,7 +73,7 @@ internal class CollapsingRideLog(
             return
         }
         collapsed[text] = 0
-        RideDiagnostics.warn(tag, text, keepWhenIdle)
+        RideDiagnostics.warn(tag, text)
     }
 
     /** Report what the closing window swallowed, then start counting again. */

@@ -161,6 +161,187 @@ void main() {
     await Future<void>.delayed(Duration.zero);
   });
 
+  test('endless DISTINCT lines are bounded too, and the loss is stated', () async {
+    // The half the native limiter cannot do for us: it gates `diag/` only, and
+    // this sink also feeds `app_log.txt`, which is capped at 10 MB with a single
+    // rotation. An exception embedding a varying value — `RenderFlex#a1b2c3` —
+    // collapses on nothing, so without a budget it writes 60 lines a second.
+    installErrorReporting();
+    errorReportingClockMs = () => 0;
+
+    for (var i = 0; i < 20; i++) {
+      FlutterError.onError!(FlutterErrorDetails(exception: Exception('key $i')));
+    }
+    await Future<void>.delayed(Duration.zero);
+    expect(platform.lines, hasLength(6), reason: 'the window admits six');
+
+    errorReportingClockMs = () => 10001;
+    FlutterError.onError!(FlutterErrorDetails(exception: Exception('after')));
+    await Future<void>.delayed(Duration.zero);
+
+    expect(platform.lines.last, contains('+14 further line(s) not written'));
+    expect(platform.lines.last, contains('6-per-10s budget'));
+  });
+
+  test('the ride file gets a stack frame, not just the message', () async {
+    // On a release build `diag/` is the only log there is: `app_log.txt`, where
+    // Talker keeps the whole trace, needs run-as and a debug build. A bare
+    // "controller was used after being disposed" is the dead end of 28.09.
+    installErrorReporting();
+
+    void thrower() => FlutterError.onError!(
+      FlutterErrorDetails(exception: StateError('needs a frame'), stack: StackTrace.current),
+    );
+    thrower();
+    await Future<void>.delayed(Duration.zero);
+
+    expect(platform.lines.single, contains(' @ '));
+    expect(
+      platform.lines.single,
+      contains('error_reporting_test.dart'),
+      reason: 'the frame must name a file to open, not framework plumbing',
+    );
+  });
+
+  test('the frame skips framework plumbing and names our code', () async {
+    // The top of a real trace is where the throw was NOTICED. Taking it gives
+    // `package:flutter/src/widgets/framework.dart`, which is the same for every
+    // widget error and names nothing to open.
+    installErrorReporting();
+
+    FlutterError.onError!(
+      FlutterErrorDetails(
+        exception: StateError('deep'),
+        stack: StackTrace.fromString(
+          '#0      RenderObject.debugAssert (package:flutter/src/rendering/object.dart:1)\n'
+          '#1      _rootRun (dart:async/zone.dart:2)\n'
+          '#2      _SettingsScreenState._save (package:snatch_dash/screens/settings_screen.dart:437:12)\n',
+        ),
+      ),
+    );
+    await Future<void>.delayed(Duration.zero);
+
+    expect(platform.lines.single, contains('settings_screen.dart:437'));
+    expect(platform.lines.single, isNot(contains('package:flutter/')));
+  });
+
+  test('the same text from both handlers is two reports, not one', () async {
+    // Keyed on the source as well: otherwise the reader never learns the failure
+    // has an async escape path as well as a build path, and the repeat count is
+    // filed against whichever source happens to report next.
+    installErrorReporting();
+
+    // `library: null`, so the two keys are identical in everything BUT the
+    // source. With the default 'Flutter framework' they differ anyway and the
+    // test would pass with the source left out of the key entirely.
+    FlutterError.onError!(
+      FlutterErrorDetails(exception: StateError('two doors'), library: null),
+    );
+    PlatformDispatcher.instance.onError!(StateError('two doors'), StackTrace.current);
+    await Future<void>.delayed(Duration.zero);
+
+    expect(platform.lines, hasLength(2));
+    expect(platform.lines[0], startsWith('FlutterError:'));
+    expect(platform.lines[1], startsWith('PlatformDispatcher:'));
+  });
+
+  test('installing twice does not double every report', () async {
+    // Chained onto itself, one error yields two entries and two channel calls,
+    // and the second is counted as a repeat of the first — inflating every count
+    // this file reports.
+    installErrorReporting();
+    installErrorReporting();
+    errorReportingClockMs = () => 0;
+
+    FlutterError.onError!(FlutterErrorDetails(exception: Exception('once')));
+    await Future<void>.delayed(Duration.zero);
+    expect(platform.lines, hasLength(1));
+
+    // The count is where a chained install actually shows: the collapser eats
+    // the duplicate, so the line total looks right while every repeat figure
+    // the file reports is 2x.
+    errorReportingClockMs = () => 10001;
+    FlutterError.onError!(FlutterErrorDetails(exception: Exception('once')));
+    await Future<void>.delayed(Duration.zero);
+
+    expect(platform.lines, hasLength(2));
+    expect(
+      platform.lines.last,
+      isNot(contains('repeated')),
+      reason: 'one occurrence was reported once, so nothing was swallowed',
+    );
+  });
+
+  test('a line refused by the budget keeps its own tally', () async {
+    // Otherwise an error that fired a hundred times while the window was full
+    // is reported later as a single occurrence with nothing swallowed, and the
+    // count is billed to whichever unrelated line happens to be admitted next.
+    installErrorReporting();
+    errorReportingClockMs = () => 0;
+
+    // Admitted once, so it has a tally...
+    FlutterError.onError!(FlutterErrorDetails(exception: Exception('mine')));
+    // ...then fill the window with other texts and keep firing it.
+    for (var i = 0; i < 10; i++) {
+      FlutterError.onError!(FlutterErrorDetails(exception: Exception('other $i')));
+    }
+    errorReportingClockMs = () => 10001;
+    // Six, so the window is FULL: with five, `mine` takes the last slot and is
+    // admitted, and the test would be asserting about a different path.
+    for (var i = 0; i < 6; i++) {
+      FlutterError.onError!(FlutterErrorDetails(exception: Exception('filler $i')));
+    }
+    for (var i = 0; i < 100; i++) {
+      FlutterError.onError!(FlutterErrorDetails(exception: Exception('mine')));
+    }
+    errorReportingClockMs = () => 20002;
+    FlutterError.onError!(FlutterErrorDetails(exception: Exception('mine')));
+    await Future<void>.delayed(Duration.zero);
+
+    final mine = platform.lines.where((l) => l.contains('mine')).last;
+    expect(mine, contains('repeated 100 more time(s)'));
+  });
+
+  test('a frame from a package is kept, a dart: frame is not', () async {
+    // The skip list has to match what the comment and the spec promise. A
+    // failure inside a dependency is still best described by the dependency.
+    installErrorReporting();
+
+    FlutterError.onError!(
+      FlutterErrorDetails(
+        exception: StateError('deep'),
+        stack: StackTrace.fromString(
+          '#0      List.[] (dart:core-patch/growable_array.dart:264:36)\n'
+          '#1      Parser.parse (package:some_dep/parser.dart:88:7)\n',
+        ),
+      ),
+    );
+    await Future<void>.delayed(Duration.zero);
+
+    expect(platform.lines.single, contains('package:some_dep/parser.dart:88'));
+    expect(platform.lines.single, isNot(contains('dart:core-patch')));
+  });
+
+  test('a previous platform handler that throws does not escape', () async {
+    // Its counterpart on the FlutterError side was guarded; this one was not,
+    // and a throw here means nothing reports the original error.
+    PlatformDispatcher.instance.onError = (_, _) => throw StateError('bad chain');
+    installErrorReporting();
+
+    late bool handled;
+    expect(
+      () => handled = PlatformDispatcher.instance.onError!(
+        StateError('still mine'),
+        StackTrace.current,
+      ),
+      returnsNormally,
+    );
+    await Future<void>.delayed(Duration.zero);
+
+    expect(handled, isFalse);
+    expect(platform.lines.single, contains('still mine'));
+  });
+
   test('a multi-line exception arrives as one line', () async {
     // RideDiagnostics stamps only the first line; the rest would land with no
     // timestamp and no WARN, invisible to the grep the file exists for.

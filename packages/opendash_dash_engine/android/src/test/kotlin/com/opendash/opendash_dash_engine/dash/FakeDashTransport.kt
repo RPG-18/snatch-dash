@@ -11,7 +11,7 @@ import kotlin.coroutines.suspendCoroutine
  * The wire, under the test's control.
  *
  * Records what went out and WHEN — the timestamp is the point. Half of what
- * network-refactoring.md calls invariant 4 and 5 is about pauses (20 ms between burst
+ * spec/k1g_protocol.md calls invariant 4 and 5 is about pauses (20 ms between burst
  * packets, 40/100/500/60/10 ms through nav entry, 250 ms between projection frames), and
  * before this a test could only check that the right bytes existed somewhere in the list.
  *

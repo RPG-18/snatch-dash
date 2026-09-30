@@ -61,6 +61,7 @@ Riverpod-провайдеры, которые экран читает/пишет
 в зависимости от того, что происходит на этих экранах.
 
 Ещё спецификации:
+- [протокол K1G](spec/k1g_protocol.md) одиннадцать инвариантов проволоки (на них ссылаются по номеру пятнадцать тестовых файлов), инвентарь входящих пакетов, что доказывает `07 01 01`, полный список тегов ride-файла.
 - [wifi retry policy](spec/wifi_retry_policy.md) стратегия переподключения к WiFi мотоцикла.
 - [сервер карт](spec/remote_map_server.md) формат офлайн-тайлов, `index.json` и протокол скачивания паков.
 - [отрисовка из скачанных тайлов](spec/drawing_from_local_tiles.md) как кадр дэша получается из локального пака (MapLibre offscreen, стиль, несколько источников).
@@ -188,7 +189,7 @@ analyze`, ни в `dart analyze` — проверено файлом с заве
 пост-мортем — файлы на устройстве. Ничего, кроме кабеля, не нужно:
 
 ```
-adb pull /sdcard/Android/data/ru.snatchdash.app/files/diag   # по файлу на сессию: [map], [session], [stream], [gps], [mem], [DashWifiManager], [MapLibre], [flutter]
+adb pull /sdcard/Android/data/ru.snatchdash.app/files/diag   # по файлу на сессию, полный список тегов — в spec/k1g_protocol.md
 adb exec-out run-as ru.snatchdash.app cat files/app_log.txt > app_log.txt
 ```
 

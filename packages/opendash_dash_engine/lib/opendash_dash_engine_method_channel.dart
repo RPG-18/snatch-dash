@@ -1,58 +1,52 @@
-import 'package:flutter/foundation.dart';
-import 'package:flutter/services.dart';
-
 import 'opendash_dash_engine_platform_interface.dart';
+import 'src/messages.g.dart' as pigeon;
+import 'src/messages.g.dart';
 
-/// Method-channel + event-channel implementation of [OpendashDashEnginePlatform].
+/// The Pigeon-backed implementation of [OpendashDashEnginePlatform].
+///
+/// **Still a separate layer, on purpose.** Pigeon's generated `DashEngineApi` could
+/// be called from the app directly, but then nothing could stand in for it: the
+/// app's own tests swap [OpendashDashEnginePlatform.instance] for a fake — that is
+/// how `error_reporting_test.dart` watches what reaches the ride file — and a
+/// generated concrete class has no seam for that. This keeps the seam and adds
+/// nothing else: every method below is one delegation.
 class MethodChannelOpendashDashEngine extends OpendashDashEnginePlatform {
-  @visibleForTesting
-  final methodChannel = const MethodChannel('opendash_dash_engine');
+  final pigeon.DashEngineApi _api = pigeon.DashEngineApi();
 
-  @visibleForTesting
-  final eventChannel = const EventChannel('opendash_dash_engine/state');
-
-  @visibleForTesting
-  final logChannel = const EventChannel('opendash_dash_engine/log');
-
-  Stream<Map<String, dynamic>>? _stateStream;
-  Stream<Map<String, dynamic>>? _logStream;
-
-  @override
-  Future<String?> getPlatformVersion() async {
-    return methodChannel.invokeMethod<String>('getPlatformVersion');
-  }
+  /// Each of the three is created ONCE and shared.
+  ///
+  /// Every call to Pigeon's stream function builds a new [EventChannel], and the
+  /// native side keeps one sink per channel — so a second call would leave the
+  /// first subscriber attached to a sink nothing writes to. There are three Dart
+  /// readers of the state alone.
+  Stream<DashEngineState>? _stateStream;
+  Stream<DashButtonEvent>? _buttonStream;
+  Stream<DashLogEntry>? _logStream;
 
   @override
-  Stream<Map<String, dynamic>> get stateStream {
-    return _stateStream ??= eventChannel.receiveBroadcastStream().map(
-      (event) => Map<String, dynamic>.from(event as Map),
-    );
-  }
+  Future<String?> getPlatformVersion() => _api.getPlatformVersion();
 
   @override
-  Stream<Map<String, dynamic>> get logStream {
-    return _logStream ??= logChannel.receiveBroadcastStream().map(
-      (event) => Map<String, dynamic>.from(event as Map),
-    );
-  }
+  Stream<DashEngineState> get stateStream => _stateStream ??= pigeon.state();
 
   @override
-  Future<void> connect() => methodChannel.invokeMethod('connect');
+  Stream<DashButtonEvent> get buttonStream => _buttonStream ??= pigeon.button();
 
   @override
-  Future<void> disconnect() => methodChannel.invokeMethod('disconnect');
+  Stream<DashLogEntry> get logStream => _logStream ??= pigeon.log();
+
+  @override
+  Future<void> connect() => _api.connect();
+
+  @override
+  Future<void> disconnect() => _api.disconnect();
 
   @override
   Future<void> setDestination({String? name, double? lat, double? lng}) =>
-      methodChannel.invokeMethod('setDestination', {
-        'name': name,
-        'lat': lat,
-        'lng': lng,
-      });
+      _api.setDestination(name, lat, lng);
 
   @override
-  Future<void> clearDestination() =>
-      methodChannel.invokeMethod('clearDestination');
+  Future<void> clearDestination() => _api.clearDestination();
 
   @override
   Future<void> setNavState({
@@ -61,115 +55,88 @@ class MethodChannelOpendashDashEngine extends OpendashDashEnginePlatform {
     int maneuver = 0x09,
     String? etaHHMM,
     bool offRoute = false,
-    List<List<double>> points = const [],
+    List<NavPoint> points = const [],
     List<int> jamSegments = const [],
-  }) => methodChannel.invokeMethod('setNavState', {
-    'remainingMeters': remainingMeters,
-    'nextTurnMeters': nextTurnMeters,
-    'maneuver': maneuver,
-    'etaHHMM': etaHHMM,
-    'offRoute': offRoute,
-    'points': points,
-    'jamSegments': jamSegments,
-  });
+  }) => _api.setNavState(
+    remainingMeters,
+    nextTurnMeters,
+    maneuver,
+    etaHHMM,
+    offRoute,
+    points,
+    jamSegments,
+  );
 
   @override
-  Future<void> setFollowMode(bool enabled) =>
-      methodChannel.invokeMethod('setFollowMode', {'enabled': enabled});
+  Future<void> setFollowMode(bool enabled) => _api.setFollowMode(enabled);
 
   @override
-  Future<void> panBy(double dx, double dy) =>
-      methodChannel.invokeMethod('panBy', {'dx': dx, 'dy': dy});
+  Future<void> panBy(double dx, double dy) => _api.panBy(dx, dy);
 
   @override
-  Future<void> zoomIn() => methodChannel.invokeMethod('zoomIn');
+  Future<void> zoomIn() => _api.zoomIn();
 
   @override
-  Future<void> zoomOut() => methodChannel.invokeMethod('zoomOut');
+  Future<void> zoomOut() => _api.zoomOut();
 
   @override
-  Future<void> toggleHeadingUp() =>
-      methodChannel.invokeMethod('toggleHeadingUp');
+  Future<void> toggleHeadingUp() => _api.toggleHeadingUp();
 
   @override
-  Future<void> recenter() => methodChannel.invokeMethod('recenter');
+  Future<void> recenter() => _api.recenter();
 
   @override
-  Future<void> forgetDash() => methodChannel.invokeMethod('forgetDash');
+  Future<void> forgetDash() => _api.forgetDash();
 
   @override
-  Future<void> setSsid(String ssid) =>
-      methodChannel.invokeMethod('setSsid', {'ssid': ssid});
+  Future<void> setSsid(String ssid) => _api.setSsid(ssid);
 
   @override
-  Future<void> setWifiPassword(String password) =>
-      methodChannel.invokeMethod('setWifiPassword', {'password': password});
+  Future<void> setWifiPassword(String password) => _api.setWifiPassword(password);
 
   @override
-  Future<Map<String, dynamic>> getConfig() async {
-    final result = await methodChannel.invokeMethod<Map>('getConfig');
-    return Map<String, dynamic>.from(result ?? {});
-  }
+  Future<DashConfigView> getConfig() => _api.getConfig();
 
   @override
-  Future<Map<String, dynamic>> batteryOptimisationStatus() async {
-    final result = await methodChannel.invokeMethod<Map>(
-      'batteryOptimisationStatus',
-    );
-    return Map<String, dynamic>.from(result ?? {});
-  }
+  Future<BatteryOptimisationStatus> batteryOptimisationStatus() =>
+      _api.batteryOptimisationStatus();
 
   @override
-  Future<void> rideError(String message) =>
-      methodChannel.invokeMethod('rideError', {'message': message});
+  Future<bool> requestIgnoreBatteryOptimisations() =>
+      _api.requestIgnoreBatteryOptimisations();
 
   @override
-  Future<bool> requestIgnoreBatteryOptimisations() async =>
-      await methodChannel.invokeMethod<bool>(
-        'requestIgnoreBatteryOptimisations',
-      ) ??
-      false;
+  Future<void> rideError(String message) => _api.rideError(message);
 
   @override
   Future<void> updateNowPlaying({
     String? title,
     String album = '',
     String artist = '',
-  }) => methodChannel.invokeMethod('updateNowPlaying', {
-    'title': title,
-    'album': album,
-    'artist': artist,
-  });
+  }) => _api.updateNowPlaying(title, album, artist);
 
   @override
-  Future<void> updateCall(String? caller) =>
-      methodChannel.invokeMethod('updateCall', {'caller': caller});
+  Future<void> updateCall(String? caller) => _api.updateCall(caller);
 
   @override
-  Future<void> playChime() => methodChannel.invokeMethod('playChime');
+  Future<void> playChime() => _api.playChime();
 
   @override
-  Future<bool> answerCall() async =>
-      (await methodChannel.invokeMethod<bool>('answerCall')) ?? false;
+  Future<bool> answerCall() => _api.answerCall();
 
   @override
-  Future<bool> hangupCall() async =>
-      (await methodChannel.invokeMethod<bool>('hangupCall')) ?? false;
+  Future<bool> hangupCall() => _api.hangupCall();
 
   @override
-  Future<bool> skipNext() async =>
-      (await methodChannel.invokeMethod<bool>('skipNext')) ?? false;
+  Future<bool> skipNext() => _api.skipNext();
 
   @override
-  Future<bool> skipPrevious() async =>
-      (await methodChannel.invokeMethod<bool>('skipPrevious')) ?? false;
+  Future<bool> skipPrevious() => _api.skipPrevious();
 
   @override
-  Future<bool> isNotificationAccessGranted() async =>
-      (await methodChannel.invokeMethod<bool>('isNotificationAccessGranted')) ??
-      false;
+  Future<bool> isNotificationAccessGranted() => _api.isNotificationAccessGranted();
 
   @override
   Future<void> openNotificationAccessSettings() =>
-      methodChannel.invokeMethod('openNotificationAccessSettings');
+      _api.openNotificationAccessSettings();
 }

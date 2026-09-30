@@ -86,6 +86,25 @@ cd android && ./gradlew :opendash_dash_engine:lintDebug    # трогали на
 flutter build apk --debug --dart-define-from-file=android/dart_defines.local.properties
 ```
 
+### Граница плагина описана схемой Pigeon
+
+Всё, что ходит между Dart и нативной частью движка, задано в
+[`packages/opendash_dash_engine/pigeons/dash_engine.dart`](packages/opendash_dash_engine/pigeons/dash_engine.dart):
+методы (`@HostApi`), три потока наружу (`@EventChannelApi` — состояние,
+кнопки джойстика, строки `DebugLog`) и классы, которые по ним ездят.
+Меняешь границу — правишь схему и перегенерируешь:
+
+```
+cd packages/opendash_dash_engine && dart run pigeon --input pigeons/dash_engine.dart
+```
+
+Сгенерированные `lib/src/messages.g.dart` и `Messages.g.kt` **руками не
+править** и в коммит класть вместе со схемой. До 30.09.2026 граница была
+`MethodChannel` со строковыми именами и картой из 25 ключей, которую на одной
+стороне собирал `publishState`, а на другой разбирал рукописный
+`DashEngineState.fromMap`; согласованность этих двух списков не проверял
+никто.
+
 ### Dart: что включено в анализаторе и почему
 
 `analysis_options.yaml` — не шаблонный: поверх `flutter_lints` включены строгий

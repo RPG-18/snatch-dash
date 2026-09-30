@@ -83,7 +83,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 class DashEngineController(
     private val context: Context,
     private val scope: CoroutineScope,
-    private val onState: (Map<String, Any?>) -> Unit,
+    private val onState: (DashEngineState) -> Unit,
 ) {
     companion object {
         private const val TAG = "DashEngineController"
@@ -1278,11 +1278,11 @@ class DashEngineController(
         }.onFailure { DebugLog.w(TAG) { "chime failed: ${it.message}" } }
     }
 
-    fun currentConfig(): Map<String, Any?> = mapOf(
-        "ssidPrefix" to dashConfig.ssidPrefix,
-        "ssid" to dashConfig.ssid,
-        "password" to dashConfig.password,
-        "needsDiscovery" to dashConfig.needsDiscovery,
+    fun currentConfig(): DashConfigView = DashConfigView(
+        ssidPrefix = dashConfig.ssidPrefix,
+        ssid = dashConfig.ssid,
+        password = dashConfig.password,
+        needsDiscovery = dashConfig.needsDiscovery,
     )
 
     /**
@@ -1530,40 +1530,43 @@ class DashEngineController(
         val inp = inputs.value
         val loc = locationTracker.location.value
         val gps = gpsFlags(loc, locationTracker.trusted.value)
+        val wifi = wifiManager.state.value
         onState(
-            mapOf(
-                "stage" to sessionState.name,
-                "explicitDisconnect" to explicitDisconnect,
-                "wifiStatus" to wifiManager.state.value.status.name,
-                "wifiSsid" to wifiManager.state.value.ssid,
-                "wifiError" to wifiManager.state.value.error,
+            DashEngineState(
+                stage = sessionState.toStage(),
+                explicitDisconnect = explicitDisconnect,
+                wifiStatus = wifi.status.toWifiStatus(),
+                wifiSsid = wifi.ssid,
+                wifiError = wifi.error,
                 // Whether a destination is set, per [setDestination]/[clearDestination].
                 // Drives DashSession's chrome and the Dash screen's "exit navigation" FAB;
                 // the frame itself is a map either way.
-                "navigating" to inp.navigating,
-                "hasGps" to (loc != null),
-                "riderLat" to loc?.latitude,
-                "riderLng" to loc?.longitude,
-                "riderBearing" to (loc?.bearing ?: (if (cameraState.initialised) cameraState.heading else 0f)),
+                navigating = inp.navigating,
+                hasGps = loc != null,
+                riderLat = loc?.latitude,
+                riderLng = loc?.longitude,
+                riderBearing = (
+                    loc?.bearing
+                        ?: (if (cameraState.initialised) cameraState.heading else 0f)
+                    ).toDouble(),
                 // Ground speed straight from the fix, m/s. Published so Dart's NavEngine can
                 // compute a real ETA — NavLoop used to pass a hardcoded 0, which made
                 // NavEngine fall back to its 11 m/s constant for every estimate.
-                "riderSpeed" to loc?.speed,
-                "remainingKm" to inp.remainingM?.let { it / 1000.0 },
-                "offRoute" to inp.offRoute,
-                "gpsLost" to gps.lost,
-                "gpsWeak" to gps.weak,
-                "errorMessage" to errorMessage,
-                "followMode" to cameraState.followMode,
-                "headingUp" to cameraState.headingUp,
-                // In MapLibre's units, not the hundredths the field is stored
-                // in: the key is named `zoom` and documented as such in
-                // opendash_dash_engine.dart, and 1400 under that name would be
-                // read as a zoom of 1400 by whoever first consumes it.
-                "zoom" to cameraState.zoom / DashCameraState.ZOOM_SCALE,
-                "nowPlayingTitle" to inp.nowPlayingTitle,
-                "incomingCaller" to inp.incomingCaller,
-                "hasActiveCall" to inp.hasActiveCall,
+                riderSpeed = loc?.speed?.toDouble(),
+                remainingKm = inp.remainingM?.let { it / 1000.0 },
+                offRoute = inp.offRoute,
+                gpsLost = gps.lost,
+                gpsWeak = gps.weak,
+                errorMessage = errorMessage,
+                followMode = cameraState.followMode,
+                headingUp = cameraState.headingUp,
+                // In MapLibre's units, not the hundredths the field is stored in: the
+                // schema names it `zoom` and documents it as such, and 1400 under that
+                // name would be read as a zoom of 1400 by whoever first consumes it.
+                zoom = cameraState.zoom / DashCameraState.ZOOM_SCALE,
+                nowPlayingTitle = inp.nowPlayingTitle,
+                incomingCaller = inp.incomingCaller,
+                hasActiveCall = inp.hasActiveCall,
             )
         )
     }

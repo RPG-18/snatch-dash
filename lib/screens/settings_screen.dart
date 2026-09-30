@@ -39,7 +39,7 @@ class SettingsScreen extends ConsumerStatefulWidget {
 
 class _SettingsScreenState extends ConsumerState<SettingsScreen>
     with WidgetsBindingObserver {
-  Map<String, dynamic>? _config;
+  DashConfigView? _config;
   bool _notificationAccessGranted = false;
 
   /// Battery-optimisation status, or null until the first answer arrives.
@@ -49,7 +49,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
   /// [_notificationAccessGranted] — the identical hook for the identical
   /// reason. A second observer on one screen is two copies of the same
   /// lifecycle logic to keep in step.
-  Map<String, dynamic>? _backgroundStatus;
+  BatteryOptimisationStatus? _backgroundStatus;
 
   /// Same race as [_configGeneration], and it bites in the same place: a
   /// resume right after `initState` puts two reads in flight, and the older
@@ -133,7 +133,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
 
   Future<void> _loadBackgroundStatus() async {
     final generation = ++_backgroundGeneration;
-    final Map<String, dynamic> status;
+    final BatteryOptimisationStatus status;
     try {
       status = await DashEngine.instance.batteryOptimisationStatus();
     } catch (_) {
@@ -180,16 +180,17 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
                 ListTile(
                   leading: const Icon(Icons.wifi),
                   title: Text(
-                    _config?['ssid']?.toString().isNotEmpty == true
-                        ? _config!['ssid'] as String
-                        : l10n.settingsNotPaired(
-                            _config?['ssidPrefix']?.toString() ?? 'RE_',
-                          ),
+                    _config?.ssid.isNotEmpty == true
+                        ? _config!.ssid
+                        : l10n.settingsNotPaired(_config?.ssidPrefix ?? 'RE_'),
                   ),
                   subtitle: Text(
+                    // Upper-cased to match the native enums as the ride file
+                    // and logcat print them: this subtitle exists to be read
+                    // next to those, and Pigeon's Dart enums are lower case.
                     l10n.settingsStageWifi(
-                      engine.stage.name,
-                      engine.wifiStatus ?? '—',
+                      engine.stage.name.toUpperCase(),
+                      engine.wifiStatus.name.toUpperCase(),
                     ),
                   ),
                 ),
@@ -426,7 +427,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
         builder: (dialogContext) => TextPromptDialog(
           title: l10n.settingsSsidDialogTitle,
           label: l10n.settingsExactSsidLabel,
-          initial: _config?['ssid'] as String? ?? '',
+          initial: _config?.ssid ?? '',
           // 32 is the 802.11 cap on an SSID, so nothing longer can name a real
           // network anyway. Enforced here because the native side puts the SSID
           // through an RSA-1024 block in DashAuth.buildKeyPacket, which overflows
@@ -448,7 +449,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
         builder: (dialogContext) => TextPromptDialog(
           title: l10n.settingsWifiPasswordDialogTitle,
           label: l10n.settingsPasswordLabel,
-          initial: _config?['password'] as String? ?? '',
+          initial: _config?.password ?? '',
           onSave: DashEngine.instance.setWifiPassword,
           saveFailed: l10n.settingsSaveFailed,
         ),
@@ -500,7 +501,7 @@ class _AboutLink extends StatelessWidget {
 class _BackgroundWorkCard extends StatefulWidget {
   const _BackgroundWorkCard({required this.status, required this.onChanged});
 
-  final Map<String, dynamic>? status;
+  final BatteryOptimisationStatus? status;
 
   /// Re-read the status. Called when the prompt could not be shown, and when
   /// the platform says there was nothing to ask for.
@@ -553,9 +554,9 @@ class _BackgroundWorkCardState extends State<_BackgroundWorkCard> {
     final status = widget.status;
     if (status == null) return const SizedBox.shrink();
 
-    final ignoring = status['ignoring'] as bool? ?? false;
-    final canAsk = status['canAsk'] as bool? ?? false;
-    final emui = status['emuiWorkaroundNeeded'] as bool? ?? false;
+    final ignoring = status.ignoring;
+    final canAsk = status.canAsk;
+    final emui = status.emuiWorkaroundNeeded;
 
     return Padding(
       // Only when visible — see the call site for why the spacing lives here.

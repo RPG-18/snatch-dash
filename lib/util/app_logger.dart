@@ -48,16 +48,17 @@ Future<List<File>> persistedLogFiles() async {
 /// without losing them.
 void attachNativeLogBridge() {
   DashEngine.instance.logStream.listen((entry) {
-    final tag = entry['tag'] as String? ?? 'Native';
-    final message = '[$tag] ${entry['message']}';
-    switch (entry['level']) {
-      case 'E':
+    final message = '[${entry.tag}] ${entry.message}';
+    // Exhaustive over the generated enum, so a level added to the schema is a
+    // compile error here rather than a line that quietly lands at `info`.
+    switch (entry.level) {
+      case DashLogLevel.error:
         talker.error(message);
-      case 'W':
+      case DashLogLevel.warning:
         talker.warning(message);
-      case 'D':
+      case DashLogLevel.debug:
         talker.verbose(message);
-      default:
+      case DashLogLevel.info:
         talker.info(message);
     }
   });

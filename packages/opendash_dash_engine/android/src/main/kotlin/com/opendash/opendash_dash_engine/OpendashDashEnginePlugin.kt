@@ -1,8 +1,6 @@
 package com.opendash.opendash_dash_engine
 
-import androidx.annotation.NonNull
 import com.opendash.opendash_dash_engine.dash.map.GeoPoint
-import com.opendash.opendash_dash_engine.dash.protocol.DashGlyphs
 import com.opendash.opendash_dash_engine.util.DebugLog
 import com.opendash.opendash_dash_engine.media.MediaInfoProvider
 import com.opendash.opendash_dash_engine.util.BatteryOptimisation
@@ -10,18 +8,14 @@ import com.opendash.opendash_dash_engine.util.RideDiagnostics
 import io.flutter.embedding.engine.plugins.activity.ActivityAware
 import io.flutter.embedding.engine.plugins.activity.ActivityPluginBinding
 import io.flutter.embedding.engine.plugins.FlutterPlugin
-import io.flutter.plugin.common.EventChannel
-import io.flutter.plugin.common.MethodCall
-import io.flutter.plugin.common.MethodChannel
-import io.flutter.plugin.common.MethodChannel.MethodCallHandler
-import io.flutter.plugin.common.MethodChannel.Result
+import io.flutter.plugin.common.BinaryMessenger
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.async
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
@@ -29,14 +23,20 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 /**
- * Bridges Dart to [DashEngineController] — the native dash protocol/video
- * pipeline. Method channel `opendash_dash_engine` for commands, event channel
- * `opendash_dash_engine/state` for the live state stream (connection stage,
- * GPS, joystick events), event channel `opendash_dash_engine/log` mirroring
- * every [DebugLog] line so it also lands in the Dart-side Talker log.
+ * Bridges Dart to [DashEngineController] — the native dash protocol/video pipeline.
+ *
+ * **Generated boundary, since 2026-09-30 (task 7.6).** Commands arrive through the
+ * Pigeon-generated [DashEngineApi] instead of a `when (call.method)` over strings, and
+ * the three streams out — state, joystick buttons, and every [DebugLog] line for the
+ * Dart-side Talker log — are Pigeon event channels. The schema is
+ * `pigeons/dash_engine.dart`; nothing here or in `Messages.g.kt` is edited by hand.
+ *
+ * What that bought: an argument read with the wrong name used to return null and a
+ * method renamed on one side used to reach `notImplemented()`, both at runtime, on a
+ * dash mounted on a moving motorcycle. Now neither compiles.
  */
 class OpendashDashEnginePlugin :
-    FlutterPlugin, MethodCallHandler, EventChannel.StreamHandler, ActivityAware {
+    FlutterPlugin, DashEngineApi, ActivityAware {
     private companion object {
         private const val TAG = "OpendashDashEnginePlugin"
 
@@ -44,12 +44,23 @@ class OpendashDashEnginePlugin :
         private const val DRAIN_TIMEOUT_MS = 250L
     }
 
-    private lateinit var channel: MethodChannel
-    private lateinit var eventChannel: EventChannel
-    private var eventSink: EventChannel.EventSink? = null
-
-    private lateinit var logChannel: EventChannel
-    private var logSink: EventChannel.EventSink? = null
+    /**
+     * The sinks of the three generated event channels.
+     *
+     * Pigeon generates a handler per stream and a `register` for it, but no
+     * *un*register, so [onDetachedFromEngine] drops the sinks rather than tearing the
+     * channels down. A handler with no sink delivers nothing, and the messenger it is
+     * registered on is leaving with the engine.
+     *
+     * **That assumes one plugin instance per engine**, which is how Flutter registers
+     * this one. Were an instance ever reused across two engines, the second attach
+     * would register handlers sharing these same holders, and a late `onCancel` from
+     * the first engine would drop the second engine's sink. Nothing needs guarding
+     * today; this is here so that the day it changes, the reason is written down.
+     */
+    private val stateEvents = DashEventSink<DashEngineState>()
+    private val buttonEvents = DashEventSink<DashButtonEvent>()
+    private val logEvents = DashEventSink<DashLogEntry>()
 
     /**
      * Our own [DebugLog.sink] lambda, kept so detach can clear the global only
@@ -58,9 +69,23 @@ class OpendashDashEnginePlugin :
      * still running.
      */
     private var debugLogSink: ((String, String, String) -> Unit)? = null
-    private val logStreamHandler = object : EventChannel.StreamHandler {
-        override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
-            logSink = events
+    private val stateStreamHandler = object : StateStreamHandler() {
+        override fun onListen(p0: Any?, sink: PigeonEventSink<DashEngineState>) =
+            stateEvents.attach(sink)
+
+        override fun onCancel(p0: Any?) = stateEvents.detach()
+    }
+
+    private val buttonStreamHandler = object : ButtonStreamHandler() {
+        override fun onListen(p0: Any?, sink: PigeonEventSink<DashButtonEvent>) =
+            buttonEvents.attach(sink)
+
+        override fun onCancel(p0: Any?) = buttonEvents.detach()
+    }
+
+    private val logStreamHandler = object : LogStreamHandler() {
+        override fun onListen(p0: Any?, sink: PigeonEventSink<DashLogEntry>) {
+            logEvents.attach(sink)
             // DebugLog is wired HERE, not at attach, and that is the whole point of the
             // buffer on the other side: DebugLog flushes its pre-attach lines the moment a
             // sink appears, and a sink installed at attach forwards into a [logSink] that is
@@ -71,8 +96,8 @@ class OpendashDashEnginePlugin :
             debugLogSink?.let { DebugLog.sink = it }
         }
 
-        override fun onCancel(arguments: Any?) {
-            logSink = null
+        override fun onCancel(p0: Any?) {
+            logEvents.detach()
             // Back to buffering rather than to a sink that drops: Dart can resubscribe.
             if (DebugLog.sink === debugLogSink) DebugLog.sink = null
         }
@@ -104,6 +129,9 @@ class OpendashDashEnginePlugin :
 
     /** Application context, kept for the calls that need one without an Activity. */
     private var appContext: android.content.Context? = null
+
+    /** Kept only so detach can hand [DashEngineApi.setUp] a null api on the same one. */
+    private var messenger: BinaryMessenger? = null
 
     /**
      * Flutter's own errors, into the ride file — off the platform thread.
@@ -161,17 +189,15 @@ class OpendashDashEnginePlugin :
     }
 
     override fun onAttachedToEngine(binding: FlutterPlugin.FlutterPluginBinding) {
-        channel = MethodChannel(binding.binaryMessenger, "opendash_dash_engine")
-        channel.setMethodCallHandler(this)
-        eventChannel = EventChannel(binding.binaryMessenger, "opendash_dash_engine/state")
-        eventChannel.setStreamHandler(this)
-
-        logChannel = EventChannel(binding.binaryMessenger, "opendash_dash_engine/log")
-        logChannel.setStreamHandler(logStreamHandler)
+        messenger = binding.binaryMessenger
+        DashEngineApi.setUp(binding.binaryMessenger, this)
+        StateStreamHandler.register(binding.binaryMessenger, stateStreamHandler)
+        ButtonStreamHandler.register(binding.binaryMessenger, buttonStreamHandler)
+        LogStreamHandler.register(binding.binaryMessenger, logStreamHandler)
 
         val sink: (String, String, String) -> Unit = { tag, level, message ->
             scope.launch {
-                logSink?.success(mapOf("tag" to tag, "level" to level, "message" to message))
+                logEvents.emit(DashLogEntry(tag, level.toLogLevel(), message))
             }
         }
         // Kept, not installed: [logStreamHandler] installs it when Dart subscribes.
@@ -196,216 +222,209 @@ class OpendashDashEnginePlugin :
         controller = DashEngineController(
             context = binding.applicationContext,
             scope = scope,
-            onState = { state -> scope.launch { eventSink?.success(state) } },
+            onState = { state -> scope.launch { stateEvents.emit(state) } },
         ).also { c ->
-            c.onButton = { code -> scope.launch { eventSink?.success(mapOf("button" to code)) } }
+            // Its own stream now. Sharing the state channel meant every reader of the
+            // state had to know about buttons in order to skip them, and one that forgot
+            // read a button event as a state update with every field null.
+            c.onButton = { code ->
+                scope.launch { buttonEvents.emit(DashButtonEvent(code.toLong())) }
+            }
         }
-    }
-
-    override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
-        eventSink = events
-    }
-
-    override fun onCancel(arguments: Any?) {
-        eventSink = null
     }
 
     /**
-     * The two power-state calls, answered without the engine.
+     * The engine, or the failure Dart used to receive as `NO_ENGINE`.
      *
-     * One [BatteryOptimisation.isIgnoring] per call and at most one
-     * `resolveActivity`: both are binder round trips, this runs on the platform thread
-     * that the frame pipeline's own calls share, and the status is re-read on every
-     * resume while Settings is open.
+     * A thrown [DashPigeonError] becomes a `PlatformException` with this code on the
+     * Dart side, which is what the string-keyed handler returned by hand from its
+     * `?: return result.error(...)`. The difference is that forgetting it is now a
+     * compile error rather than a method that answers `null`.
      */
-    private fun handleBatteryCall(call: MethodCall, result: Result) {
-        val ctx = appContext
-            ?: return result.error("no_context", "Plugin is detached", null)
+    private fun engine(): DashEngineController =
+        controller ?: throw DashPigeonError("NO_ENGINE", "Engine not attached")
+
+    override fun getPlatformVersion(): String = "Android ${android.os.Build.VERSION.RELEASE}"
+
+    override fun connect() = engine().connect()
+
+    /**
+     * Suspends, and Dart waits for the whole thing: the farewell packets have to
+     * actually leave before the socket closes (see [DashEngineController.disconnect]).
+     *
+     * **Every path answers.** A call that is never replied to leaves its Dart future
+     * pending for the life of the process — the rider taps "Отключить" and the button
+     * spins forever. The generated wrapper covers that: it catches `Throwable`,
+     * cancellation included, and replies either way. The hand-written version had to
+     * spell it out and grew a bug doing so.
+     *
+     * **Run on [scope], not on the caller's.** Pigeon dispatches a suspend method on a
+     * `CoroutineScope(Dispatchers.Main)` of its own making, which nothing here owns —
+     * so `job.cancel()` at detach would not reach an in-flight disconnect, and it could
+     * resume, after a suspension in `Dispatchers.IO`, into a controller that
+     * [onDetachedFromEngine] has already disposed. `async` + `await` puts the work back
+     * under this plugin's job while still handing the result (or the cancellation) to
+     * the wrapper that has to answer.
+     */
+    override suspend fun disconnect() {
+        // Checked explicitly, for the error code. Past detach `scope.async` returns an
+        // already-cancelled Deferred and `await` would throw a bare
+        // `CancellationException` — an answer, but not one that says what happened.
+        if (!scope.isActive) {
+            throw DashPigeonError("ENGINE_GONE", "Plugin detached before disconnect could run")
+        }
+        val c = engine()
+        scope.async { c.disconnect() }.await()
+    }
+
+    override fun setDestination(name: String?, lat: Double?, lng: Double?) =
+        engine().setDestination(name, lat, lng)
+
+    override fun clearDestination() = engine().clearDestination()
+
+    override fun setNavState(
+        remainingMeters: Double?,
+        nextTurnMeters: Double?,
+        maneuver: Long,
+        etaHHMM: String?,
+        offRoute: Boolean,
+        points: List<NavPoint>,
+        jamSegments: List<Long>,
+    ) = engine().setNavState(
+        remainingMeters = remainingMeters,
+        nextTurnMeters = nextTurnMeters,
+        // Pigeon carries Dart's `int` as `Long`; the protocol writes a byte.
+        maneuver = maneuver.toInt(),
+        etaHHMM = etaHHMM,
+        isOffRoute = offRoute,
+        points = points.map { GeoPoint(it.lat, it.lng) },
+        jamSegments = jamSegments.map { it.toInt() },
+    )
+
+    override fun setFollowMode(enabled: Boolean) = engine().setFollowMode(enabled)
+
+    override fun panBy(dx: Double, dy: Double) = engine().panBy(dx.toFloat(), dy.toFloat())
+
+    override fun zoomIn() = engine().zoomIn()
+
+    override fun zoomOut() = engine().zoomOut()
+
+    override fun toggleHeadingUp() = engine().toggleHeadingUp()
+
+    override fun recenter() = engine().recenter()
+
+    override fun forgetDash() = engine().forgetDash()
+
+    override fun setSsid(ssid: String) = engine().setSsid(ssid)
+
+    override fun setWifiPassword(password: String) = engine().setWifiPassword(password)
+
+    override fun getConfig(): DashConfigView = engine().currentConfig()
+
+    /**
+     * Answered without the engine, deliberately.
+     *
+     * Behind the [engine] guard this failed with `NO_ENGINE` whenever the controller was
+     * between lives, and the settings card — whose whole job is to explain why a ride
+     * died — vanished exactly when it was wanted.
+     *
+     * One [BatteryOptimisation.isIgnoring] and at most one `resolveActivity` per call:
+     * both are binder round trips, this runs on the platform thread that the frame
+     * pipeline's own calls share, and the status is re-read on every resume while
+     * Settings is open.
+     */
+    override fun batteryOptimisationStatus(): BatteryOptimisationStatus {
+        val ctx = appContext ?: throw DashPigeonError("no_context", "Plugin is detached")
         val ignoring = BatteryOptimisation.isIgnoring(ctx)
-        val intent = if (ignoring) null else BatteryOptimisation.requestIntent(ctx)
-        when (call.method) {
-            "batteryOptimisationStatus" -> result.success(
-                mapOf(
-                    "ignoring" to ignoring,
-                    // Separate from `ignoring`: a device with no handler for the action
-                    // is neither exempt NOR askable, and a button that opens nothing is
-                    // worse than no button.
-                    "canAsk" to (intent != null),
-                    "emuiWorkaroundNeeded" to BatteryOptimisation.emuiWorkaroundNeeded(),
-                ),
-            )
-            else -> {
-                val a = activity
-                when {
-                    // Not an error: the caller asked for something already true. Saying
-                    // so lets the UI refresh instead of showing a failure.
-                    ignoring -> result.success(false)
-                    intent == null ->
-                        result.error("no_handler", "Nothing handles the battery prompt", null)
-                    a == null ->
-                        result.error("no_activity", "No activity to show the prompt over", null)
-                    else -> runCatching { a.startActivity(intent) }
-                        .onSuccess { result.success(true) }
-                        .onFailure { result.error("launch_failed", it.message, null) }
-                }
-            }
+        return BatteryOptimisationStatus(
+            ignoring = ignoring,
+            // Separate from `ignoring`: a device with no handler for the action is
+            // neither exempt NOR askable, and a button that opens nothing is worse than
+            // no button.
+            canAsk = !ignoring && BatteryOptimisation.requestIntent(ctx) != null,
+            emuiWorkaroundNeeded = BatteryOptimisation.emuiWorkaroundNeeded(),
+        )
+    }
+
+    override fun requestIgnoreBatteryOptimisations(): Boolean {
+        val ctx = appContext ?: throw DashPigeonError("no_context", "Plugin is detached")
+        // Not an error: the caller asked for something already true. Saying so lets the
+        // UI refresh instead of showing a failure.
+        if (BatteryOptimisation.isIgnoring(ctx)) return false
+        val intent = BatteryOptimisation.requestIntent(ctx)
+            ?: throw DashPigeonError("no_handler", "Nothing handles the battery prompt")
+        val a = activity
+            ?: throw DashPigeonError("no_activity", "No activity to show the prompt over")
+        return runCatching { a.startActivity(intent) }
+            .map { true }
+            .getOrElse { throw DashPigeonError("launch_failed", it.message) }
+    }
+
+    /**
+     * Also answered without the engine: an error worth recording is likelier, not less
+     * likely, while the engine is between lives, and `NO_ENGINE` would drop exactly those.
+     *
+     * Routed here, appended on [rideErrorWriter]. Deferring the whole call would race
+     * with the `start`/`stop` that run on this same thread — see
+     * [RideDiagnostics.fromFlutterDeferred].
+     */
+    override fun rideError(message: String) {
+        RideDiagnostics.fromFlutterDeferred(message)?.let { append ->
+            runCatching { rideErrorWriter.execute(append) }
         }
     }
 
-    override fun onMethodCall(call: MethodCall, result: Result) {
-        // Ahead of the controller guard, deliberately: these two ask the platform about
-        // the app's own power state and touch nothing the engine owns. Behind it they
-        // failed with NO_ENGINE whenever the controller was between lives, and the
-        // settings card — whose whole job is to explain why a ride died — vanished.
-        if (call.method == "batteryOptimisationStatus" ||
-            call.method == "requestIgnoreBatteryOptimisations"
-        ) {
-            return handleBatteryCall(call, result)
-        }
-        // Also ahead of the controller guard: an error worth recording is likelier, not
-        // less likely, while the engine is between lives, and NO_ENGINE would drop
-        // exactly those.
-        if (call.method == "rideError") {
-            val message = call.argument<String>("message").orEmpty()
-            // Routed HERE, appended there. Deferring the whole call would race with
-            // the `start`/`stop` that run on this same thread — see
-            // [RideDiagnostics.fromFlutterDeferred]. Answered immediately either way;
-            // Dart does not await this.
-            RideDiagnostics.fromFlutterDeferred(message)?.let { append ->
-                runCatching { rideErrorWriter.execute(append) }
-            }
-            return result.success(null)
-        }
-        val c = controller ?: return result.error("NO_ENGINE", "Engine not attached", null)
-        when (call.method) {
-            "getPlatformVersion" -> result.success("Android ${android.os.Build.VERSION.RELEASE}")
+    override fun updateNowPlaying(title: String?, album: String, artist: String) =
+        engine().updateNowPlaying(title, album, artist)
 
-            "connect" -> { c.connect(); result.success(null) }
-            // Launched, and Dart waits for the whole thing: disconnect suspends now because
-            // the farewell packets have to actually leave before the socket closes (see
-            // DashEngineController.disconnect). result.success must be called on the main
-            // thread, which [scope] is.
-            //
-            // **Every path answers.** A MethodChannel call that is never replied to leaves
-            // its Dart future pending for the life of the process — the rider taps
-            // "Отключить" and the button stays spinning forever. Before this method became
-            // suspend, a throw left `onMethodCall` and reached Dart as a PlatformException;
-            // moving the work into a coroutine lost that, which is a regression rather than
-            // a simplification. Two ways to go unanswered and both are covered: the
-            // coroutine throws, and the scope is already cancelled — where `launch` does
-            // nothing at all, silently.
-            "disconnect" -> if (!scope.isActive) {
-                result.error("ENGINE_GONE", "Plugin detached before disconnect could run", null)
-            } else {
-                scope.launch {
-                    try {
-                        c.disconnect()
-                        result.success(null)
-                    } catch (e: CancellationException) {
-                        // Answer, then keep unwinding: the scope is going away under us
-                        // (detach), and the channel may already be torn down — hence the
-                        // runCatching around the reply rather than around the rethrow.
-                        runCatching {
-                            result.error("CANCELLED", "disconnect was cancelled", null)
-                        }
-                        throw e
-                    } catch (e: Exception) {
-                        DebugLog.e(TAG, { "disconnect failed" }, e)
-                        result.error(
-                            "DISCONNECT_FAILED",
-                            "${e.javaClass.simpleName}: ${e.message}",
-                            null,
-                        )
-                    }
-                }
-            }
+    override fun updateCall(caller: String?) = engine().updateCall(caller)
 
-            "setDestination" -> {
-                c.setDestination(
-                    call.argument<String>("name"),
-                    call.argument<Double>("lat"),
-                    call.argument<Double>("lng"),
-                )
-                result.success(null)
-            }
-            "clearDestination" -> { c.clearDestination(); result.success(null) }
+    override fun playChime() = engine().playChime()
 
-            "setNavState" -> {
-                val rawPoints = call.argument<List<List<Double>>>("points").orEmpty()
-                val rawJam = call.argument<List<Int>>("jamSegments").orEmpty()
-                c.setNavState(
-                    remainingMeters = call.argument<Double>("remainingMeters"),
-                    nextTurnMeters = call.argument<Double>("nextTurnMeters"),
-                    maneuver = call.argument<Int>("maneuver") ?: DashGlyphs.NAV_MANEUVER_STRAIGHT,
-                    etaHHMM = call.argument<String>("etaHHMM"),
-                    isOffRoute = call.argument<Boolean>("offRoute") ?: false,
-                    points = rawPoints.map { GeoPoint(it[0], it[1]) },
-                    jamSegments = rawJam,
-                )
-                result.success(null)
-            }
+    override fun answerCall(): Boolean = engine().answerCall()
 
-            "setFollowMode" -> { c.setFollowMode(call.argument<Boolean>("enabled") ?: true); result.success(null) }
-            "panBy" -> {
-                c.panBy(
-                    (call.argument<Double>("dx") ?: 0.0).toFloat(),
-                    (call.argument<Double>("dy") ?: 0.0).toFloat(),
-                )
-                result.success(null)
-            }
-            "zoomIn" -> { c.zoomIn(); result.success(null) }
-            "zoomOut" -> { c.zoomOut(); result.success(null) }
-            "toggleHeadingUp" -> { c.toggleHeadingUp(); result.success(null) }
-            "recenter" -> { c.recenter(); result.success(null) }
+    override fun hangupCall(): Boolean = engine().hangupCall()
 
-            "forgetDash" -> { c.forgetDash(); result.success(null) }
-            "setSsid" -> { c.setSsid(call.argument<String>("ssid") ?: ""); result.success(null) }
-            "setWifiPassword" -> { c.setWifiPassword(call.argument<String>("password") ?: ""); result.success(null) }
-            "getConfig" -> result.success(c.currentConfig())
+    override fun skipNext(): Boolean = engine().skipNext()
 
-            "updateNowPlaying" -> {
-                c.updateNowPlaying(
-                    call.argument<String>("title"),
-                    call.argument<String>("album") ?: "",
-                    call.argument<String>("artist") ?: "",
-                )
-                result.success(null)
-            }
-            "updateCall" -> { c.updateCall(call.argument<String>("caller")); result.success(null) }
-            "playChime" -> { c.playChime(); result.success(null) }
+    override fun skipPrevious(): Boolean = engine().skipPrevious()
 
-            "answerCall" -> result.success(c.answerCall())
-            "hangupCall" -> result.success(c.hangupCall())
-            "skipNext" -> result.success(c.skipNext())
-            "skipPrevious" -> result.success(c.skipPrevious())
-            "isNotificationAccessGranted" -> result.success(c.isNotificationAccessGranted())
-            // Through the Activity when there is one, for the same reason the battery
-            // prompt is: a system screen started from the application context gets its
-            // own task, and several OEM skins then put it behind the app. The controller
-            // keeps its app-context path as the fallback — it predates this and works —
-            // so the two are no longer inconsistent, just ordered.
-            "openNotificationAccessSettings" -> {
-                val a = activity
-                if (a != null) {
-                    runCatching { a.startActivity(MediaInfoProvider.accessSettingsIntent()) }
-                        .onFailure { c.openNotificationAccessSettings() }
-                } else {
-                    c.openNotificationAccessSettings()
-                }
-                result.success(null)
-            }
+    override fun isNotificationAccessGranted(): Boolean = engine().isNotificationAccessGranted()
 
-            else -> result.notImplemented()
+    /**
+     * Through the Activity when there is one, for the same reason the battery prompt is:
+     * a system screen started from the application context gets its own task, and several
+     * OEM skins then put it behind the app. The controller keeps its app-context path as
+     * the fallback — it predates this and works — so the two are ordered, not inconsistent.
+     */
+    override fun openNotificationAccessSettings() {
+        val c = engine()
+        val a = activity
+        if (a != null) {
+            runCatching { a.startActivity(MediaInfoProvider.accessSettingsIntent()) }
+                .onFailure { c.openNotificationAccessSettings() }
+        } else {
+            c.openNotificationAccessSettings()
         }
     }
 
     override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {
-        // Logged BEFORE tearing down the sink below — this is the last line that's
-        // guaranteed to actually reach app_log.txt for this engine instance.
+        // Logcat only, and knowingly. This was written as "the last line guaranteed to
+        // reach app_log.txt", which it never was: the sink hands its line to
+        // `scope.launch`, and `job.cancel()` three lines down runs before the main
+        // looper gets another turn, so the coroutine never starts. Emitting it
+        // synchronously instead would let a main-thread line overtake one already
+        // queued from a background thread, and the order of these lines is what a
+        // post-mortem reads them for.
         DebugLog.i(TAG) { "Plugin detaching — controller disposed" }
-        channel.setMethodCallHandler(null)
-        eventChannel.setStreamHandler(null)
-        logChannel.setStreamHandler(null)
+        messenger?.let { DashEngineApi.setUp(it, null) }
+        messenger = null
+        // Pigeon generates no unregister for an event channel, so the sinks are dropped
+        // instead: a handler with no sink delivers nothing, and the messenger it sits on
+        // is leaving with the engine.
+        stateEvents.detach()
+        buttonEvents.detach()
+        logEvents.detach()
         if (DebugLog.sink === debugLogSink) DebugLog.sink = null
         debugLogSink = null
         controller?.dispose()

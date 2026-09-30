@@ -48,10 +48,22 @@ bool _isLoosePreviousButton(int code) =>
 class DashButtonController extends Notifier<void> {
   @override
   void build() {
-    ref.listen(dashEngineRawStreamProvider, (previous, next) {
-      final code = next.value?['button'] as int?;
-      if (code != null) _handle(code);
-    });
+    // The button stream, and straight from it rather than through a
+    // `StreamProvider`.
+    //
+    // **Both halves of that matter.** It is its own channel since the boundary
+    // was generated — before, this had to fish a `button` key out of every
+    // state update while every other reader skipped the ones that had it. And
+    // it is subscribed directly because Pigeon generates value equality for
+    // its classes: two presses of the same button produce equal events, and
+    // Riverpod suppresses a `ref.listen` callback whose new value equals the
+    // old one. Zooming in twice would zoom in once. The map-shaped payload
+    // this replaced compared by identity, so the old code never met the
+    // problem.
+    final sub = DashEngine.instance.buttonStream.listen(
+      (event) => _handle(event.code),
+    );
+    ref.onDispose(sub.cancel);
   }
 
   void _handle(int code) {

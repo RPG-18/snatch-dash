@@ -57,8 +57,9 @@ stateDiagram-v2
 
 Джойстик/медиа-кнопки дэша шлют `09 00`; `DashSession` их только
 подтверждает (ack) и пробрасывает код наверх — `DashEngineController.onButton`
-→ плагин кладёт `{"button": code}` в `dashEngineRawStreamProvider`. Что код
-*означает*, решает
+→ плагин отдаёт `DashButtonEvent` в **свой** поток (`DashEngine.buttonStream`,
+канал Pigeon `DashEngineEvents.button`, с 30.09.2026; до этого — карта
+`{"button": code}` по каналу состояния). Что код *означает*, решает
 [`DashButtonController`](../lib/state/dash_button_controller.dart) (Dart).
 На `navigating` он больше не смотрит вовсе — раз кадр всегда карта, next/prev
 означают одно и то же в обоих состояниях; решают только текущие

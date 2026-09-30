@@ -1,117 +1,45 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:opendash_dash_engine/opendash_dash_engine.dart';
 
-/// Connection stage mirrored from the native `DashState` enum
-/// (`DashEngineController.publishState`'s "stage" key).
-enum DashStage { idle, connecting, authenticating, ready, streaming, error }
+export 'package:opendash_dash_engine/opendash_dash_engine.dart'
+    show DashEngineState, DashStage, WifiStatus;
 
-DashStage _stageFrom(String? name) => switch (name) {
-  'CONNECTING' => DashStage.connecting,
-  'AUTHENTICATING' => DashStage.authenticating,
-  'READY' => DashStage.ready,
-  'STREAMING' => DashStage.streaming,
-  'ERROR' => DashStage.error,
-  _ => DashStage.idle,
-};
+/// What the engine looks like before it has said anything.
+///
+/// **Defaults live here and nowhere else now.** There used to be a hand-written
+/// `DashEngineState` in this file with a `fromMap` that applied its own defaults
+/// while `DashEngineController.publishState` built the map on the other side. Two
+/// lists of field names, maintained independently, checked by nothing — a key
+/// renamed on one side arrived as null on the other and read as "no GPS" or "not
+/// navigating". Since 2026-09-30 both sides are generated from
+/// `pigeons/dash_engine.dart`, so the only thing left to decide is what is true
+/// before the first update.
+DashEngineState get idleDashState => DashEngineState(
+  stage: DashStage.idle,
+  explicitDisconnect: false,
+  wifiStatus: WifiStatus.idle,
+  navigating: false,
+  hasGps: false,
+  offRoute: false,
+  gpsLost: false,
+  gpsWeak: false,
+  // True, like the engine's own camera: the dash follows the rider and turns
+  // with them until someone says otherwise.
+  followMode: true,
+  headingUp: true,
+  zoom: 0,
+  hasActiveCall: false,
+);
 
-/// Typed snapshot of the native dash engine's live state stream.
-class DashEngineState {
-  const DashEngineState({
-    this.stage = DashStage.idle,
-    this.wifiStatus,
-    this.wifiSsid,
-    this.wifiError,
-    this.navigating = false,
-    this.hasGps = false,
-    this.riderLat,
-    this.riderLng,
-    this.riderBearing,
-    this.riderSpeed,
-    this.remainingKm,
-    this.offRoute = false,
-    this.gpsLost = false,
-    this.gpsWeak = false,
-    this.errorMessage,
-    this.followMode = true,
-    this.headingUp = true,
-    this.nowPlayingTitle,
-    this.incomingCaller,
-    this.hasActiveCall = false,
-    this.explicitDisconnect = false,
-  });
-
-  final DashStage stage;
-  final String? wifiStatus;
-  final String? wifiSsid;
-  final String? wifiError;
-
-  /// Mirrors the native `navigating` flag (set by `setDestination`/
-  /// `clearDestination`) — true once a destination has actually been sent to
-  /// the dash, not just previewed on the Route screen. The dash draws a map
-  /// either way; this only drives the route-card chrome and the Dash screen's
-  /// "exit navigation" FAB (see spec/fsm.md).
-  final bool navigating;
-  final bool hasGps;
-  final double? riderLat;
-  final double? riderLng;
-  final double? riderBearing;
-
-  /// Ground speed from the native GPS fix, m/s — null when there's no fix.
-  /// Feeds `NavEngine.progress`, which otherwise falls back to a flat 11 m/s
-  /// assumption for every ETA.
-  final double? riderSpeed;
-  final double? remainingKm;
-  final bool offRoute;
-  final bool gpsLost;
-  final bool gpsWeak;
-  final String? errorMessage;
-  final bool followMode;
-  final bool headingUp;
-  final String? nowPlayingTitle;
-  final String? incomingCaller;
-
-  /// True for ANY call — ringing or already answered/outgoing — unlike
-  /// [incomingCaller], which only ever carries ringing calls. Lets the dash's
-  /// reject/hangup button end an already-answered call too; see
-  /// `DashButtonController`.
-  final bool hasActiveCall;
-
-  /// True only on the single `publishState()` call inside the native
-  /// `disconnect()` — every other update leaves it false. Distinguishes
-  /// "rider asked to disconnect" from "session died on its own", which
-  /// otherwise both surface as the same [DashStage.idle]/[DashStage.error];
-  /// see `DashConnectionAlertController`, the only reader of this field.
-  final bool explicitDisconnect;
-
-  factory DashEngineState.fromMap(Map<String, dynamic> map) => DashEngineState(
-    stage: _stageFrom(map['stage'] as String?),
-    wifiStatus: map['wifiStatus'] as String?,
-    wifiSsid: map['wifiSsid'] as String?,
-    wifiError: map['wifiError'] as String?,
-    navigating: map['navigating'] as bool? ?? false,
-    hasGps: map['hasGps'] as bool? ?? false,
-    riderLat: (map['riderLat'] as num?)?.toDouble(),
-    riderLng: (map['riderLng'] as num?)?.toDouble(),
-    riderBearing: (map['riderBearing'] as num?)?.toDouble(),
-    riderSpeed: (map['riderSpeed'] as num?)?.toDouble(),
-    remainingKm: (map['remainingKm'] as num?)?.toDouble(),
-    offRoute: map['offRoute'] as bool? ?? false,
-    gpsLost: map['gpsLost'] as bool? ?? false,
-    gpsWeak: map['gpsWeak'] as bool? ?? false,
-    errorMessage: map['errorMessage'] as String?,
-    followMode: map['followMode'] as bool? ?? true,
-    headingUp: map['headingUp'] as bool? ?? true,
-    nowPlayingTitle: map['nowPlayingTitle'] as String?,
-    incomingCaller: map['incomingCaller'] as String?,
-    hasActiveCall: map['hasActiveCall'] as bool? ?? false,
-    explicitDisconnect: map['explicitDisconnect'] as bool? ?? false,
-  );
-}
-
-/// Raw event map stream from the native engine (state updates + button events).
-final dashEngineRawStreamProvider = StreamProvider<Map<String, dynamic>>((ref) {
+/// The engine's live state, straight from the native side.
+final dashEngineRawStreamProvider = StreamProvider<DashEngineState>((ref) {
   return DashEngine.instance.stateStream;
 });
+
+// Deliberately NO provider for the button stream. A `StreamProvider` compares
+// the value it holds, and Pigeon gives its classes value equality, so two
+// presses of the same button would arrive as one — see `DashButtonController`,
+// which subscribes to `DashEngine.instance.buttonStream` itself.
 
 /// Typed, defaulted view of the latest engine state — safe to read before the
 /// first event arrives (e.g. before `connect()` is ever called).
@@ -129,10 +57,10 @@ class DashEngineStateNotifier extends Notifier<DashEngineState> {
   DashEngineState build() {
     ref.listen(dashEngineRawStreamProvider, (previous, next) {
       final raw = next.value;
-      if (raw == null || raw.containsKey('button')) return;
-      state = DashEngineState.fromMap(raw);
+      if (raw == null) return;
+      state = raw;
     });
-    return const DashEngineState();
+    return idleDashState;
   }
 }
 

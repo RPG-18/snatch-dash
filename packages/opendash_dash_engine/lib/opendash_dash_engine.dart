@@ -1,4 +1,21 @@
 import 'opendash_dash_engine_platform_interface.dart';
+import 'src/messages.g.dart';
+
+/// The generated boundary types, re-exported so callers never import
+/// `src/messages.g.dart` directly. The stream FUNCTIONS in that file are
+/// deliberately left out: they each build a fresh channel, and the one
+/// subscription per stream belongs to [MethodChannelOpendashDashEngine].
+export 'src/messages.g.dart'
+    show
+        BatteryOptimisationStatus,
+        DashButtonEvent,
+        DashConfigView,
+        DashEngineState,
+        DashLogEntry,
+        DashLogLevel,
+        DashStage,
+        NavPoint,
+        WifiStatus;
 
 /// Dart-side façade over the native dash engine (WiFi pairing, K1G protocol
 /// session, GPS, and the off-screen render → H.264 → RTP pipeline). See
@@ -15,20 +32,19 @@ class DashEngine {
   Future<String?> getPlatformVersion() =>
       OpendashDashEnginePlatform.instance.getPlatformVersion();
 
-  /// One map per state update. Keys: stage, wifiStatus, wifiSsid, wifiError,
-  /// hasGps, riderLat, riderLng, riderBearing, remainingKm, offRoute,
-  /// gpsLost, gpsWeak, errorMessage, followMode, headingUp, zoom, and
-  /// (on button events) button.
-  ///
-  /// `zoom` is a MapLibre camera zoom as a double (e.g. 13.50), not the
-  /// hundredths the engine steps it in — see `DashEngineController.ZOOM_STEP`.
-  Stream<Map<String, dynamic>> get stateStream =>
+  /// One [DashEngineState] per update. Described in `pigeons/dash_engine.dart`,
+  /// which is also where the native side gets its definition — the two cannot
+  /// drift.
+  Stream<DashEngineState> get stateStream =>
       OpendashDashEnginePlatform.instance.stateStream;
 
-  /// Mirrors every native `DebugLog` line — keys `tag`, `level` (D/I/W/E),
-  /// `message`. Meant to be piped into the app's own logger (see
-  /// `util/app_logger.dart`), not read directly by feature code.
-  Stream<Map<String, dynamic>> get logStream =>
+  /// Presses on the dash's own joystick, on their own channel.
+  Stream<DashButtonEvent> get buttonStream =>
+      OpendashDashEnginePlatform.instance.buttonStream;
+
+  /// Mirrors every native `DebugLog` line. Meant to be piped into the app's own
+  /// logger (see `util/app_logger.dart`), not read directly by feature code.
+  Stream<DashLogEntry> get logStream =>
       OpendashDashEnginePlatform.instance.logStream;
 
   Future<void> connect() => OpendashDashEnginePlatform.instance.connect();
@@ -51,7 +67,7 @@ class DashEngine {
     int maneuver = 0x09,
     String? etaHHMM,
     bool offRoute = false,
-    List<List<double>> points = const [],
+    List<NavPoint> points = const [],
     List<int> jamSegments = const [],
   }) => OpendashDashEnginePlatform.instance.setNavState(
     remainingMeters: remainingMeters,
@@ -86,15 +102,13 @@ class DashEngine {
   Future<void> setWifiPassword(String password) =>
       OpendashDashEnginePlatform.instance.setWifiPassword(password);
 
-  Future<Map<String, dynamic>> getConfig() =>
+  Future<DashConfigView> getConfig() =>
       OpendashDashEnginePlatform.instance.getConfig();
 
   /// Whether the system will let the app keep feeding the dash with the screen
   /// off — see `BatteryOptimisation` (Kotlin) for why the app asks at all and
   /// why Play policy allows it here.
-  ///
-  /// Keys: `ignoring`, `canAsk`, `emuiWorkaroundNeeded`.
-  Future<Map<String, dynamic>> batteryOptimisationStatus() =>
+  Future<BatteryOptimisationStatus> batteryOptimisationStatus() =>
       OpendashDashEnginePlatform.instance.batteryOptimisationStatus();
 
   /// One Flutter-side error into `diag/`, the only log a release build keeps.

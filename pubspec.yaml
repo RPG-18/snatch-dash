@@ -62,6 +62,11 @@ dev_dependencies:
   flutter_test:
     sdk: flutter
 
+  # Only for tests that swap OpendashDashEnginePlatform.instance for a fake —
+  # its setter verifies the token, which needs MockPlatformInterfaceMixin. The
+  # app itself never touches this package.
+  plugin_platform_interface: ^2.1.8
+
   # The "flutter_lints" package below contains a set of recommended lints to
   # encourage good coding practices. The lint set provided by the package is
   # activated in the `analysis_options.yaml` file located at the root of your

@@ -6,6 +6,7 @@ import com.opendash.opendash_dash_engine.dash.protocol.DashGlyphs
 import com.opendash.opendash_dash_engine.util.DebugLog
 import com.opendash.opendash_dash_engine.media.MediaInfoProvider
 import com.opendash.opendash_dash_engine.util.BatteryOptimisation
+import com.opendash.opendash_dash_engine.util.RideDiagnostics
 import io.flutter.embedding.engine.plugins.activity.ActivityAware
 import io.flutter.embedding.engine.plugins.activity.ActivityPluginBinding
 import io.flutter.embedding.engine.plugins.FlutterPlugin
@@ -14,6 +15,10 @@ import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import io.flutter.plugin.common.MethodChannel.MethodCallHandler
 import io.flutter.plugin.common.MethodChannel.Result
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
@@ -34,6 +39,9 @@ class OpendashDashEnginePlugin :
     FlutterPlugin, MethodCallHandler, EventChannel.StreamHandler, ActivityAware {
     private companion object {
         private const val TAG = "OpendashDashEnginePlugin"
+
+        /** How long a session boundary waits for [rideErrorWriter] before giving up. */
+        private const val DRAIN_TIMEOUT_MS = 250L
     }
 
     private lateinit var channel: MethodChannel
@@ -97,6 +105,45 @@ class OpendashDashEnginePlugin :
     /** Application context, kept for the calls that need one without an Activity. */
     private var appContext: android.content.Context? = null
 
+    /**
+     * Flutter's own errors, into the ride file — off the platform thread.
+     *
+     * Dart has no other way in: `RideDiagnostics` is Kotlin, and until 2026-09-29
+     * nothing carried a Dart-side failure to it. That gap cost a day on 28.09 — the
+     * error that actually broke the settings screen reached neither logcat nor
+     * `app_log.txt` and was found only by attaching `flutter run`.
+     *
+     * **Why a thread of its own.** `onMethodCall` runs on the Android main thread,
+     * which is also where MapLibre's snapshot callbacks run, and the write it would
+     * perform there opens, appends to and closes a file on FUSE-backed external
+     * storage while holding the lock the `[map]`/`[stream]`/`[mem]` writers share.
+     * A mid-ride Flutter error would show up as `wakeLate`/`overrun` with nothing in
+     * the file to explain it — the frame loop paying for the log that was supposed to
+     * diagnose it. The rest of the engine already keeps this work off Main; this is
+     * the one path that would not have.
+     *
+     * **One thread, not a pool**, and not `Dispatchers.IO`: the ride file is read as a
+     * sequence, so the lines have to land in the order they were reported, and a
+     * single worker is what guarantees that without a lock of its own.
+     */
+    private val rideErrorWriter: ExecutorService =
+        Executors.newSingleThreadExecutor { r -> Thread(r, "ride-flutter-log") }
+
+    /**
+     * Let the writer catch up before a ride file is closed.
+     *
+     * Bounded twice over: the queue holds at most what the Dart-side budget let
+     * through (six lines per ten seconds), and the wait gives up after
+     * [DRAIN_TIMEOUT_MS] rather than hold a session boundary hostage to a stuck
+     * filesystem. Runs at connect and disconnect only, not per line.
+     */
+    private val drainRideErrors: () -> Unit = {
+        val landed = CountDownLatch(1)
+        runCatching { rideErrorWriter.execute { landed.countDown() } }
+            .onFailure { landed.countDown() }
+        runCatching { landed.await(DRAIN_TIMEOUT_MS, TimeUnit.MILLISECONDS) }
+    }
+
     override fun onAttachedToActivity(binding: ActivityPluginBinding) {
         activity = binding.activity
     }
@@ -129,6 +176,10 @@ class OpendashDashEnginePlugin :
         }
         // Kept, not installed: [logStreamHandler] installs it when Dart subscribes.
         debugLogSink = sink
+        // Registered with the engine, not at construction: it is a promise to drain
+        // [rideErrorWriter], and that promise is only good while this plugin is
+        // attached to hold it.
+        RideDiagnostics.appendBarrier = drainRideErrors
 
         // Process-lifecycle marker: the only direct signal for "was this a genuinely fresh
         // process, or just the plugin/engine reattaching within one that's been alive a
@@ -210,6 +261,20 @@ class OpendashDashEnginePlugin :
             call.method == "requestIgnoreBatteryOptimisations"
         ) {
             return handleBatteryCall(call, result)
+        }
+        // Also ahead of the controller guard: an error worth recording is likelier, not
+        // less likely, while the engine is between lives, and NO_ENGINE would drop
+        // exactly those.
+        if (call.method == "rideError") {
+            val message = call.argument<String>("message").orEmpty()
+            // Routed HERE, appended there. Deferring the whole call would race with
+            // the `start`/`stop` that run on this same thread — see
+            // [RideDiagnostics.fromFlutterDeferred]. Answered immediately either way;
+            // Dart does not await this.
+            RideDiagnostics.fromFlutterDeferred(message)?.let { append ->
+                runCatching { rideErrorWriter.execute(append) }
+            }
+            return result.success(null)
         }
         val c = controller ?: return result.error("NO_ENGINE", "Engine not attached", null)
         when (call.method) {
@@ -347,5 +412,12 @@ class OpendashDashEnginePlugin :
         controller = null
         appContext = null
         job.cancel()
+        if (RideDiagnostics.appendBarrier === drainRideErrors) {
+            RideDiagnostics.appendBarrier = null
+        }
+        // `shutdown`, not `shutdownNow`: queued lines are errors that have already
+        // happened, and the last one before a detach is the likeliest to matter.
+        rideErrorWriter.shutdown()
     }
+
 }

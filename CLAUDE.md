@@ -169,7 +169,7 @@ analyze`, ни в `dart analyze` — проверено файлом с заве
 пост-мортем — файлы на устройстве. Ничего, кроме кабеля, не нужно:
 
 ```
-adb pull /sdcard/Android/data/ru.snatchdash.app/files/diag   # по файлу на сессию: [map], [session], [stream], [gps], [mem], [DashWifiManager], [MapLibre]
+adb pull /sdcard/Android/data/ru.snatchdash.app/files/diag   # по файлу на сессию: [map], [session], [stream], [gps], [mem], [DashWifiManager], [MapLibre], [flutter]
 adb exec-out run-as ru.snatchdash.app cat files/app_log.txt > app_log.txt
 ```
 

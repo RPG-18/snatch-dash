@@ -120,6 +120,10 @@ class MethodChannelOpendashDashEngine extends OpendashDashEnginePlatform {
   }
 
   @override
+  Future<void> rideError(String message) =>
+      methodChannel.invokeMethod('rideError', {'message': message});
+
+  @override
   Future<bool> requestIgnoreBatteryOptimisations() async =>
       await methodChannel.invokeMethod<bool>(
         'requestIgnoreBatteryOptimisations',

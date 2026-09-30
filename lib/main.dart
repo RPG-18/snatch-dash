@@ -13,6 +13,7 @@ import 'state/dash_connection_alert_controller.dart';
 import 'state/offline_maps_controller.dart';
 import 'theme/app_theme.dart';
 import 'util/app_logger.dart';
+import 'util/error_reporting.dart';
 
 // Set via `--dart-define-from-file=android/dart_defines.local.properties`
 // (gitignored; see android/dart_defines.defaults.properties for the
@@ -25,6 +26,10 @@ const _yandexApiKey = String.fromEnvironment('YANDEX_API_KEY');
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await attachPersistentLog();
+  // Straight after the log is attached and before anything that can fail: until
+  // 2026-09-29 a Flutter error reached the console and nothing else, so a red
+  // screen on a rider's phone left no evidence anywhere. See util/error_reporting.dart.
+  installErrorReporting();
   await initializeDateFormatting();
   // Restores the saved voice mode. Without this the manager keeps its initial
   // VoiceMode.chime forever — nothing else calls load() — so FULL (spoken

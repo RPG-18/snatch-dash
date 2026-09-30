@@ -153,7 +153,14 @@ kotlin {
 
 dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
-    // DashConfig — encrypted storage for the dash WiFi SSID/password.
+    // ONLY so DashConfig can read what the encrypted build wrote and copy it into plain
+    // preferences — see DashConfig.migrateFromEncrypted. Nothing reads or writes through
+    // this library any more (task 7.3: the passphrase is the factory one and an SSID is
+    // broadcast in the clear, so there was nothing to protect, while the Keystore's
+    // refusals silently reverted a rider's saved dash to defaults).
+    //
+    // Deprecated upstream. Removable once no installed build predates 7.3 — at which
+    // point drop this line and DashConfig.migrateFromEncrypted together.
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
 
     // Offscreen map rendering for the dash frame (spec/drawing_from_local_tiles.md).

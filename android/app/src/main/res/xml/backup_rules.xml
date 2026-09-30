@@ -12,7 +12,29 @@
 
   Packs are re-downloadable from index.json, so there is nothing of value to
   back up here anyway. See spec/drawing_from_local_tiles.md, "Хранение паков".
+
+  `dash_config.xml` is the dash WiFi settings (DashConfig), excluded for two
+  reasons that happen to be the same exclusion:
+
+  - the passphrase. The factory one is `12345678` and no secret, but overriding
+    it is a supported feature, and since task 7.3 these are stored in the clear
+    — the encrypted store they used to live in was protecting nothing while
+    silently reverting a rider's saved dash whenever the Keystore refused;
+  - restoring it would break the migration that reads what that store left
+    behind. The blobs travel inside this file; their Keystore master key does
+    not. On a new phone they would be permanently undecryptable, so the
+    migration would retry on every attach and warn into every ride file forever
+    about settings that had long since been re-entered.
+
+  Cost of excluding it, stated fully: a new phone asks the rider to pick the
+  dash from the system dialog once — that is the out-of-the-box path anyway —
+  AND an overridden passphrase or prefix does not come along, so a rider who
+  changed either has to enter it again. That is the same trade as the first
+  bullet, seen from the other side: a secret that never leaves the device also
+  never arrives on the next one. The failure mode if they forget is a bare WiFi
+  auth error, so it is worth knowing about.
 -->
 <full-backup-content>
     <exclude domain="external" path="maps/" />
+    <exclude domain="sharedpref" path="dash_config.xml" />
 </full-backup-content>

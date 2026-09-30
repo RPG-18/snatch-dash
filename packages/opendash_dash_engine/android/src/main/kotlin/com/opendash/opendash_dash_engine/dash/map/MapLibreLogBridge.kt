@@ -1,6 +1,7 @@
 package com.opendash.opendash_dash_engine.dash.map
 
 import com.opendash.opendash_dash_engine.util.DebugLog
+import com.opendash.opendash_dash_engine.util.CollapsingRideLog
 import com.opendash.opendash_dash_engine.util.monotonicMs
 import com.opendash.opendash_dash_engine.util.RideDiagnostics
 import org.maplibre.android.log.Logger
@@ -36,28 +37,27 @@ object MapLibreLogBridge {
 
     private var installed = false
 
-    /** Window bookkeeping for [ride]: when it opened, and which ride file it belongs to. */
-    private var windowStartMs = 0L
-    private var windowSession = -1L
+    /** Shared with the Flutter error bridge — see [CollapsingRideLog]. */
+    private var limiter = CollapsingRideLog(TAG, WINDOW_MS, WINDOW_BUDGET, ::monotonicMs)
 
     /**
-     * Messages written in the current window, each with the number of identical ones
-     * swallowed after it. Never larger than [WINDOW_BUDGET]: a message only gets an
-     * entry by being written, and past the budget nothing is written.
-     */
-    private val collapsed = LinkedHashMap<String, Int>()
-
-    /** Distinct messages this window had no budget left to write. */
-    private var dropped = 0
-
-    /**
-     * The clock for the rate-limit window, replaced in tests so 10 s need not be waited out.
+     * The clock for the rate-limit window, replaced in tests so 10 s need not be waited
+     * out. Setting it rebuilds the limiter, since the limiter captures it — so a test
+     * that sets it also starts the window afresh, which is what a test wants.
      *
-     * Monotonic: the window is a duration, and the failure mode of the wall clock here is that
-     * an NTP step mid-ride either silences the bridge for the length of the step or empties the
-     * budget instantly. See util/Clock.kt.
+     * Declared after [limiter] on purpose: the setter assigns to it, and reading a
+     * property before its initializer has run is the sort of thing that works until
+     * someone reorders the file.
+     *
+     * Monotonic: the window is a duration, and the failure mode of the wall clock here is
+     * that an NTP step mid-ride either silences the bridge for the length of the step or
+     * empties the budget instantly. See util/Clock.kt.
      */
     internal var clockMs: () -> Long = ::monotonicMs
+        set(value) {
+            field = value
+            limiter = CollapsingRideLog(TAG, WINDOW_MS, WINDOW_BUDGET, value)
+        }
 
     /** Safe to call on every [MapSnapshotProvider.prepare]; only does work once. */
     fun install() {
@@ -90,69 +90,18 @@ object MapLibreLogBridge {
     }
 
     /**
-     * Rate-limits MapLibre's log into the ride file: at most [WINDOW_BUDGET] distinct
-     * messages per [WINDOW_MS], each written once, with its repeats counted and
-     * reported when the window closes.
+     * Rate-limits MapLibre's log into the ride file — see [CollapsingRideLog] for the
+     * shape of the limit and the two gaps it has.
      *
-     * MapLibre repeats a resource failure once per snapshot, and the failure this
-     * bridge was built for lasted a whole ride: the 2026-09-05 session would have
-     * written the same `Could not read asset` line some 2600 times, burying the
-     * `[map]`/`[stream]` telemetry a post-mortem starts from. Collapsing by message
-     * alone is not enough, because nothing says the failures are one message —
-     * several missing glyph ranges name several files, and alternating messages walk
-     * straight through a "same as the previous line?" check. Hence a budget as well:
-     * whatever MapLibre does, this bridge costs the file a bounded number of lines,
-     * and says so when it drops the rest.
-     *
-     * Two known gaps, both counts and never messages. The tail of a window is only
-     * reported when the next line arrives — a burst that simply stops leaves its last
-     * repeats uncounted. And a window interrupted by a new ride file is dropped
-     * outright rather than written into a file its lines were never headed for (see
-     * [RideDiagnostics.session]).
-     *
-     * `@Synchronized` because MapLibre logs from its own threads — the snapshotter
-     * and the tile workers both reach here.
+     * MapLibre repeats a resource failure once per snapshot, and the failure this bridge
+     * was built for lasted a whole ride: the 2026-09-05 session would have written the
+     * same `Could not read asset` line some 2600 times, burying the `[map]`/`[stream]`
+     * telemetry a post-mortem starts from.
      */
-    @Synchronized
     internal fun ride(tag: String, msg: String, t: Throwable?) {
-        val text = "[$tag] $msg" + if (t != null) " — ${t.javaClass.simpleName}: ${t.message}" else ""
-        val now = clockMs()
-        val session = RideDiagnostics.session
-        if (session != windowSession) {
-            // A new ride file: whatever the previous window was still counting was
-            // headed for a file that is now closed.
-            collapsed.clear()
-            dropped = 0
-            windowSession = session
-            windowStartMs = now
-        } else if (now - windowStartMs >= WINDOW_MS) {
-            closeWindow()
-            windowStartMs = now
-        }
-        val repeats = collapsed[text]
-        if (repeats != null) {
-            collapsed[text] = repeats + 1
-            return
-        }
-        if (collapsed.size >= WINDOW_BUDGET) {
-            dropped++
-            return
-        }
-        collapsed[text] = 0
-        RideDiagnostics.warn(TAG, text)
-    }
-
-    /** Report what the closing window swallowed, then start counting again. */
-    private fun closeWindow() {
-        val seconds = WINDOW_MS / 1000
-        for ((text, repeats) in collapsed) {
-            if (repeats > 0) RideDiagnostics.warn(TAG, "repeated $repeats more time(s) in the last ${seconds}s: $text")
-        }
-        if (dropped > 0) {
-            RideDiagnostics.warn(TAG, "$dropped further line(s) not written — over the $WINDOW_BUDGET-per-${seconds}s budget")
-        }
-        collapsed.clear()
-        dropped = 0
+        limiter.write(
+            "[$tag] $msg" + if (t != null) " — ${t.javaClass.simpleName}: ${t.message}" else "",
+        )
     }
 
     private const val TAG = "MapLibre"

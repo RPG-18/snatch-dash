@@ -76,6 +76,9 @@ class MockOpendashDashEnginePlatform
   Future<bool> requestIgnoreBatteryOptimisations() async => false;
 
   @override
+  Future<void> rideError(String message) async {}
+
+  @override
   Future<void> updateNowPlaying({
     String? title,
     String album = '',

@@ -6,6 +6,7 @@ import com.opendash.opendash_dash_engine.dash.protocol.DashGlyphs
 import com.opendash.opendash_dash_engine.util.DebugLog
 import com.opendash.opendash_dash_engine.media.MediaInfoProvider
 import com.opendash.opendash_dash_engine.util.BatteryOptimisation
+import com.opendash.opendash_dash_engine.util.CollapsingRideLog
 import io.flutter.embedding.engine.plugins.activity.ActivityAware
 import io.flutter.embedding.engine.plugins.activity.ActivityPluginBinding
 import io.flutter.embedding.engine.plugins.FlutterPlugin
@@ -96,6 +97,30 @@ class OpendashDashEnginePlugin :
 
     /** Application context, kept for the calls that need one without an Activity. */
     private var appContext: android.content.Context? = null
+
+    /**
+     * Flutter's own errors, into the ride file.
+     *
+     * Dart has no other way in: `RideDiagnostics` is Kotlin, and until 2026-09-29
+     * nothing carried a Dart-side failure to it. That gap cost a day on 28.09 — the
+     * error that actually broke the settings screen reached neither logcat nor
+     * `app_log.txt` and was found only by attaching `flutter run`.
+     *
+     * Rate-limited because a Flutter build error repeats once per frame: at 60 Hz an
+     * unlimited path would bury the `[map]`/`[stream]` telemetry a post-mortem starts
+     * from, which is the same failure `MapLibreLogBridge` was built to avoid. Same
+     * budget, same window, same [CollapsingRideLog].
+     */
+    private val flutterErrors = CollapsingRideLog(
+        tag = "flutter",
+        windowMs = 10_000L,
+        budget = 6,
+        // The one source that gets the pre-session buffer. The 28.09 error fired with
+        // no dash connected, which is the normal case for a settings-screen bug — a
+        // Dart failure that reaches nothing is what this whole path is about, and
+        // dropping it when idle would be the feature failing in its own example.
+        keepWhenIdle = true,
+    )
 
     override fun onAttachedToActivity(binding: ActivityPluginBinding) {
         activity = binding.activity
@@ -210,6 +235,13 @@ class OpendashDashEnginePlugin :
             call.method == "requestIgnoreBatteryOptimisations"
         ) {
             return handleBatteryCall(call, result)
+        }
+        // Also ahead of the controller guard: an error worth recording is likelier, not
+        // less likely, while the engine is between lives, and NO_ENGINE would drop
+        // exactly those.
+        if (call.method == "rideError") {
+            flutterErrors.write(call.argument<String>("message").orEmpty())
+            return result.success(null)
         }
         val c = controller ?: return result.error("NO_ENGINE", "Engine not attached", null)
         when (call.method) {

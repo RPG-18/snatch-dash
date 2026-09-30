@@ -97,6 +97,14 @@ class DashEngine {
   Future<Map<String, dynamic>> batteryOptimisationStatus() =>
       OpendashDashEnginePlatform.instance.batteryOptimisationStatus();
 
+  /// One Flutter-side error into `diag/`, the only log a release build keeps.
+  ///
+  /// Rate-limited on the native side: a Flutter build error repeats once per
+  /// frame, and an unlimited path would bury the `[map]`/`[stream]` telemetry
+  /// a post-mortem starts from.
+  Future<void> rideError(String message) =>
+      OpendashDashEnginePlatform.instance.rideError(message);
+
   /// Shows the system battery-optimisation prompt.
   ///
   /// Returns false when there was nothing to ask — already exempt. Throws a

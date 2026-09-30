@@ -135,6 +135,7 @@ object RideDiagnostics {
             PacketCapture.start(stamp)
             rotate(d)
             raw("==== session start: $reason — $deviceLabel, $buildLabel ====")
+            flushPending()
         }
     }
 
@@ -156,14 +157,81 @@ object RideDiagnostics {
      * [DebugLog.w] next to a [log] whose text started with "WARN"); this is that
      * pair, once.
      */
-    fun warn(tag: String, msg: String) {
+    fun warn(tag: String, msg: String, keepWhenIdle: Boolean = false) {
         DebugLog.w(tag) { msg }
-        write(tag, "WARN $msg")
+        write(tag, "WARN $msg", keepWhenIdle)
     }
 
-    private fun write(tag: String, msg: String) {
-        if (file == null) return
+    /**
+     * Lines that arrived with no ride file open, kept for the next one.
+     *
+     * **Because the errors most worth keeping happen outside a session.** The Flutter
+     * error this whole path exists for (28.09, the settings screen) fired with no dash
+     * connected, so `write` dropped it and a release build — where `DebugLog` is
+     * compiled out — recorded nothing at all. Review caught the feature failing in its
+     * own motivating case, 2026-09-29.
+     *
+     * **Opt-in per call, not the default for everything.** The first version buffered
+     * every write that found no file, which also caught the TAIL of a session — the RX
+     * loop's "socket error", `FrameStreamer`'s finally, the `[mem]` job on
+     * `Dispatchers.IO`, all of which keep writing after [stop] has run on Main. Those
+     * were then replayed at the head of the NEXT ride file, which is exactly the
+     * misfiling [session] exists to prevent and that `MapFrameRenderer` and
+     * `DashWifiManager` are written around. Only a caller with nowhere else to go asks
+     * for the buffer.
+     *
+     * Bounded and lossy on purpose: the newest [PENDING_MAX] survive, older ones are
+     * counted and named as dropped. A ride file is a post-mortem, not a spool.
+     */
+    private val pending = ArrayDeque<String>()
+    private var pendingDropped = 0
+
+    /**
+     * Throw away what no file has claimed yet.
+     *
+     * Test-only, and needed precisely because the buffer outliving a session is the
+     * feature: this is an `object`, so lines left pending by one test are flushed into
+     * the next one's file. Nothing in production drops them — that is [flushPending]'s
+     * job, once.
+     */
+    internal fun clearPending() {
         synchronized(lock) {
+            pending.clear()
+            pendingDropped = 0
+        }
+    }
+
+    /** Write the lines that arrived before this file existed. Under [lock] already. */
+    private fun flushPending() {
+        if (pending.isEmpty() && pendingDropped == 0) return
+        val carried = pending.toList()
+        val dropped = pendingDropped
+        pending.clear()
+        pendingDropped = 0
+        for (line in carried) raw("           $line")
+        if (dropped > 0) {
+            raw("           [diag] $dropped earlier line(s) dropped — over the $PENDING_MAX-line buffer")
+        }
+    }
+
+    private fun write(tag: String, msg: String, keepWhenIdle: Boolean = false) {
+        // The test is inside the lock, not before it: unlocked, a line could find
+        // `file == null`, be preempted by a [start] that opens the file and flushes the
+        // buffer, and only then be appended — left waiting for the session after next,
+        // or lost with the process. Which is the loss the buffer exists to prevent.
+        synchronized(lock) {
+            if (file == null) {
+                if (!keepWhenIdle) return
+                // No `+NNNms`: there is no session to measure from. The wall clock on
+                // the line [raw] writes is all the ordering these get, and saying so
+                // beats a zero that reads like "at the very start of the ride".
+                pending.addLast("[outside a session] [$tag] $msg")
+                while (pending.size > PENDING_MAX) {
+                    pending.removeFirst()
+                    pendingDropped++
+                }
+                return
+            }
             val rel = if (sessionStartMs > 0) "+%6dms".format(clockMs() - sessionStartMs) else "         "
             raw("$rel  [$tag] $msg")
         }
@@ -171,6 +239,19 @@ object RideDiagnostics {
 
     /** Reason [start] closes a file that was still open. */
     const val SUPERSEDED = "superseded by a new connect()"
+
+    /**
+     * How many pre-session lines are kept for the next ride file.
+     *
+     * Small deliberately: these are errors from outside a ride, and the ones that
+     * matter are the first few. A rider who opens the app, hits a bug and only then
+     * connects gets them; one who leaves the app broken for an hour gets the newest
+     * handful and a count of the rest.
+     *
+     * "Outside", not "before": a buffered line can equally have arrived after the
+     * previous ride ended, and the label it carries must not claim otherwise.
+     */
+    private const val PENDING_MAX = 20
 
     fun stop(reason: String) {
         if (file == null) return

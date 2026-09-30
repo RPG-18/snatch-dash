@@ -79,6 +79,9 @@ abstract class OpendashDashEnginePlatform extends PlatformInterface {
   /// Shows the system prompt. Returns false when there was nothing to ask.
   Future<bool> requestIgnoreBatteryOptimisations() => throw UnimplementedError();
 
+  /// One Flutter-side error into the ride file, rate-limited natively.
+  Future<void> rideError(String message) => throw UnimplementedError();
+
   Future<void> updateNowPlaying({
     String? title,
     String album = '',

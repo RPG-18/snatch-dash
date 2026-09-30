@@ -30,6 +30,10 @@ class RideDiagnosticsTest {
             assertTrue(it.delete() && it.mkdirs(), "could not build a temp diag dir at $it")
         }
         RideDiagnostics.useDirectory(dir)
+        // The pre-session buffer survives a session on purpose, so in an `object` it
+        // also survives a test: without this, a line left pending by one test is
+        // flushed into the next one's file and read as that ride's.
+        RideDiagnostics.clearPending()
         // `SystemClock.elapsedRealtime` throws off a device. Advancing it by hand also
         // keeps the `+NNNms` column deterministic.
         now = 0L
@@ -39,6 +43,7 @@ class RideDiagnosticsTest {
     @AfterTest
     fun tearDown() {
         RideDiagnostics.stop("test")
+        RideDiagnostics.clearPending()
         RideDiagnostics.useDirectory(null)
         RideDiagnostics.clockMs = ::monotonicMs
         dir.deleteRecursively()
@@ -100,8 +105,7 @@ class RideDiagnosticsTest {
     }
 
     @Test
-    fun `nothing is written after stop, and nothing before start`() {
-        RideDiagnostics.log("test", "before any session")
+    fun `nothing lands after the end marker of the file it was written to`() {
         RideDiagnostics.start("connect")
         RideDiagnostics.log("test", "inside")
         RideDiagnostics.stop("disconnect")
@@ -109,12 +113,77 @@ class RideDiagnosticsTest {
 
         val all = rides().joinToString("\n") { it.readText() }
         assertTrue("inside" in all, all)
-        assertFalse("before any session" in all, "a line escaped into a file:\n$all")
         assertFalse(
             "after the end marker" in all,
             "a line landed after `session end`, which is what makes the marker mean " +
                 "anything:\n$all",
         )
+    }
+
+    @Test
+    fun `a line from outside a session is kept and written into the next one`() {
+        // Task 14's whole point. The Flutter error this was built for (28.09, the
+        // settings screen) fired with no dash connected, so the version that only
+        // wrote between connect and disconnect dropped it — the feature failing in
+        // exactly its motivating case.
+        RideDiagnostics.warn("test", "crashed before connecting", keepWhenIdle = true)
+        RideDiagnostics.start("connect")
+        RideDiagnostics.stop("disconnect")
+
+        val all = rides().joinToString("\n") { it.readText() }
+        assertTrue("crashed before connecting" in all, "the line was dropped:\n$all")
+        // Marked, because it has no `+NNNms`: there was no session to measure it
+        // from, and an unmarked line reads as having happened during the ride.
+        assertTrue("[outside a session]" in all, all)
+        val headerAt = all.indexOf("==== session start")
+        val lineAt = all.indexOf("crashed before connecting")
+        assertTrue(headerAt in 0..<lineAt, "it must follow the header, not precede it:\n$all")
+    }
+
+    @Test
+    fun `an ordinary write outside a session is still dropped, not carried over`() {
+        // The buffer is opt-in for exactly this reason. Half the engine keeps writing
+        // after `stop` runs on Main — the RX loop's socket error, FrameStreamer's
+        // finally, the `[mem]` job on Dispatchers.IO — and buffering those replays a
+        // session's own tail at the head of the NEXT ride file, which is the misfiling
+        // `RideDiagnostics.session` exists to prevent.
+        RideDiagnostics.start("connect")
+        RideDiagnostics.log("test", "inside")
+        RideDiagnostics.stop("disconnect")
+        RideDiagnostics.warn("test", "RX loop stopped — socket error")
+        RideDiagnostics.log("test", "late [mem] sample")
+
+        RideDiagnostics.start("connect again")
+        RideDiagnostics.stop("disconnect")
+        val all = rides().joinToString("\n") { it.readText() }
+        assertFalse("RX loop stopped" in all, "a session's tail reached the next file:\n$all")
+        assertFalse("late [mem] sample" in all, all)
+    }
+
+    @Test
+    fun `the buffer is bounded, and says how much it dropped`() {
+        // A rider who leaves the app broken for an hour must not turn the next ride
+        // file into a spool of everything that happened before it.
+        repeat(30) { RideDiagnostics.warn("test", "pre $it", keepWhenIdle = true) }
+        RideDiagnostics.start("connect")
+        RideDiagnostics.stop("disconnect")
+
+        val all = rides().joinToString("\n") { it.readText() }
+        assertEquals(20, Regex("\\[outside a session]").findAll(all).count(), all)
+        // The NEWEST survive: an error still in flight when the rider connects beats
+        // one from an hour ago.
+        assertFalse("pre 9 " in all || "pre 9\n" in all, "the oldest should be gone:\n$all")
+        assertTrue("pre 29" in all, all)
+        assertTrue("10 earlier line(s) dropped" in all, "the loss must be stated:\n$all")
+    }
+
+    @Test
+    fun `an empty buffer adds nothing to the file`() {
+        RideDiagnostics.start("connect")
+        RideDiagnostics.stop("disconnect")
+        val all = rides().joinToString("\n") { it.readText() }
+        assertFalse("[outside a session]" in all, all)
+        assertFalse("dropped" in all, all)
     }
 
     @Test

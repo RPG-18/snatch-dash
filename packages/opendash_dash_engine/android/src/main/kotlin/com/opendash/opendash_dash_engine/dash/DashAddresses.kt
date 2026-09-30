@@ -9,7 +9,7 @@ package com.opendash.opendash_dash_engine.dash
  * that guess fails is silent: a dash on a different subnet would leave the control plane
  * broadcasting into a network the phone is not on, the handshake would simply never get an
  * answer, and the ride file would say `still unavailable` — a Wi-Fi-shaped symptom for an
- * addressing cause. Task 1 of `network-refactoring.md`.
+ * addressing cause. Task 1 of `plans/done/2026-09-30-network-refactoring.md`.
  *
  * **Инвариант 9 is untouched**: control stays broadcast, RTP stays unicast. What changes is
  * only which numbers those two are, and only when the platform states them.

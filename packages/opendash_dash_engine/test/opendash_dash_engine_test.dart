@@ -11,10 +11,13 @@ class MockOpendashDashEnginePlatform
   Future<String?> getPlatformVersion() => Future.value('42');
 
   @override
-  Stream<Map<String, dynamic>> get stateStream => const Stream.empty();
+  Stream<DashEngineState> get stateStream => const Stream.empty();
 
   @override
-  Stream<Map<String, dynamic>> get logStream => const Stream.empty();
+  Stream<DashLogEntry> get logStream => const Stream.empty();
+
+  @override
+  Stream<DashButtonEvent> get buttonStream => const Stream.empty();
 
   @override
   Future<void> connect() async {}
@@ -35,7 +38,7 @@ class MockOpendashDashEnginePlatform
     int maneuver = 0x0B,
     String? etaHHMM,
     bool offRoute = false,
-    List<List<double>> points = const [],
+    List<NavPoint> points = const [],
     List<int> jamSegments = const [],
   }) async {}
 
@@ -67,10 +70,20 @@ class MockOpendashDashEnginePlatform
   Future<void> setWifiPassword(String password) async {}
 
   @override
-  Future<Map<String, dynamic>> getConfig() async => {};
+  Future<DashConfigView> getConfig() async => DashConfigView(
+    ssidPrefix: 'RE_',
+    ssid: '',
+    password: '12345678',
+    needsDiscovery: true,
+  );
 
   @override
-  Future<Map<String, dynamic>> batteryOptimisationStatus() async => {};
+  Future<BatteryOptimisationStatus> batteryOptimisationStatus() async =>
+      BatteryOptimisationStatus(
+        ignoring: false,
+        canAsk: false,
+        emuiWorkaroundNeeded: false,
+      );
 
   @override
   Future<bool> requestIgnoreBatteryOptimisations() async => false;

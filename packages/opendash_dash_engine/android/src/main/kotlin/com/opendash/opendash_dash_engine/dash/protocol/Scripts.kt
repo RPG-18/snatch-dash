@@ -6,7 +6,7 @@ package com.opendash.opendash_dash_engine.dash.protocol
  * The pause is part of the protocol, not of the code that happens to send it: the dash
  * answers the initial burst only if the packets arrive spaced out, and the nav-entry sequence
  * has pauses of 40/100/500/60/10 ms that were read off a capture of the original app. They
- * are invariant 5 of network-refactoring.md — "нельзя менять байты, порядок пакетов и паузы
+ * are invariant 5 of spec/k1g_protocol.md — "нельзя менять байты, порядок пакетов и паузы
  * между ними" — so they belong next to the bytes rather than inside a `suspend fun` where
  * the next refactor can quietly reorder them.
  */

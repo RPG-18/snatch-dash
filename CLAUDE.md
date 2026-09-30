@@ -61,6 +61,7 @@ Riverpod-провайдеры, которые экран читает/пишет
 в зависимости от того, что происходит на этих экранах.
 
 Ещё спецификации:
+- [протокол K1G](spec/k1g_protocol.md) одиннадцать инвариантов проволоки (на них ссылаются по номеру пятнадцать тестовых файлов), инвентарь входящих пакетов, что доказывает `07 01 01`, полный список тегов ride-файла.
 - [wifi retry policy](spec/wifi_retry_policy.md) стратегия переподключения к WiFi мотоцикла.
 - [сервер карт](spec/remote_map_server.md) формат офлайн-тайлов, `index.json` и протокол скачивания паков.
 - [отрисовка из скачанных тайлов](spec/drawing_from_local_tiles.md) как кадр дэша получается из локального пака (MapLibre offscreen, стиль, несколько источников).
@@ -85,6 +86,25 @@ cd android && ./gradlew :opendash_dash_engine:testDebugUnitTest
 cd android && ./gradlew :opendash_dash_engine:lintDebug    # трогали нативный код/манифест/gradle
 flutter build apk --debug --dart-define-from-file=android/dart_defines.local.properties
 ```
+
+### Граница плагина описана схемой Pigeon
+
+Всё, что ходит между Dart и нативной частью движка, задано в
+[`packages/opendash_dash_engine/pigeons/dash_engine.dart`](packages/opendash_dash_engine/pigeons/dash_engine.dart):
+методы (`@HostApi`), три потока наружу (`@EventChannelApi` — состояние,
+кнопки джойстика, строки `DebugLog`) и классы, которые по ним ездят.
+Меняешь границу — правишь схему и перегенерируешь:
+
+```
+cd packages/opendash_dash_engine && dart run pigeon --input pigeons/dash_engine.dart
+```
+
+Сгенерированные `lib/src/messages.g.dart` и `Messages.g.kt` **руками не
+править** и в коммит класть вместе со схемой. До 30.09.2026 граница была
+`MethodChannel` со строковыми именами и картой из 25 ключей, которую на одной
+стороне собирал `publishState`, а на другой разбирал рукописный
+`DashEngineState.fromMap`; согласованность этих двух списков не проверял
+никто.
 
 ### Dart: что включено в анализаторе и почему
 
@@ -169,7 +189,7 @@ analyze`, ни в `dart analyze` — проверено файлом с заве
 пост-мортем — файлы на устройстве. Ничего, кроме кабеля, не нужно:
 
 ```
-adb pull /sdcard/Android/data/ru.snatchdash.app/files/diag   # по файлу на сессию: [map], [session], [stream], [gps], [mem], [DashWifiManager], [MapLibre], [flutter]
+adb pull /sdcard/Android/data/ru.snatchdash.app/files/diag   # по файлу на сессию, полный список тегов — в spec/k1g_protocol.md
 adb exec-out run-as ru.snatchdash.app cat files/app_log.txt > app_log.txt
 ```
 

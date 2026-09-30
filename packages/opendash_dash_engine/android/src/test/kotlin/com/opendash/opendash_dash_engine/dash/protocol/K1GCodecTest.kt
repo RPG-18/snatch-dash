@@ -10,7 +10,7 @@ import kotlin.test.assertTrue
  *
  * Every datagram below is copied out of `app_log.txt` of the rides of 2026-09-18, not
  * invented: 11 MB of hex dumps from two phones were pulled to investigate the dash
- * restarting mid-ride (network-refactoring.md §0.1), and they double as the only honest
+ * restarting mid-ride (spec/k1g_protocol.md, the `0B 02` marker), and they double as the only honest
  * corpus for this decoder. Where a capture contradicted an assumption, the test keeps the
  * capture.
  */

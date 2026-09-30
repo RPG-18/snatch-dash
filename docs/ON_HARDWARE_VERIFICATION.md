@@ -78,8 +78,10 @@ from `NavLoop` instead of computing nav math itself like the original
 ## 4. Joystick / physical controls
 
 Original mapping, confirmed on fw 11.63 — re-confirm it still round-trips
-through the plugin's `onButton` → `DashEngine.stateStream` (`{'button':
-code}`) → whatever Dart-side listener is wired to it:
+through the plugin's `onButton` → `DashEngine.buttonStream` (a
+`DashButtonEvent` on its own Pigeon channel, since 2026-09-30) → whatever
+Dart-side listener is wired to it. **Press each one TWICE**: two presses of one
+button are equal values, and that is where a repeat gets swallowed.
 
 - [ ] **`0x13` zooms in, `0x14` zooms out** — these are the primary codes and
       the ones that actually arrive in the field (ride logs 2026-09-09,

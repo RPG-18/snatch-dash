@@ -16,6 +16,7 @@ import 'dart:io';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:opendash_dash_engine/src/messages.g.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:snatch_dash/data/garage_repository.dart';
 import 'package:snatch_dash/data/installed_packs_repository.dart';
@@ -31,30 +32,79 @@ const mapsChannel = MethodChannel('ru.snatchdash.app/maps');
 /// can tell "the startup reconcile ran" from "nothing instantiated it".
 final mapsCalls = <String>[];
 
+/// The engine's host methods this file answers for, and its three streams.
+/// One list each, read by both `setUp` and `tearDown` — the two drifting apart
+/// is how nine handlers came to leak between tests.
+const _mockedHostMethods = [
+  'getConfig',
+  'batteryOptimisationStatus',
+  'isNotificationAccessGranted',
+  'getPlatformVersion',
+  'connect',
+  'disconnect',
+  // Not because a boot calls it, but because a FAILING boot does: any Flutter
+  // error inside these tests goes to `rideError`, and an unmocked Pigeon
+  // channel answers `channel-error` where the pre-Pigeon mock answered null.
+  // Today that is swallowed by the `catchError` in error_reporting.dart, so
+  // the cost is a second exception thrown while reporting the first — which
+  // is the noise that makes the real failure hard to find.
+  'rideError',
+];
+
+const _mockedStreams = ['state', 'button', 'log'];
+
+BasicMessageChannel<Object?> _hostChannel(String method) =>
+    BasicMessageChannel<Object?>(
+      'dev.flutter.pigeon.opendash_dash_engine.DashEngineApi.$method',
+      DashEngineApi.pigeonChannelCodec,
+    );
+
+MethodChannel _streamChannel(String stream) => MethodChannel(
+  'dev.flutter.pigeon.opendash_dash_engine.DashEngineEvents.$stream',
+);
+
 void main() {
   setUp(() {
     SharedPreferences.setMockInitialValues({});
 
-    const methodChannel = MethodChannel('opendash_dash_engine');
-    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-        .setMockMethodCallHandler(methodChannel, (call) async {
-          if (call.method == 'getConfig') {
-            return <String, dynamic>{
-              'ssidPrefix': 'RE_',
-              'ssid': '',
-              'password': '',
-              'needsDiscovery': true,
-            };
-          }
-          return null;
-        });
+    // The engine's whole surface is Pigeon-generated since 2026-09-30, so the
+    // boot mocks have to speak its channels: a `BasicMessageChannel` per host
+    // method, named `dev.flutter.pigeon.<package>.<api>.<method>`, replying
+    // with a one-element list. The `MethodChannel('opendash_dash_engine')`
+    // that stood here intercepted nothing any more — harmless only because no
+    // widget test happens to open Settings, and a trap for the first one that
+    // does, which would meet a `PlatformException` raised inside the widget.
+    Object? pigeonReply(String method) => switch (method) {
+      'getConfig' => DashConfigView(
+        ssidPrefix: 'RE_',
+        ssid: '',
+        password: '',
+        needsDiscovery: true,
+      ),
+      'batteryOptimisationStatus' => BatteryOptimisationStatus(
+        ignoring: false,
+        canAsk: false,
+        emuiWorkaroundNeeded: false,
+      ),
+      'isNotificationAccessGranted' => false,
+      'getPlatformVersion' => 'test',
+      _ => null,
+    };
+    for (final method in _mockedHostMethods) {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockDecodedMessageHandler<Object?>(
+            _hostChannel(method),
+            (Object? message) async => <Object?>[pigeonReply(method)],
+          );
+    }
 
     // EventChannel.receiveBroadcastStream sends 'listen'/'cancel' method
     // calls on a MethodChannel sharing the event channel's name — not a raw
-    // message handler.
-    const eventChannel = MethodChannel('opendash_dash_engine/state');
-    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-        .setMockMethodCallHandler(eventChannel, (call) async => null);
+    // message handler. One per generated stream.
+    for (final stream in _mockedStreams) {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(_streamChannel(stream), (call) async => null);
+    }
 
     // The offline-maps controller is now watched from OpenDashApp itself (its
     // build() carries the startup reconcile), so booting the app reaches the
@@ -79,12 +129,18 @@ void main() {
   });
 
   tearDown(() {
-    const methodChannel = MethodChannel('opendash_dash_engine');
-    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-        .setMockMethodCallHandler(methodChannel, null);
-    const eventChannel = MethodChannel('opendash_dash_engine/state');
-    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-        .setMockMethodCallHandler(eventChannel, null);
+    // Exactly what setUp installed, from the same two lists. It used to clear
+    // the two pre-Pigeon channels by name, which after the port cleared nothing
+    // at all while nine handlers stayed registered between tests — hidden only
+    // because setUp overwrites them on the way in.
+    for (final method in _mockedHostMethods) {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockDecodedMessageHandler<Object?>(_hostChannel(method), null);
+    }
+    for (final stream in _mockedStreams) {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(_streamChannel(stream), null);
+    }
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(mapsChannel, null);
   });

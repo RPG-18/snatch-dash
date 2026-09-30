@@ -39,7 +39,7 @@ class NavLoop {
   static const _rerouteBackoffCap = Duration(seconds: 60);
   static const _maxBackoffShift = 4; // 15s * 2^4 already clears the cap
 
-  StreamSubscription<Map<String, dynamic>>? _sub;
+  StreamSubscription<DashEngineState>? _sub;
   Timer? _timer;
   double? _lat;
   double? _lng;
@@ -65,7 +65,9 @@ class NavLoop {
       remainingMeters: _route.totalMeters,
       nextTurnMeters: _route.totalMeters,
       offRoute: false,
-      points: _route.geometry.map((p) => [p.lat, p.lng]).toList(),
+      points: _route.geometry
+          .map((p) => NavPoint(lat: p.lat, lng: p.lng))
+          .toList(),
       jamSegments: _route.jamSegments.map((j) => j.index).toList(),
     );
     _sub = DashEngine.instance.stateStream.listen(_onEngineEvent);
@@ -81,14 +83,14 @@ class NavLoop {
     _timer = null;
   }
 
-  void _onEngineEvent(Map<String, dynamic> event) {
-    final lat = (event['riderLat'] as num?)?.toDouble();
-    final lng = (event['riderLng'] as num?)?.toDouble();
+  void _onEngineEvent(DashEngineState event) {
+    final lat = event.riderLat;
+    final lng = event.riderLng;
     if (lat != null && lng != null) {
       _lat = lat;
       _lng = lng;
     }
-    final speed = (event['riderSpeed'] as num?)?.toDouble();
+    final speed = event.riderSpeed;
     if (speed != null) _speedMps = speed;
   }
 
@@ -187,7 +189,9 @@ class NavLoop {
           remainingMeters: newRoute.totalMeters,
           nextTurnMeters: newRoute.totalMeters,
           offRoute: false,
-          points: newRoute.geometry.map((p) => [p.lat, p.lng]).toList(),
+          points: newRoute.geometry
+              .map((p) => NavPoint(lat: p.lat, lng: p.lng))
+              .toList(),
           jamSegments: newRoute.jamSegments.map((j) => j.index).toList(),
         ),
       );

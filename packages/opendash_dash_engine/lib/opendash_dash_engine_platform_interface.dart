@@ -1,6 +1,7 @@
 import 'package:plugin_platform_interface/plugin_platform_interface.dart';
 
 import 'opendash_dash_engine_method_channel.dart';
+import 'src/messages.g.dart';
 
 abstract class OpendashDashEnginePlatform extends PlatformInterface {
   OpendashDashEnginePlatform() : super(token: _token);
@@ -21,16 +22,25 @@ abstract class OpendashDashEnginePlatform extends PlatformInterface {
     throw UnimplementedError('platformVersion() has not been implemented.');
   }
 
-  /// Live engine state (connection stage, GPS, joystick button events, …) —
-  /// one map per update, see `DashEngineController.publishState` on the
-  /// native side for the key set.
-  Stream<Map<String, dynamic>> get stateStream {
+  /// Live engine state — connection stage, Wi-Fi, GPS, camera. One
+  /// [DashEngineState] per update; the schema is `pigeons/dash_engine.dart`.
+  Stream<DashEngineState> get stateStream {
     throw UnimplementedError('stateStream has not been implemented.');
   }
 
-  /// Mirrors every native `DebugLog` line — keys `tag`, `level` (D/I/W/E),
-  /// `message`. Debug builds only (`DebugLog` itself no-ops in release).
-  Stream<Map<String, dynamic>> get logStream {
+  /// Presses on the dash's own joystick.
+  ///
+  /// Its own stream since 2026-09-30. It used to ride the state channel as a
+  /// map with a single `button` key, so every reader of the state had to know
+  /// about buttons in order to skip them — and `NavLoop`, which did not, read
+  /// each press as a state update in which every field was null.
+  Stream<DashButtonEvent> get buttonStream {
+    throw UnimplementedError('buttonStream has not been implemented.');
+  }
+
+  /// Mirrors every native `DebugLog` line. Debug builds only (`DebugLog`
+  /// itself no-ops in release).
+  Stream<DashLogEntry> get logStream {
     throw UnimplementedError('logStream has not been implemented.');
   }
 
@@ -52,7 +62,7 @@ abstract class OpendashDashEnginePlatform extends PlatformInterface {
     int maneuver = 0x09,
     String? etaHHMM,
     bool offRoute = false,
-    List<List<double>> points = const [],
+    List<NavPoint> points = const [],
     List<int> jamSegments = const [],
   }) => throw UnimplementedError();
 
@@ -66,14 +76,10 @@ abstract class OpendashDashEnginePlatform extends PlatformInterface {
   Future<void> forgetDash() => throw UnimplementedError();
   Future<void> setSsid(String ssid) => throw UnimplementedError();
   Future<void> setWifiPassword(String password) => throw UnimplementedError();
-  Future<Map<String, dynamic>> getConfig() => throw UnimplementedError();
+  Future<DashConfigView> getConfig() => throw UnimplementedError();
 
   /// Whether the system will let the app keep working with the screen off.
-  ///
-  /// Keys: `ignoring` (already exempt), `canAsk` (a system prompt exists to
-  /// open), `emuiWorkaroundNeeded` (the exemption is necessary but not
-  /// sufficient on this phone — see `BatteryOptimisation`).
-  Future<Map<String, dynamic>> batteryOptimisationStatus() =>
+  Future<BatteryOptimisationStatus> batteryOptimisationStatus() =>
       throw UnimplementedError();
 
   /// Shows the system prompt. Returns false when there was nothing to ask.
@@ -96,7 +102,7 @@ abstract class OpendashDashEnginePlatform extends PlatformInterface {
   /// Media/call bridge — native `NotificationListenerService` +
   /// `MediaSessionManager` forwarding (see the plugin's `media/` package).
   /// Now-playing/incoming-caller info itself arrives via [stateStream]
-  /// (`nowPlayingTitle`/`incomingCaller` keys); these are the control actions.
+  /// (`nowPlayingTitle`/`incomingCaller`); these are the control actions.
   Future<bool> answerCall() => throw UnimplementedError();
   Future<bool> hangupCall() => throw UnimplementedError();
   Future<bool> skipNext() => throw UnimplementedError();

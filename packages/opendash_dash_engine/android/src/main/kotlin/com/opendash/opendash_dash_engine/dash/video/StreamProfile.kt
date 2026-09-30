@@ -8,7 +8,7 @@ package com.opendash.opendash_dash_engine.dash.video
  * `if (moving) FPS_MOVING else FPS_IDLE` for the rate, a two-branch transition guard for
  * the bitrate, and a `Boolean idleBitrate` whose name is the negation of what the other
  * two read. Three expressions of one fact can disagree, and the third one already had to
- * be re-synced by hand after an encoder rebuild. Task 10 of `network-refactoring.md`.
+ * be re-synced by hand after an encoder rebuild. Task 10 of `plans/done/2026-09-30-network-refactoring.md`.
  *
  * **Which signal decides, and why it is not the vendor's.** The original app switches on
  * **distance to the next manoeuvre** — high preset under 1000 m, low above, 200 m of

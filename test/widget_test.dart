@@ -42,6 +42,13 @@ const _mockedHostMethods = [
   'getPlatformVersion',
   'connect',
   'disconnect',
+  // Not because a boot calls it, but because a FAILING boot does: any Flutter
+  // error inside these tests goes to `rideError`, and an unmocked Pigeon
+  // channel answers `channel-error` where the pre-Pigeon mock answered null.
+  // Today that is swallowed by the `catchError` in error_reporting.dart, so
+  // the cost is a second exception thrown while reporting the first — which
+  // is the noise that makes the real failure hard to find.
+  'rideError',
 ];
 
 const _mockedStreams = ['state', 'button', 'log'];

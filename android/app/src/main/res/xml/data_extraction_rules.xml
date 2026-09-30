@@ -10,12 +10,23 @@
   - `device-transfer` — has no quota at all, so without this exclusion moving to
     a new phone would drag gigabytes of packs along. They are re-downloadable
     from the tile server, which is faster than transferring them.
+
+  `dash_config.xml` (the dash WiFi settings) is excluded from BOTH, and
+  device-transfer is the one that matters most: it is the path that would carry
+  the encrypted store's leftover blobs to a phone whose Keystore has no key for
+  them, leaving DashConfig's migration to retry at every attach and warn into
+  every ride file about settings the rider had already re-entered. It also keeps
+  an overridden passphrase — a supported feature, stored in the clear since task
+  7.3 — on the device it was typed into, which also means it does NOT follow the
+  rider to a new phone. See backup_rules.xml for the long version.
 -->
 <data-extraction-rules>
     <cloud-backup>
         <exclude domain="external" path="maps/" />
+        <exclude domain="sharedpref" path="dash_config.xml" />
     </cloud-backup>
     <device-transfer>
         <exclude domain="external" path="maps/" />
+        <exclude domain="sharedpref" path="dash_config.xml" />
     </device-transfer>
 </data-extraction-rules>

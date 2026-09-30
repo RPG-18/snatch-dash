@@ -183,9 +183,9 @@ object RideDiagnostics {
      * [DebugLog.w] next to a [log] whose text started with "WARN"); this is that
      * pair, once.
      */
-    fun warn(tag: String, msg: String) {
+    fun warn(tag: String, msg: String, keepWhenIdle: Boolean = false) {
         DebugLog.w(tag) { msg }
-        write(tag, "WARN $msg")
+        write(tag, "WARN $msg", keepWhenIdle)
     }
 
     /**
@@ -197,10 +197,9 @@ object RideDiagnostics {
      * level. Two entries per error in `app_log.txt` and `/more/logs`, both eating
      * the 10 MB cap that the Dart-side limiter exists to defend.
      *
-     * The only caller of the pre-session buffer ([head]/[tail]), because it is the
-     * only source whose failures are worth keeping when no ride is running: a
-     * settings screen throwing with no dash connected is the case this was all built
-     * for.
+     * Reaches the pre-session buffer ([head]/[tail]), like any caller that passes
+     * `keepWhenIdle`: a settings screen throwing with no dash connected is the case
+     * this was all built for. [DashConfig]'s migration is the other one.
      *
      * Not rate-limited here. The rule runs once, in Dart, upstream of both sinks —
      * see `lib/util/error_reporting.dart`.

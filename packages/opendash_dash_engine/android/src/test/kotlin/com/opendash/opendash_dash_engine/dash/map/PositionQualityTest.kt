@@ -507,7 +507,7 @@ class PositionQualityTest {
     @Test
     fun `the thresholds are the documented ones`() {
         // These numbers are quoted in PositionQuality's own doc comment, in
-        // network-refactoring.md §0.1 and in CLAUDE.md; a silent change makes all three wrong.
+        // plans/done/2026-09-30-network-refactoring.md §0.1 and in CLAUDE.md; a silent change makes all three wrong.
         assertEquals(4.0, PositionTrust.DISAGREEMENT_FACTOR)
         assertEquals(500.0, PositionTrust.DISAGREEMENT_FLOOR_M)
         assertEquals(40.0, PositionTrust.IMPLAUSIBLE_SPEED_MPS)

@@ -97,7 +97,7 @@ internal sealed interface SessionEvent {
  * report when those guards fired. None of it is needed when a dead session holds nothing the
  * live one can reach: its scope is cancelled and its transport is closed.
  *
- * The sequence is unchanged and remains invariant 5 of network-refactoring.md:
+ * The sequence is unchanged and remains invariant 5 of spec/k1g_protocol.md:
  *   1. Transport opens (RX :2002 bound before anything is sent).
  *   2. Initial burst on :2000, nine packets 20 ms apart — [Scripts.initialBurst].
  *   3. RX loop answers 07 00 / 07 03 with q3c.d and waits for 07 01 01.
@@ -911,7 +911,7 @@ internal class DashSession private constructor(
 
             // Everything else in FULL so its TLV can be identified — the dash's 'exit
             // navigation' selection, the 0x0B blob it sends when it restarts mid-ride
-            // (network-refactoring.md §0.1), and the 26 subtypes nobody has swept.
+            // (spec/k1g_protocol.md), and the 26 subtypes nobody has swept.
             is DashMessage.Unknown -> DebugLog.i(TAG) {
                 "DASH EVENT type=0x%02X sub=0x%02X (%dB) val=%s".format(
                     msg.tlv.type, msg.tlv.sub, msg.tlv.value.size, msg.tlv.value.toHexFull(),

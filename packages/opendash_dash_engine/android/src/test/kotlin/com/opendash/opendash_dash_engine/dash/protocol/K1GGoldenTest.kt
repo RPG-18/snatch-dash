@@ -20,7 +20,7 @@ import kotlin.test.assertTrue
  * Every expectation is written out as a literal, transcribed from the capture the command
  * came from — never by calling the function and recording what it returned. A test that
  * records today's output agrees with any future output too, which is the one failure mode
- * this file exists to avoid (network-refactoring.md, этап 1 задача 1).
+ * this file exists to avoid (plans/done/2026-09-30-network-refactoring.md, этап 1 задача 1).
  *
  * When one of these fails the question is not "is the test stale" — it is "which bytes
  * moved, and does the dash still accept them". That answer needs hardware, so §4 of the

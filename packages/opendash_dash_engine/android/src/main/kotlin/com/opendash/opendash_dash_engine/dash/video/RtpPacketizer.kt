@@ -105,7 +105,7 @@ class RtpPacketizer(private val onPacket: (ByteArray) -> Unit) {
          * statement is that nothing has been attributed to it, which is weaker.
          * Raising this needs an instrument first, not arithmetic.
          *
-         * (Task 9 in `network-refactoring.md`.)
+         * (Task 9 in `plans/done/2026-09-30-network-refactoring.md`.)
          */
         const val MAX_PAYLOAD = 1380
         private const val PT = 96

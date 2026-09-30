@@ -26,7 +26,7 @@ internal sealed interface DashMessage {
      * The dash's verdict on our key (`07 01`), accepted only when the first byte is `01`.
      *
      * Anything else is a rejection, and the handshake has to start over from the modulus —
-     * see `DashAuth.reset` and invariant 7 of network-refactoring.md.
+     * see `DashAuth.reset` and invariant 7 of spec/k1g_protocol.md.
      */
     data class AuthResult(val accepted: Boolean) : DashMessage
 

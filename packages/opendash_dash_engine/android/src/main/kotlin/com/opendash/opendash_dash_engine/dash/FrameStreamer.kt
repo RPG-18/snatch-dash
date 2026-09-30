@@ -628,7 +628,7 @@ internal class FrameStreamer(
                             //
                             // Ending the loop does not recover the ride either — recovery
                             // belongs to the connection FSM, which does not exist yet
-                            // (network-refactoring.md, этап 6). What it does is make the
+                            // (plans/done/2026-09-30-network-refactoring.md, этап 6). What it does is make the
                             // cause survive to the ride file and stop paying MapLibre for
                             // frames nobody will ever encode. Found by review, 2026-09-16.
                             RideDiagnostics.warn(

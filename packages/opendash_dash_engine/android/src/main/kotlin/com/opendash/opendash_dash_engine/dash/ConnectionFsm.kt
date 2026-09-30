@@ -187,7 +187,7 @@ internal sealed interface Effect {
      * again immediately after the last effect, with no error on it, and — checked, 2026-09-22
      * — NOTHING in `lib/` renders `DashEngineState.wifiError` or `.errorMessage` at all.
      * There is no rider-facing message to preserve. The gap is real and is recorded in
-     * network-refactoring.md; inventing a banner here would be a different change.
+     * plans/done/2026-09-30-network-refactoring.md; inventing a banner here would be a different change.
      * [Report] puts the reason in the ride file, which is where it can currently be read.
      */
     data object StandDown : Effect

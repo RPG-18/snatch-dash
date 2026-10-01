@@ -171,9 +171,11 @@ dependencies {
     // and the frame loop runs in a background service on whatever phone the
     // rider owns — the wrong place to be an early adopter of a new backend.
     //
-    // Not the floor version either: `pmtiles://` needs 11.8.0, but
-    // MapSnapshotter's padding — which carries the rider's offset into the
-    // lower third — only arrived in 12.0.1.
+    // Not the floor version either: `pmtiles://` needs 11.8.0, and the
+    // camera-carried padding this engine uses (`CameraPosition.Builder.padding`,
+    // see MapSnapshotProvider.capture) predates it. `MapSnapshotter.setPadding`
+    // — the API the rider offset used to ride in, and a silent no-op without a
+    // region — only arrived in 12.1.0 (changelog #3882) and is not used.
     implementation("org.maplibre.gl:android-sdk-opengl:13.6.0")
 
     testImplementation("org.jetbrains.kotlin:kotlin-test")

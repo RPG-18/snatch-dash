@@ -292,7 +292,7 @@ out once a second for the entire session.
 **`06 08` is the worse of the two.** It is not media at all but the weather
 glyph, and the captured `05` means "clear" — so the dash has been showing sun
 all year round, in every weather, on every ride. Replacing both bytes with
-real data is what [`spec/weather.md`](../spec/weather.md) plans.
+real data is what [`plans/active/2026-09-22-weather.md`](../plans/active/2026-09-22-weather.md) plans.
 
 We read `06 04` as media volume and took `0xA2` = 162 → "volume 62" as evidence
 the formula was right. The formula is right; the label was not. It is

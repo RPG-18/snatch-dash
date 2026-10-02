@@ -65,7 +65,16 @@ jobs:
       - name: Accept Android SDK licenses
         run: yes | "$ANDROID_HOME"/cmdline-tools/latest/bin/sdkmanager --licenses > /dev/null || true
 
-      - run: flutter pub get
+      - name: Pub get (app and engine)
+        # The engine's dev-dependency `pigeon` is NOT resolved by the root
+        # `flutter pub get` — path packages' dev-dependencies are skipped. Without
+        # the engine's own package_config the analyzer folds the engine into the
+        # root context and the Pigeon schema fails to resolve (8 errors, tag
+        # build 01.10.2026). Resolving the engine too keeps the schema
+        # type-checked by `flutter analyze`.
+        run: |
+          flutter pub get
+          (cd packages/opendash_dash_engine && flutter pub get)
 
       - name: Analyze
         run: flutter analyze

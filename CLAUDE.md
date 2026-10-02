@@ -129,6 +129,14 @@ cd android && ./gradlew :opendash_dash_engine:lintDebug    # трогали на
 flutter build apk --debug --dart-define-from-file=android/dart_defines.local.properties
 ```
 
+**После свежего клона** перед `flutter analyze` выполнить
+`(cd packages/opendash_dash_engine && flutter pub get)`: dev-зависимости
+path-пакетов корневой `pub get` не тянет, и без собственного
+`package_config` движка схема Pigeon не резолвится — 8 ошибок
+`uri_does_not_exist`/`undefined_annotation` (поймано релизом тега
+01.10.2026). В CI этот шаг делают воркфлоу сами (release.yml,
+nightly.yml).
+
 ### Граница плагина описана схемой Pigeon
 
 Всё, что ходит между Dart и нативной частью движка, задано в

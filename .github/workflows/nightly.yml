@@ -121,7 +121,13 @@ jobs:
       - name: Accept Android SDK licenses
         run: yes | "$ANDROID_HOME"/cmdline-tools/latest/bin/sdkmanager --licenses > /dev/null || true
 
-      - run: flutter pub get
+      - name: Pub get (app and engine)
+        # См. одноимённый шаг в release.yml: dev-зависимости path-пакетов
+        # корневой `flutter pub get` не тянет, без собственного package_config
+        # движка схема Pigeon не резолвится и `flutter analyze` падает.
+        run: |
+          flutter pub get
+          (cd packages/opendash_dash_engine && flutter pub get)
 
       - name: Analyze
         run: flutter analyze

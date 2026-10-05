@@ -1,11 +1,36 @@
 # tools/
 
-Вспомогательные скрипты, не входящие в сборку приложения. Сейчас здесь одно —
-[`planetiler/`](planetiler): конвейер «выгрузка OSM → офлайн-тайлы PMTiles».
+Вспомогательные скрипты, не входящие в сборку приложения:
+[`planetiler/`](planetiler) — конвейер «OSM → PMTiles»;
+[`k1g.lua`](k1g.lua) — Wireshark-диссектор K1G;
+[`k1g_test.lua`](k1g_test.lua) — его Lua-проверки и экспорт packet fixtures.
 
 - **Что это и как запускать** — [`planetiler/README.md`](planetiler/README.md).
 - **Что вообще лежит в `tools/`** — [`CLAUDE.md`](CLAUDE.md).
 - **Как ставить окружение** — этот файл, ниже.
+
+## Диссектор K1G
+
+Из корня репозитория:
+
+```bash
+tshark -X lua_script:tools/k1g.lua -r ride.pcapng
+lua tools/k1g_test.lua
+lua tools/k1g_test.lua --emit /tmp/k1g-fixtures.pcapng
+tshark -X lua_script:tools/k1g.lua -r /tmp/k1g-fixtures.pcapng
+```
+
+Проверки покрывают packet boundaries, direction и raw media/art/volume fields;
+stub не доказывает корректность API Wireshark, поэтому fixtures также
+прогоняются через реальный `tshark`. `05 0D` сохраняет три позиционных byte
+fields, не угадывая порядок и кодировку. `05 40` отделяет index/BE16 total от
+JPEG; `FF` может быть финальным блоком с данными, а не пустым терминатором.
+`05 4C`/`05 1B` отображают silence/корзины, не проценты.
+
+Fields, фильтры и методика —
+[`hack/PACKET_CAPTURE.md`, §3](../hack/PACKET_CAPTURE.md#3-wireshark-диссектор-k1g).
+Старый `hack/k1g_dissector.lua` остаётся standalone-вариантом; **не загружать
+оба одновременно**, потому что они регистрируют один протокол `k1g`.
 
 ## Окружение
 

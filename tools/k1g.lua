@@ -58,6 +58,10 @@ local function onoff(tvb)
     return nil
 end
 
+-- Media meanings rechecked against the original Java/smali on 2026-10-04.
+-- Confidence describes the sender, NOT acceptance/rendering by firmware 11.63.
+local MEDIA_SOURCE = "original Java/smali; firmware support unverified"
+
 local TLV = {
     -- Auth. Both directions.
     ["08:04"] = { "AuthRequest", "confirmed" },
@@ -89,8 +93,8 @@ local TLV = {
     ["06:0F"] = { "Charging", "confirmed", onoff },
     ["06:01"] = { "CellSignal", "confirmed",
         function(t) return u8(t) == 1 and "present" or "none" end },
-    ["05:4C"] = { "VolumeMusic", "confirmed" },
-    ["05:1B"] = { "VolumeCall", "confirmed" },
+    ["05:4C"] = { "VolumeMusic", MEDIA_SOURCE },
+    ["05:1B"] = { "VolumeCall", MEDIA_SOURCE },
     ["05:2D"] = { "", "" },
     ["05:21"] = { "", "" },
     ["05:4D"] = { "", "" },
@@ -158,14 +162,13 @@ local TLV = {
     end },
 
     -- Media and calls.
-    ["05:0D"] = { "NowPlaying", "confirmed" },
-    ["05:17"] = { "MediaActive", "confirmed", onoff },
-    ["05:19"] = { "MediaPlaying", "confirmed", onoff },
+    ["05:0D"] = { "NowPlaying", "both senders; field order/encoding differ" },
+    ["05:17"] = { "MediaActive", MEDIA_SOURCE },
+    ["05:19"] = { "MediaPlaying", MEDIA_SOURCE },
     ["05:22"] = { "CallCard", "confirmed",
         function(t) return t:len() <= 1 and "cleared" or '"' .. zstr(t) .. '"' end },
-    ["05:58"] = { "AlbumArtFollows", "confirmed", onoff },
-    ["05:40"] = { "AlbumArtChunk", "confirmed",
-        function(t) return string.format("%dB", t:len()) end },
+    ["05:58"] = { "AlbumArtFollows", MEDIA_SOURCE },
+    ["05:40"] = { "AlbumArtChunk", MEDIA_SOURCE },
     ["04:01"] = { "TemperatureUnit", "likely", onoff },
 
     -- Dash → app, 1 Hz, and the reason this dissector was worth writing. Found by hand in a
@@ -220,6 +223,91 @@ f.tlv_len   = ProtoField.uint16("k1g.vlen", "Value length", base.DEC)
 f.tlv_val   = ProtoField.bytes("k1g.value", "Value")
 f.name      = ProtoField.string("k1g.name", "Name")
 f.confid    = ProtoField.string("k1g.confidence", "Confidence")
+f.media_detail = ProtoField.string("k1g.media.detail", "Media Detail")
+local media_fields = {
+    ProtoField.bytes("k1g.media.field1", "Media Field 1 (raw)"),
+    ProtoField.bytes("k1g.media.field2", "Media Field 2 (raw)"),
+    ProtoField.bytes("k1g.media.field3", "Media Field 3 (raw)"),
+}
+f.media_field1, f.media_field2, f.media_field3 = media_fields[1], media_fields[2], media_fields[3]
+f.media_active = ProtoField.uint8("k1g.media.active", "Media Active", base.HEX,
+    { [0x55] = "active", [0xAA] = "inactive" })
+f.media_playing = ProtoField.uint8("k1g.media.playing", "Media Playback", base.HEX,
+    { [0x55] = "playing", [0xAA] = "paused" })
+f.art_present = ProtoField.uint8("k1g.art.present", "Album Art Present", base.HEX,
+    { [0x55] = "present", [0xAA] = "absent" })
+local volume_values = { [0x10] = "silence" }
+for bucket = 1, 10 do volume_values[0x10 + bucket] = "bucket " .. bucket .. "/10" end
+f.volume_music = ProtoField.uint8("k1g.volume.music", "Music Volume", base.HEX, volume_values)
+f.volume_call = ProtoField.uint8("k1g.volume.call", "Call Volume", base.HEX, volume_values)
+f.art_index = ProtoField.uint8("k1g.art.index", "Art Chunk Index", base.HEX,
+    { [0x00] = "first", [0xFF] = "final" })
+f.art_size = ProtoField.uint16("k1g.art.size", "Declared JPEG Size", base.DEC)
+f.art_data = ProtoField.bytes("k1g.art.data", "JPEG Fragment")
+f.art_data_len = ProtoField.uint16("k1g.art.data_len", "JPEG Fragment Length", base.DEC)
+
+-- The original writes album/title/artist as lossy char bytes; the port writes
+-- title/album/artist in UTF-8. Neither order nor encoding is tagged on the wire.
+-- Keep all three fields raw and bounded by this TLV, with no fixed-width guess.
+local flag_fields = {
+    [0x17] = { f.media_active, { [0x55] = "active", [0xAA] = "inactive" } },
+    [0x19] = { f.media_playing, { [0x55] = "playing", [0xAA] = "paused" } },
+    [0x58] = { f.art_present, { [0x55] = "present", [0xAA] = "absent" } },
+}
+
+local function media_detail(ty, sub, value, tree)
+    if ty ~= 0x05 then return nil end
+    local len = value:len()
+    if sub == 0x0D then
+        -- tshark string() stops at NUL and converts invalid UTF-8 to U+FFFD;
+        -- bytes():raw() preserves both separators and the original's FF bytes.
+        local raw, at, lengths = value:bytes():raw(), 0, {}
+        for i, field in ipairs(media_fields) do
+            local z = i < 3 and raw:find("\0", at + 1, true) or nil
+            local stop = z and z - 1 or len
+            tree:add(field, value(at, stop - at))
+            lengths[i] = stop - at
+            if i < 3 and not z then
+                return string.format("raw fields; missing NUL separator %d/2", i)
+            end
+            at = stop + 1
+        end
+        return string.format("raw fields: %dB / %dB / %dB; sender-dependent order/encoding",
+            lengths[1], lengths[2], lengths[3])
+    elseif sub == 0x40 then
+        if len == 0 then return "missing chunk index" end
+        local index = value(0, 1):uint()
+        tree:add(f.art_index, value(0, 1))
+        local prefix = index == 0 and 3 or 1
+        if len < prefix then return "first chunk: truncated BE16 JPEG size" end
+        if index == 0 then tree:add(f.art_size, value(1, 2)) end
+        local data_len = len - prefix
+        tree:add(f.art_data_len, value(prefix, 0), data_len):set_generated()
+        if data_len > 0 then tree:add(f.art_data, value(prefix, data_len)) end
+        if index == 0 then
+            return string.format("first: total=%dB, image=%dB", value(1, 2):uint(), data_len)
+        elseif index == 0xFF then
+            return string.format("final (FF): image=%dB", data_len)
+        end
+        return string.format("index=0x%02X: image=%dB", index, data_len)
+    elseif sub == 0x4C or sub == 0x1B then
+        if len ~= 1 then return string.format("volume: expected 1B, got %dB", len) end
+        local v = value(0, 1):uint()
+        tree:add(sub == 0x4C and f.volume_music or f.volume_call, value(0, 1))
+        return string.format("%s (0x%02X)", volume_values[v] or "unknown level", v)
+    elseif flag_fields[sub] then
+        if len ~= 1 then return string.format("flag: expected 1B, got %dB", len) end
+        local entry, v = flag_fields[sub], value(0, 1):uint()
+        tree:add(entry[1], value(0, 1))
+        return string.format("%s (0x%02X)", entry[2][v] or "unknown flag", v)
+    end
+    return nil
+end
+
+-- FF is the final chunk index, not a universal extra empty terminator.
+-- Singleton JPEGs have empty FF; multichunk FF can carry data, including 1000B.
+-- Decode what was captured, without reassembly or copying the original's
+-- exact-multiple dropped-tail bug. Enqueue sleep(10) does not prove wire pacing.
 
 local e_truncated = ProtoExpert.new(
     "k1g.truncated", "TLV runs past the end of the datagram",
@@ -285,13 +373,17 @@ function k1g.dissector(tvb, pinfo, tree)
         local avail = math.min(vlen, len - at - 4)
         local value = tvb(at + 4, avail)
 
+        local item = root:add(f.tlv, tvb(at, 4 + avail))
         local name, conf, detail = tlv_meta(ty, sub, value)
+        local media = media_detail(ty, sub, value, item)
+        detail = media or detail
         local label = string.format("%02X %02X", ty, sub)
         if name and name ~= "" then label = label .. "  " .. name end
         if detail then label = label .. " = " .. detail end
-
-        local item = root:add(f.tlv, tvb(at, 4 + avail))
         item:set_text(label)
+        if media then
+            item:add(f.media_detail, value(0, 0), media):set_generated()
+        end
         item:add(f.tlv_type, tvb(at, 1))
         item:add(f.tlv_sub, tvb(at + 1, 1))
         item:add(f.tlv_len, tvb(at + 2, 2))

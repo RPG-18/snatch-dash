@@ -61,14 +61,12 @@ internal class MapFrameRenderer(
         private const val CAM_MOVING_EXIT_MPS = 0.5    // 1.8 km/h
         private const val CAM_MOVING_DWELL_MS = 2_000L
 
-        // Perspective tilt for the heading-up view, in degrees (MapLibre clamps
-        // to 0..60). Left flat for now: the raster renderer's `setPolyToPoly`
-        // trapezoid was a fake with no camera model behind it, so it gives no
-        // starting angle, and a real tilt changes what falls off the edge of a
-        // pack (the camera looks further, so the 2 km cut buffer is eaten
-        // sooner). Picking the value is an MVP question to answer on the panel,
-        // not at the keyboard — see «Камера, а не поворот растра».
-        private const val NAV_TILT_DEG = 0.0
+        // Perspective tilt for the heading-up view, in degrees. MapLibre clamps
+        // the value to 0..60. Stage 3 starts at 45 degrees: the final value is
+        // selected on the dash, not at the keyboard. Real tilt changes what
+        // falls off the edge of a pack (the camera looks further, so the 2 km
+        // cut buffer is eaten sooner); see «Камера, а не поворот растра».
+        private const val NAV_TILT_DEG = 45.0
 
         // How long the frame loop waits for a snapshot before giving up on it and
         // keeping the previous frame. Two frame intervals at 4 fps; a snapshot
@@ -494,6 +492,9 @@ internal class MapFrameRenderer(
             // so that note no longer claims they are only ever read one at a time.
             headingUp = headingUpNow,
             heading = heading,
+            // Use the actual camera value, after MapLibre's clamp, so the screen-space
+            // rider arrow gets the same tilt that produced this snapshot.
+            tiltDeg = cam.tilt,
             riderLat = if (haveRider) camera.lat else null,
             riderLng = if (haveRider) camera.lng else null,
             destLat = inp.dest?.lat,

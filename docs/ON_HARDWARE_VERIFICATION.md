@@ -144,23 +144,52 @@ OEM buries it — no in-app shortcut was built for this yet).
 - [ ] Without notification access granted, media/call forwarding no-ops
       silently — no crash, no stuck "loading" state.
 
-Below is what the original sends and the port does not. All four TLVs were
-decoded from the decompilation on 2026-09-22 (`docs/k1g_commands.md`, "Media"),
-and none of them has been tried on hardware yet:
+Below are branches unverified on firmware 11.63. Original source was checked
+against smali; that proves its sender, not support by our cluster
+([`spec/multimedia.md`](../spec/multimedia.md)). New-path checks require the
+corresponding implementation stage of the
+[`multimedia plan`](../plans/active/2026-10-04-multimedia-support.md).
+For each experiment record build SHA/variant, phone, firmware, notification
+access, a separate pcap and observed screen/phone action. Change only one
+compatibility parameter at a time; pcap without the visible result is insufficient.
 
-- [ ] **Field order in `05 0D`.** Play a track whose title clearly differs from
-      its album name and see what is drawn where. The original sends
-      `album, title, artist`; we send `title, album, artist`. One look settles
-      it and nothing else will.
-- [ ] **Field length, 19 or 20.** A long title: if the dash takes exactly 19
-      characters, our twentieth eats the separator and the fields run together.
-- [ ] **`05 17 AA` on music stopping** clears the card from the cluster. Today we
-      never clear it — `05 0D` keeps going out at 1 Hz with the last track.
-- [ ] **`05 19`** flips the play/pause indicator on the dash.
-- [ ] **Album art: `05 58 55` plus `05 40` chunks.** The biggest piece: 75×75
-      JPEG quality 50, 1000-byte chunks, housekeeping bytes inside the TLV
-      value. Test once sending exists — today `NowPlaying.art` is read and
-      never used.
+- [ ] **`05 0D` field order.** Use three distinct fields, such as
+      `TITLE-A / ALBUM-B / ARTIST-C`; compare both orders with identical length,
+      encoding and cadence. The original sends `album,title,artist`; the port
+      sends `title,album,artist`.
+- [ ] **Field length, 19 or 20.** With fixed order and encoding compare
+      19/20/21 ASCII characters with distinguishable final characters and
+      adjacent fields. Do not assume the twentieth character consumes the NUL.
+- [ ] **Encoding.** Separately check ASCII, Latin-1, Cyrillic and emoji.
+      The original replaces Java chars >255 with `FF`; the port uses UTF-8.
+      Record bytes and rendering; do not degrade Unicode on decompilation alone.
+- [ ] **Card retention without repeats.** In a clearly labelled test variant,
+      disable only periodic `05 0D`, send a card once and observe retention,
+      pause/resume and reconnect. The ordinary 1 Hz build cannot prove this;
+      restore the compatible mode afterwards.
+- [ ] **`05 17 AA`** ends media display. Send inactive without subsequent
+      periodic cards; separately check resume and session replacement. The
+      current port has no explicit inactive event path.
+- [ ] **`05 19`** changes the dash play/pause indicator; null/OTHER must not be
+      disguised as pause. Also test calls and active navigation.
+- [ ] **Art: `05 58 55` + `05 40`, then `05 58 AA`.** Once implemented, check
+      75×75 JPEG quality 50: singleton with empty FF, multiple chunks with data
+      in the final FF, a full final block for exact multiples of 1000, track
+      changes and cancellation of old transfers on disconnect. The original
+      exact-multiple bug drops 1000 bytes; reproducing it is not success.
+- [ ] **Live volume `05 4C` / `05 1B`.** Independently change music/call volume,
+      check zero, minimum, maximum and mute, and match bytes to the screen scale.
+      `INFOTAINMENT` is the app's Wi-Fi connection type, not an incoming mode packet.
+- [ ] **Official `05..0A` mapping.** Test only in a labelled candidate variant
+      with that mapping enabled, separately from current aliases: play/pause,
+      volume ±, mute, next/previous; active/paused/no-media and ringing-call
+      precedence, every press twice. The current dispatcher cannot prove
+      behavior of branches it does not implement.
+- [ ] **Stream compatibility.** During a large artwork transfer check
+      4 Hz projection timestamps, button ACK latency and heartbeat, plus
+      absence of old art chunks after reconnect. Packet counts alone do not
+      prove absence of delays. Do not use debug for performance conclusions;
+      choose the build according to `ride-verification`.
 
 ## 7. Power / thermals (screen-off ride)
 

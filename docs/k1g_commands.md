@@ -315,13 +315,13 @@ its media view. Worth a look either way.
 
 ### Media: five TLVs, and state between them
 
-The port sends the dash one media command — `05 0D`, once a second,
-unconditionally. The original sends five and keeps state between them. This is
-the largest un-ported piece of the protocol.
+The port sends `05 0D` once a second while `nowPlaying != null`, with no wire
+dedup. The original sends five media TLV types on events. The following
+describes its sender, not firmware 11.63 support.
 
 | TLV | Meaning |
 |---|---|
-| `05 0D` | card: `album \0 title \0 artist`, 19 chars per field |
+| `05 0D` | card: `album \0 title \0 artist`, at most 19 UTF-16 code units per field |
 | `05 17` | `55` media active · `AA` inactive |
 | `05 19` | `55` playing · `AA` paused |
 | `05 58` | `55` album art follows · `AA` no art |
@@ -334,7 +334,11 @@ media is its largest instance.
 #### The state machine
 
 `REForeGroundService.A(MediaMetadataCompat)`, driven from the
-`MediaControllerCompat` callback:
+`MediaControllerCompat` callback. The first metadata callback is skipped,
+the second processed; null also advances the counter but never invokes `A()`.
+Initial `J()` sends active and current metadata directly, without advancing
+the counter or explicitly sending current playback. The counter phase survives
+controller rebind.
 
 ```
 onMetadataChanged  — acts on EVERY SECOND call (a counter in the callback)
@@ -352,17 +356,29 @@ onPlaybackStateChanged
   STATE_PAUSED  → 05 19 AA
 ```
 
-Two branches nobody would guess: with `METADATA_KEY_ADVERTISEMENT != 0` the dash
-gets the album `"Advertisement"` and empty everything else, and an
-`IllegalStateException` while assembling the packet falls back to the title
-`"NowPlaying"` with an empty album and artist.
+With `METADATA_KEY_ADVERTISEMENT != 0`, the tuple is
+`("Advertisement", "", "")`; `IllegalStateException` inside sending falls
+back to `("NowPlaying", "", "")`. Both strings occupy **album**, not title.
+The ordinary empty-title fallback is `("", "Now Playing", "")`.
+All three source fields null produce inactive before these branches; empty
+strings are different.
+
+Dedup requires non-null mediaId (case-insensitive comparison) and non-null raw
+title (case-sensitive). It runs before artwork extraction, so unchanged keys
+also suppress late artwork and album/artist/advertisement changes.
+`pbh.n()` encodes one byte per Java char: values `<=255` survive, others become
+`FF` (`Я → FF`, an emoji → two `FF` bytes). This is **not UTF-8**; there is no
+trailing NUL after artist. Details and evidence limits:
+[`spec/multimedia.md`](../spec/multimedia.md), §3.
 
 #### Album art: the only TLV with its own internal framing
 
 The bitmap is scaled to **75×75**, compressed as **JPEG quality 50** and cut
-into **1000-byte** chunks with `Thread.sleep(10)` between packets. Assembly
-lives in `MetaDataUtils` (`bluconnect/nbg.java`): `c` (chunking), `a` (first
-chunk) and `e` (the rest).
+into chunks of at most **1000 image bytes**. `nbg.f()` enqueues then calls
+`Thread.sleep(10)` after every packet, including the final one. A separate
+queue sends UDP: this does not prove 10 ms between datagrams on the wire.
+Assembly lives in `MetaDataUtils` (`bluconnect/nbg.java`): `c` (chunking),
+`a` (first chunk) and `e` (the rest).
 
 ```
 first chunk:   05 40 | len = payload+3 | 00  | size_hi size_lo | payload…
@@ -374,6 +390,11 @@ last:          05 40 | len = payload+1 | FF  | payload…
 - `idx` is the chunk number from 1 up; `FF` in its place marks the last one;
 - if the image fits in a single chunk, the original still sends an empty
   terminator as a second packet: `len = 1`, `idx = FF`, zero payload bytes.
+- for multiple chunks with a nonzero remainder, the final `FF` carries that
+  remainder; **no additional empty `FF` follows**;
+- the original has defects: lengths `2000, 3000, …` lose the last 1000 bytes,
+  an empty array throws OOB, and lengths above `65535` truncate the u16 size
+  without rejection. These are not requirements for the port.
 
 The packet header is ordinary (`0002`, `K1G `, seq `00`) — the unusual part is
 that the `05 40` TLV carries its own housekeeping bytes inside the value.
@@ -391,11 +412,11 @@ Our media layer is a literal descendant of NorthStar's: the same
 fields, the same two TLVs (`05 0D` and `05 22`). Hence the shared divergences
 from the original:
 
-- **`05 17`, `05 19`, `05 58` and `05 40` are never sent.** The dash learns
-  neither that playback paused nor that the music stopped: `05 0D` keeps
-  arriving at 1 Hz with the last track. Our only mention of `05 17` is a
-  captured initial-burst step carrying `AA` — literally "no music playing"
-  (`Scripts.kt`) — with no note saying so.
+- **No `05 17`, `05 19`, `05 58` or `05 40` event paths.** Pause and session
+  loss send no explicit playback/inactive command. While metadata remains,
+  the card repeats at 1 Hz; clearing `nowPlaying` stops repeats but does not
+  prove the card disappears from the screen. `05 17 AA` exists only as a
+  captured initial-burst step (`Scripts.kt`).
 - **`NowPlaying.art` is read and never used**, in both projects. The field is in
   the model, the bitmap is in memory, and there is nothing to send it with.
 - **The `05 0D` field order disagrees.** The original writes `album, title,
@@ -404,9 +425,12 @@ from the original:
   dash does not care — see "Open questions".
 - **Field limit: 19 vs 20.** The original does `substring(0, 19)`; we and
   NorthStar use `MEDIA_FIELD_MAX = 20`.
+- **Encoding.** The port uses UTF-8 after `take(20)`; the original uses the
+  one-byte substitution above after `substring(0, 19)`. An ASCII-only track
+  cannot expose this difference.
 - **Cadence.** The original sends on events and suppresses repeats; we send at
-  1 Hz unconditionally. If the dash redraws the card per packet, the difference
-  is visible.
+  1 Hz while `nowPlaying != null`. Retention without repeats needs a separate
+  hardware experiment.
 
 ### Buttons `09 00`: the full code map and what goes back
 
@@ -448,10 +472,12 @@ volume through `MediaControllerCompat`. They are not interchangeable.
 exist in the APK but are never used: "establish call" and "start music" run
 silently. That reads as an oversight in the original, not a protocol rule.
 
-**The media branches send nothing at all when no media service is bound.**
-`c0`, `D`, `E`, `F(str)` and `d0` all start with a `t9k.y().V() == null` check —
-with `null` there is neither an action nor an echo. From the dash's side,
-silence cannot distinguish "no such button" from "nothing is playing".
+**Music commands are gated by the listener, not the media controller.** `c0`,
+`D`, `E`, `F(str)` and `d0` check `t9k.y().V()`: no listener means no action
+and no ACK. With a listener but a null controller, the action no-ops and ACK
+still follows **after** the handler returns. Mute (`08`) uses a separate
+AudioManager path without a controller gate. The port's ACK-before-forward
+ordering is its own contract.
 
 #### Zoom sends up to three packets
 

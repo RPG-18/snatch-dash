@@ -45,7 +45,11 @@ function Tvb:uint()
     for i = 0, self.n - 1 do v = v * 256 + self.s:byte(self.off + i + 1) end
     return v
 end
-function Tvb:string() return self.s:sub(self.off + 1, self.off + self.n) end
+-- string() stops at NUL in real tshark; charset conversion is not modeled here.
+-- Binary decoders must use bytes():raw(), which preserves NUL and non-UTF-8 bytes.
+function Tvb:string()
+    return self.s:sub(self.off + 1, self.off + self.n):match("^[^%z]*")
+end
 -- Faithful to Wireshark, which is the whole point: `stringz` ignores the RANGE and scans to
 -- the next NUL in the datagram, throwing when there is none. The old stub clipped to the
 -- range and never threw, which is exactly why a dissector that crashed on every unterminated
@@ -58,7 +62,10 @@ function Tvb:stringz()
     assert(z, "stringz: no NUL before the end of the datagram — Wireshark throws here")
     return whole:sub(1, z - 1)
 end
-function Tvb:bytes() return self:string() end
+function Tvb:bytes()
+    local raw = self.s:sub(self.off + 1, self.off + self.n)
+    return { raw = function() return raw end }
+end
 
 local Item = {}
 Item.__index = Item
@@ -74,7 +81,10 @@ function Item:add(field, a, b, ...)
     assert(select("#", ...) == 0, "add() takes at most three arguments; use set_text for a label")
     if b ~= nil then assert(type(b) ~= "table" or b.s, "add(field, range, value): odd value") end
     local it = item_new(self.sink)
-    self.sink[#self.sink + 1] = { field = field, item = it }
+    self.sink[#self.sink + 1] = {
+        field = field, item = it,
+        range = type(a) == "table" and a.s and a or nil, value = b,
+    }
     return it
 end
 function Item:set_text(label)
@@ -163,6 +173,17 @@ local function has(what, labels, needle)
         what, needle, table.concat(labels, " | ")))
 end
 
+local function decoded(r, abbrev)
+    for _, it in ipairs(r.sink) do
+        if it.field and it.field.abbrev == abbrev then
+            if it.value ~= nil then return it.value end
+            if it.field.kind:match("^uint") then return it.range:uint() end
+            return it.range:string()
+        end
+    end
+    return nil
+end
+
 -- Everything the checks below use, in one list so `--emit` writes exactly what was checked.
 FIXTURES = {}
 local function fixture(hex) FIXTURES[#FIXTURES + 1] = hex; return hex end
@@ -239,6 +260,49 @@ has("...and is still read as a tick", r.labels, "DashTick = counter 8200")
 r = run("0011000100000000050100054142434445")
 clean("an unterminated string TLV dissects without an error", r)
 has("an unterminated string TLV still reads", r.labels, 'RouteTitle = "ABCDE"')
+
+-- Media fields are positional/raw: neither sender layout nor UTF-8 is tagged.
+r = run(fixture("0027000200000000020100054B31472000"
+    .. "050D0012414C42554D005449544C4500415254495354"))
+check("card: raw field 1", decoded(r, "k1g.media.field1"), "ALBUM")
+check("card: raw field 2", decoded(r, "k1g.media.field2"), "TITLE")
+check("card: final field needs no NUL", decoded(r, "k1g.media.field3"), "ARTIST")
+clean("card: valid framing", r)
+r = run(fixture("0018000200000000020100054B31472000050D0003FF0000"))
+check("card: FF is preserved, not decoded as UTF-8", decoded(r, "k1g.media.field1"), "\255")
+check("card: empty second field", decoded(r, "k1g.media.field2"), "")
+check("card: empty third field", decoded(r, "k1g.media.field3"), "")
+r = run(fixture("001D000300000000020100054B31472000050D00034142430517000155"))
+check("card: missing NUL cannot read the next TLV", decoded(r, "k1g.media.field1"), "ABC")
+check("card: missing second field stays absent", decoded(r, "k1g.media.field2"), nil)
+check("card: next media-active TLV still decoded", decoded(r, "k1g.media.active"), 0x55)
+
+-- Art header bytes never become JPEG bytes; final FF may carry a full chunk.
+r = run(fixture("001C000200000000020100054B31472000054000070007D05A5B5C5D"))
+check("first art: BE16 total", decoded(r, "k1g.art.size"), 2000)
+check("first art: excludes 3-byte prefix", decoded(r, "k1g.art.data"), "\90\91\92\93")
+check("first art: image length", decoded(r, "k1g.art.data_len"), 4)
+r = run(fixture("03FE000200000000020100054B31472000054003E9FF" .. ("5A"):rep(1000)))
+check("final art: FF index", decoded(r, "k1g.art.index"), 0xFF)
+check("final art: all 1000 image bytes preserved", decoded(r, "k1g.art.data"), ("\90"):rep(1000))
+check("final art: image length excludes index", decoded(r, "k1g.art.data_len"), 1000)
+check("final art: no total size field", decoded(r, "k1g.art.size"), nil)
+r = run(fixture("0016000200000000020100054B3147200005400001FF"))
+check("empty final art: zero image bytes", decoded(r, "k1g.art.data_len"), 0)
+check("empty final art: no fabricated JPEG", decoded(r, "k1g.art.data"), nil)
+r = run(fixture("0017000200000000020100054B31472000054000020007"))
+check("short first art: index survives", decoded(r, "k1g.art.index"), 0)
+check("short first art: no out-of-bounds BE16 read", decoded(r, "k1g.art.size"), nil)
+check("short first art: size byte not treated as JPEG", decoded(r, "k1g.art.data"), nil)
+r = run(fixture("0015000200000000020100054B3147200005400000"))
+check("empty art: no invented index", decoded(r, "k1g.art.index"), nil)
+
+-- Levels remain wire codes, not percentages or a guessed Android min/max.
+r = run(fixture("001B000300000000020100054B31472000054C000113051B00011A"))
+check("volume: music stream independent", decoded(r, "k1g.volume.music"), 0x13)
+check("volume: call stream independent", decoded(r, "k1g.volume.call"), 0x1A)
+r = run(fixture("0016000200000000020100054B31472000054C000100"))
+check("volume: unknown code is not changed to silence", decoded(r, "k1g.volume.music"), 0)
 
 -- ── optional: a .pcapng of these same fixtures, for checking in real Wireshark ──
 --

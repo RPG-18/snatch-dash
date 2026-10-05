@@ -23,22 +23,39 @@ fun interface MapProjection {
 }
 
 /**
+ * Scale of the rider arrow silhouette, excluding its 17 px halo.
+ *
+ * The halo is a separate safety zone that keeps the marker readable and inside the
+ * round bezel; changing it would also change DashCamera's frame-boundary contract.
+ */
+internal const val RIDER_ARROW_SCALE = 1.5f
+
+/**
+ * Perspective compression of the arrow's forward axis for a camera tilt.
+ *
+ * [tiltDeg] is the actual tilt from MapLibre's CameraPosition. MapLibre clamps it
+ * to 0..60 degrees before the snapshot is rendered.
+ */
+internal fun riderArrowForwardScale(tiltDeg: Double): Float =
+    cos(Math.toRadians(tiltDeg)).toFloat()
+
+/**
  * Draws everything the dash frame (526 × 300) carries **on top of** the map:
  * the route with its traffic colours, the destination pin, the rider arrow, and
  * the ETA/GPS pills.
  *
  * The map itself is a MapLibre snapshot already drawn into the frame before this
  * runs (spec/drawing_from_local_tiles.md, «Конвейер кадра»). That is why nothing
- * here decides *where* anything goes any more: no tile loop, no Mercator, no
- * `canvas.rotate`, no perspective warp. Heading-up rotation and tilt are the
+ * here decides *where* anything goes any more: no tile loop, no Mercator, and no
+ * perspective warp over the finished map. Heading-up rotation and tilt are the
  * camera's job — rotating a finished raster would rotate the labels with it,
- * which MapLibre keeps upright itself.
+ * which MapLibre keeps upright itself; only the screen-space rider arrow gets a
+ * local orientation/foreshortening transform.
  *
  * Paint/Path objects are reused across frames to avoid per-frame allocation
  * churn; the projected route shares one growable FloatArray for the same reason.
  */
 class OverlayRenderer {
-
     data class Frame(
         /**
          * Whether the map turns with the rider. Kept even though the rotation
@@ -48,6 +65,12 @@ class OverlayRenderer {
          */
         val headingUp: Boolean = false,
         val heading: Float = 0f,           // travel bearing, degrees
+        /**
+         * Actual tilt handed to the snapshot camera, in degrees. The overlay uses
+         * this value rather than copying the renderer's compile-time constant so
+         * the arrow stays aligned if MapLibre clamps or the camera tuning changes.
+         */
+        val tiltDeg: Double = 0.0,
         val riderLat: Double? = null,
         val riderLng: Double? = null,
         val destLat: Double? = null,
@@ -234,6 +257,8 @@ class OverlayRenderer {
         // and the arrow has to show the true compass bearing itself. In heading-up
         // mode the camera has already turned the map, so the arrow stays pointing
         // at the top of the frame — "forward" — with no rotation of its own.
+        // Its path is 1.5× larger than before and its forward axis is foreshortened
+        // by the same tilt the snapshot camera received. The halo stays 17 px.
         if (f.riderLat != null && f.riderLng != null) {
             val p = projection.project(f.riderLat, f.riderLng)
             val rx = p.x; val ry = p.y
@@ -250,7 +275,14 @@ class OverlayRenderer {
             )
             canvas.drawCircle(rx, ry, 17f, dotPaint)
 
-            canvas.save(); canvas.rotate(if (f.headingUp) 0f else f.heading, rx, ry)
+            canvas.save()
+            canvas.rotate(if (f.headingUp) 0f else f.heading, rx, ry)
+            canvas.scale(
+                RIDER_ARROW_SCALE,
+                RIDER_ARROW_SCALE * riderArrowForwardScale(f.tiltDeg),
+                rx,
+                ry,
+            )
             riderPath.reset()
             riderPath.moveTo(rx, ry - 13f)      // tip (front)
             riderPath.lineTo(rx + 9f, ry + 9f)  // right wing

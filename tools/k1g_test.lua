@@ -46,7 +46,7 @@ function Tvb:uint()
     return v
 end
 -- string() stops at NUL in real tshark; charset conversion is not modeled here.
--- Binary decoders must use bytes():raw(), which preserves NUL and non-UTF-8 bytes.
+-- Binary fields must use bytes():raw(), which preserves NUL and non-UTF-8 bytes.
 function Tvb:string()
     return self.s:sub(self.off + 1, self.off + self.n):match("^[^%z]*")
 end
@@ -178,6 +178,7 @@ local function decoded(r, abbrev)
         if it.field and it.field.abbrev == abbrev then
             if it.value ~= nil then return it.value end
             if it.field.kind:match("^uint") then return it.range:uint() end
+            if it.field.kind == "bytes" then return it.range:bytes():raw() end
             return it.range:string()
         end
     end
@@ -221,7 +222,7 @@ clean("time sync: no expert info on a well-formed packet", r)
 has("time sync renders as a clock", r.labels, "TimeSync = 18:35:59")
 
 -- 5. Dash to app: shorter header, TLVs at offset 8, no magic. Copied from a ride's
---    app_log.txt (24.09, the 1 Hz tick whose counter tells a stalled dash from a lost uplink).
+--    app_log.txt (24.09); suffix meaning and delay location remain unestablished.
 r = run(fixture("0011000100000000" .. "010100054B31470008"))
 check("dash to app: direction", r.info:sub(1, 6), "dash->")
 check("dash to app: whole datagram consumed", r.consumed, r.size)
@@ -254,6 +255,14 @@ check("a truncated TLV raises k1g.truncated specifically", truncated, true)
 r = run(fixture("0011000100000000010100054B31472008"))
 check("a DashTick whose counter spells the magic is still incoming", r.info:sub(1, 6), "dash->")
 has("...and is still read as a tick", r.labels, "DashTick = counter 8200")
+check("typed suffix preserves both bytes", decoded(r, "k1g.tick.counter"), 8200)
+check("typed suffix preserves incoming direction", decoded(r, "k1g.dir"), "dash to app")
+check("short tick has no counter",
+    decoded(run("0010000100000000010100044B314700"), "k1g.tick.counter"), nil)
+check("non-K1G tick has no counter",
+    decoded(run("0011000100000000010100054142430008"), "k1g.tick.counter"), nil)
+check("truncated tick prefix has no typed counter",
+    decoded(run("0011000100000000010100064B31470008"), "k1g.tick.counter"), nil)
 
 -- 9. And a string TLV with no terminator must not take the frame down with it. This is the
 --    one that only tshark caught.
@@ -287,6 +296,10 @@ check("final art: FF index", decoded(r, "k1g.art.index"), 0xFF)
 check("final art: all 1000 image bytes preserved", decoded(r, "k1g.art.data"), ("\90"):rep(1000))
 check("final art: image length excludes index", decoded(r, "k1g.art.data_len"), 1000)
 check("final art: no total size field", decoded(r, "k1g.art.size"), nil)
+r = run(fixture("001C000200000000020100054B3147200005400007FF41004200FF43"))
+check("final art: embedded NUL and non-UTF-8 bytes preserved",
+    decoded(r, "k1g.art.data"), "A\0B\0\255C")
+check("final art: image length includes embedded NULs", decoded(r, "k1g.art.data_len"), 6)
 r = run(fixture("0016000200000000020100054B3147200005400001FF"))
 check("empty final art: zero image bytes", decoded(r, "k1g.art.data_len"), 0)
 check("empty final art: no fabricated JPEG", decoded(r, "k1g.art.data"), nil)

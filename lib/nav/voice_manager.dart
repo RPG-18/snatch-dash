@@ -5,16 +5,17 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../l10n/app_localizations.dart';
 import '../util/device_localizations.dart';
+import 'maneuver_cue_scheduler.dart';
 import 'route.dart';
 
 enum VoiceMode { off, chime, full }
 
 const _prefsKeyMode = 'voice_mode';
 
-/// Turn-by-turn voice guidance. Ported from `dash/nav/VoiceManager.kt` — same
-/// far/near de-duped announcement scheduling. FULL speaks via `flutter_tts`;
-/// CHIME beeps through the native plugin's `playChime()` (no Dart/Flutter
-/// equivalent to `ToneGenerator`, see the plugin's `DashEngineController`).
+/// Turn-by-turn voice guidance. [ManeuverCueScheduler] de-duplicates the
+/// 300/150/60 metre cues. FULL speaks via `flutter_tts`; CHIME beeps through
+/// the native plugin's `playChime()` (no Dart/Flutter equivalent to
+/// `ToneGenerator`, see the plugin's `DashEngineController`).
 ///
 /// Note: the original's `turnPhrase` covered every `ManeuverType` from OSRM's
 /// step-by-step instructions with hand-written per-direction l10n strings.
@@ -31,54 +32,16 @@ const _prefsKeyMode = 'voice_mode';
 /// roundabouts, ferries) still falls back to the SDK's `instruction`, or the
 /// generic "continue" phrase if that's empty — narrowing that gap (i.e.
 /// hand-writing the rest of the table) is follow-up work, not done here.
-/// The dash glyph is a separate concern and still hardcoded to CONTINUE for
-/// every turn (unverified glyph codes) — no turn-by-turn fidelity there either.
+/// The dash glyph is a separate concern: `NavLoop` sends [Maneuver.dashCode].
 class VoiceManager {
   VoiceManager._();
   static final VoiceManager instance = VoiceManager._();
 
-  static const _farM = 450.0;
-  static const _nearM = 60.0;
-  static const _arriveM = 30.0;
-
   final _tts = FlutterTts();
+  final _cueScheduler = ManeuverCueScheduler();
   VoiceMode _mode = VoiceMode.chime;
 
-  /// The pending *future* of the preference read, not a "done" flag: a `bool`
-  /// set before the `await` makes a second `load()` return immediately while
-  /// [_mode] is still the default, so awaiting it would not mean what it says.
-  /// Only `main.dart` calls this today, once and awaited, so this is a latent
-  /// hazard rather than a live one — but it costs one field to remove.
-  Future<void>? _loading;
-
-  double _lastManeuverKey = -1.0;
-  bool _farDone = false;
-  bool _nearDone = false;
-  bool _arrived = false;
-
   VoiceMode get mode => _mode;
-
-  Future<void> load() async {
-    final pending = _loading ??= _load();
-    try {
-      await pending;
-    } catch (_) {
-      // Never cache a failed read — a transient SharedPreferences failure must
-      // not leave every later load() replaying it. Same shape as
-      // `MaintenanceNotifier._ensureInitialized` and `AppDatabase.database`.
-      if (identical(_loading, pending)) _loading = null;
-      rethrow;
-    }
-  }
-
-  Future<void> _load() async {
-    final prefs = await SharedPreferences.getInstance();
-    final saved = prefs.getString(_prefsKeyMode);
-    _mode = VoiceMode.values.firstWhere(
-      (m) => m.name == saved,
-      orElse: () => VoiceMode.chime,
-    );
-  }
 
   Future<void> setMode(VoiceMode mode) async {
     _mode = mode;
@@ -97,46 +60,30 @@ class VoiceManager {
     double remainingM,
   ) async {
     if (_mode == VoiceMode.off) return;
+    final cue = _cueScheduler.next(
+      maneuver: maneuver,
+      distanceM: distanceM,
+      remainingM: remainingM,
+    );
+    if (cue == null) return;
+
     final l10n = deviceLocalizations();
-
-    if (remainingM >= 0 && remainingM <= _arriveM && !_arrived) {
-      _arrived = true;
-      if (_mode == VoiceMode.full) {
-        await _speak(l10n.voiceArrived);
-      } else {
-        await DashEngine.instance.playChime();
-      }
-      return;
-    }
-    if (remainingM > _arriveM) _arrived = false;
-
-    if (maneuver == null) return;
-    if (maneuver.cumulativeMeters != _lastManeuverKey) {
-      _lastManeuverKey = maneuver.cumulativeMeters;
-      _farDone = false;
-      _nearDone = false;
-    }
-
-    if (distanceM >= 0 && distanceM <= _nearM && !_nearDone) {
-      _nearDone = true;
-      _farDone = true;
-      if (_mode == VoiceMode.full) {
-        await _speak(l10n.voiceNow(_turnPhrase(l10n, maneuver)));
-      } else {
-        await DashEngine.instance.playChime();
-      }
-    } else if (distanceM > _nearM && distanceM <= _farM && !_farDone) {
-      _farDone = true;
-      if (_mode == VoiceMode.full) {
-        await _speak(
-          l10n.voiceIn(
-            _roundDist(l10n, distanceM),
-            _turnPhrase(l10n, maneuver),
-          ),
-        );
-      } else {
-        await DashEngine.instance.playChime();
-      }
+    if (_mode == VoiceMode.full) {
+      final text = switch (cue) {
+        ManeuverCue.advance300 => l10n.voiceIn(
+          l10n.voiceDistanceM(300),
+          _turnPhrase(l10n, maneuver!),
+        ),
+        ManeuverCue.advance150 => l10n.voiceIn(
+          l10n.voiceDistanceM(150),
+          _turnPhrase(l10n, maneuver!),
+        ),
+        ManeuverCue.now => l10n.voiceNow(_turnPhrase(l10n, maneuver!)),
+        ManeuverCue.arrived => l10n.voiceArrived,
+      };
+      await _speak(text);
+    } else {
+      await DashEngine.instance.playChime();
     }
   }
 
@@ -174,12 +121,7 @@ class VoiceManager {
   }
 
   /// Reset trip state when nav starts/stops so the next route announces cleanly.
-  void resetTrip() {
-    _lastManeuverKey = -1.0;
-    _farDone = false;
-    _nearDone = false;
-    _arrived = false;
-  }
+  void resetTrip() => _cueScheduler.reset();
 
   /// See the class doc for why this doesn't just speak `m.instruction`
   /// anymore. The synthetic `arrive` maneuver has no SDK-generated
@@ -198,13 +140,6 @@ class VoiceManager {
     ManeuverType.uturnRight => l10n.voiceTurnUturnRight,
     _ => m.instruction.isNotEmpty ? m.instruction : l10n.voiceTurnContinue,
   };
-
-  String _roundDist(AppLocalizations l10n, double m) {
-    if (m >= 1000) return l10n.voiceDistanceKm((m / 1000.0).toStringAsFixed(1));
-    if (m >= 500) return l10n.voiceDistance500m;
-    if (m >= 200) return l10n.voiceDistance200m;
-    return l10n.voiceDistanceM((m / 50).floor() * 50);
-  }
 }
 
 final voiceModeProvider = StateProvider<VoiceMode>(

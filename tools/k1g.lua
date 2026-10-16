@@ -2,7 +2,7 @@
 -- k1g.lua — Wireshark dissector for the Royal Enfield K1G dash protocol.
 --
 --   wireshark -X lua_script:tools/k1g.lua diag/ride-20260924-211625.pcapng
---   tshark    -X lua_script:tools/k1g.lua -r ride.pcapng -Y 'k1g.name == "Heartbeat"'
+--   tshark    -X lua_script:tools/k1g.lua -r ride.pcapng -Y 'k1g.name == "ProjectionFrame"'
 --
 -- Or drop it in ~/.local/lib/wireshark/plugins/ (Help → About → Folders) to load it always.
 --
@@ -29,6 +29,14 @@ local MAGIC = "K1G "
 -- string appended to the name, or nil.
 
 local function u8(tvb) return tvb:len() > 0 and tvb(0, 1):uint() or nil end
+
+-- Representation only: neither the suffix's meaning nor its modulus is established.
+local function tick_counter(tvb)
+    if tvb:len() >= 5 and tvb(0, 3):string() == "K1G" then
+        return tvb(3, 2):uint()
+    end
+    return nil
+end
 
 -- A NUL-terminated string that cannot leave the TLV.
 --
@@ -171,17 +179,12 @@ local TLV = {
     ["05:40"] = { "AlbumArtChunk", MEDIA_SOURCE },
     ["04:01"] = { "TemperatureUnit", "likely", onoff },
 
-    -- Dash → app, 1 Hz, and the reason this dissector was worth writing. Found by hand in a
-    -- 9 MB hex dump on 2026-09-24: the dash sends "K1G" plus a counter that advances by one
-    -- per message. A gap in the ARRIVALS whose counter still advanced by the gap length means
-    -- the dash kept running and we lost its uplink; a gap whose counter advanced by one means
-    -- the dash itself stalled. Both were observed in one ride, 90 s apart, and nothing else
-    -- in the telemetry tells them apart. The MEANING of the counter is unestablished — this
-    -- is an observation, not a decode.
+    -- Dash → app ticks observed since 2026-09-24. Arrival gaps and suffix progression
+    -- are separate observations; neither localizes a delay or proves a dash stall.
+    -- BE16 preserves all captured bits, not a claim of uptime or modulus 65536.
     ["01:01"] = { "DashTick", "observed 2026-09-24, meaning unknown", function(t)
-        if t:len() >= 5 and t(0, 3):string() == "K1G" then
-            return string.format("counter %d", t(3, 2):uint())
-        end
+        local counter = tick_counter(t)
+        if counter then return string.format("counter %d", counter) end
         return nil
     end },
 }
@@ -223,6 +226,7 @@ f.tlv_len   = ProtoField.uint16("k1g.vlen", "Value length", base.DEC)
 f.tlv_val   = ProtoField.bytes("k1g.value", "Value")
 f.name      = ProtoField.string("k1g.name", "Name")
 f.confid    = ProtoField.string("k1g.confidence", "Confidence")
+f.tick_counter = ProtoField.uint16("k1g.tick.counter", "Tick suffix (BE16; meaning/modulus unknown)", base.DEC)
 f.media_detail = ProtoField.string("k1g.media.detail", "Media Detail")
 local media_fields = {
     ProtoField.bytes("k1g.media.field1", "Media Field 1 (raw)"),
@@ -330,9 +334,8 @@ function k1g.dissector(tvb, pinfo, tree)
     -- BOTH halves are checked, and the magic alone is not enough — reproduced 2026-09-24. A
     -- dash-to-app tick is `.. 01 01 00 05 4B 31 47 <counter-hi> <counter-lo>`, so offsets
     -- 12..15 hold "K1G" plus the counter's high byte; when that byte is 0x20 (counters
-    -- 8192..8447, about four minutes of dash uptime) they spell "K1G " exactly, and the packet
-    -- dissected as outgoing with its TLVs read from past the end. Four minutes of the one
-    -- signal that separates "the dash stalled" from "we lost its uplink", silently inverted.
+    -- 8192..8447) they spell "K1G " exactly, and the packet dissected as outgoing
+    -- with its TLVs read from past the end. This silently inverted tick observations.
     -- Offset 8 differs (`01` against `02`) and settles it.
     local outgoing = len >= 17 and
         tvb(8, 4):uint() == 0x02010005 and
@@ -388,6 +391,9 @@ function k1g.dissector(tvb, pinfo, tree)
         item:add(f.tlv_sub, tvb(at + 1, 1))
         item:add(f.tlv_len, tvb(at + 2, 2))
         if avail > 0 then item:add(f.tlv_val, value) end
+        if ty == 0x01 and sub == 0x01 and avail == vlen and tick_counter(value) then
+            item:add(f.tick_counter, value(3, 2))
+        end
         if name and name ~= "" then
             item:add(f.name, tvb(at, 2), name):set_generated()
             names[#names + 1] = name

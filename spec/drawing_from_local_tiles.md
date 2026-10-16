@@ -7,15 +7,16 @@
 а решение «чем рисуем и почему» принято в
 [`docs/offline_mode_ru.md`](../docs/offline_mode_ru.md), §8.
 
-> **Статус: код на месте, на устройстве не проверялся.** Растровый путь удалён
-> целиком (`TileProvider.kt`, `Mercator.kt`), `MapRenderer` переименован в
+> **Статус: код на месте; локальная карта и heading-up-паддинг проверены на
+> устройстве 02.10.2026.** Растровый путь удалён целиком (`TileProvider.kt`,
+> `Mercator.kt`), `MapRenderer` переименован в
 > [`OverlayRenderer`](../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/map/OverlayRenderer.kt),
 > кадр карты приходит из
 > [`MapSnapshotProvider`](../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/map/MapSnapshotProvider.kt).
-> Что описано ниже, но **не сделано намеренно**: наклон камеры оставлен нулевым —
-> это вопрос к MVP (последний раздел), который решается глазами на панели
-> 526×300, а не в редакторе. Логотип и атрибуция MapLibre, наоборот, выключены
-> решением от 2026-09-04, не дожидаясь железа.
+> Пивот `0.85h` и применение паддинга подтверждены на Huawei HBN-LX9.
+> Стартовый наклон `NAV_TILT_DEG = 45°` и масштабирование дротика реализованы,
+> но итоговый угол, картинка и бюджет снапшота ещё ждут отдельного заезда.
+> Логотип и атрибуция MapLibre выключены решением от 2026-09-04.
 
 **Область действия — только дэш.** In-app карта (`RouteScreen`,
 `RoutePreviewScreen`, [`DashScreen`](./dash_screen.md)) остаётся на Yandex

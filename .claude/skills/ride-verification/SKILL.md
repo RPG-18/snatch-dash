@@ -74,6 +74,10 @@ adb exec-out run-as ru.snatchdash.app cat files/app_log.txt > app_log.txt
 [`spec/k1g_protocol.md`](../../../spec/k1g_protocol.md), «Теги ride-файла».
 Формат ride-лога — только добавление строк, существующие не менять.
 
+Если в `diag/` есть `.pcapng`, вызвать
+[`k1g-pcap-analysis`](../k1g-pcap-analysis/SKILL.md): воспроизводимый разбор
+паузы control RX/TX и tick bursts с сопоставлением с ride-log.
+
 ## Куда попадает результат
 
 | Что выяснилось | Куда |

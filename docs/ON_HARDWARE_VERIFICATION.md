@@ -66,12 +66,10 @@ from `NavLoop` instead of computing nav math itself like the original
 - [ ] Off-route detection + reroute still fires within a few seconds of
       leaving the route (`NavEngine.progress`'s 60 m threshold) and the new
       route reaches the dash.
-- [ ] **Maneuver glyph**: still only `CONTINUE` (`0x0B`) — confirm the dash
-      doesn't show a wrong turn arrow. (Known, unchanged limitation: the
-      Yandex driving router used now doesn't expose per-step maneuvers at
-      all, see `nav/Router.dart`'s doc comment — this was already
-      effectively CONTINUE-only in the original app too, since its OSRM
-      glyph codes were unverified.)
+- [ ] **Maneuver glyph**: `NavLoop` sends each `Maneuver.dashCode`; confirm
+      that the dash shows the matching turn arrow. Unsupported/unknown
+      maneuvers use the confirmed neutral straight-ahead glyph `0x09`, not
+      the old OpenDash `CONTINUE` value `0x0B`.
 - [ ] ETA HH:MM shown on the dash matches wall-clock arrival time
       (`NavLoop`'s `etaHHMM` formatting).
 
@@ -117,15 +115,17 @@ button are equal values, and that is where a repeat gets swallowed.
 - [ ] No joystick codes are silently swallowed — full hex dump still logs
       unknown TLVs (`DashSession.dispatchIncoming`'s "DASH EVENT" log line).
 
-## 5. Voice / chime guidance
+## 5. Voice guidance
 
-- [ ] CHIME mode beeps via the native `playChime()` (ToneGenerator) at the
-      far (~450 m) and near (~60 m) announce points, and once on arrival.
-- [ ] FULL mode speaks via `flutter_tts` at the same points, in the device's
-      default TTS voice/locale.
-- [ ] Mode toggle (Route screen app bar icon) actually changes behavior
-      immediately, and persists across app restart
-      (`VoiceManager`/`SharedPreferences`).
+- [ ] Restart the app, start a route whose first maneuver is more than 300 m
+      away, raise media volume, and turn the phone screen off. The forced
+      `VoiceMode.full` must produce speech, never a chime.
+- [ ] For one normally approached maneuver, hear exactly three localized
+      phrases in order near the 1 Hz thresholds: “In 300 meters …”,
+      “In 150 meters …”, then “Now …”. No duplicate within a range and no
+      late replay of a skipped farther cue.
+- [ ] At the destination, hear “You have arrived at your destination”
+      exactly once.
 
 ## 6. Media / call bridge (native, new plugin code)
 
@@ -172,11 +172,14 @@ compatibility parameter at a time; pcap without the visible result is insufficie
       current port has no explicit inactive event path.
 - [ ] **`05 19`** changes the dash play/pause indicator; null/OTHER must not be
       disguised as pause. Also test calls and active navigation.
-- [ ] **Art: `05 58 55` + `05 40`, then `05 58 AA`.** Once implemented, check
-      75×75 JPEG quality 50: singleton with empty FF, multiple chunks with data
-      in the final FF, a full final block for exact multiples of 1000, track
-      changes and cancellation of old transfers on disconnect. The original
-      exact-multiple bug drops 1000 bytes; reproducing it is not success.
+- [ ] **Art present: `05 58 55` followed by `05 40` chunks.** Once
+      implemented, check 75×75 JPEG quality 50: singleton with empty FF,
+      multiple chunks with data in the final FF, a full final block for exact
+      multiples of 1000, track changes and cancellation of old transfers on
+      disconnect. The original exact-multiple bug drops 1000 bytes; reproducing
+      it is not success.
+- [ ] **No art: `05 58 AA`.** Check both an initially artless item and a
+      transition from an item with art; no `05 40` chunks may follow `AA`.
 - [ ] **Live volume `05 4C` / `05 1B`.** Independently change music/call volume,
       check zero, minimum, maximum and mute, and match bytes to the screen scale.
       `INFOTAINMENT` is the app's Wi-Fi connection type, not an incoming mode packet.

@@ -2,8 +2,9 @@
 
 **Дата создания:** 04.10.2026
 
-**Статус:** предложение; реализация не начата. План подготовлен для поэтапной
-работы с автоматическими и полевыми гейтами.
+**Статус:** предложение; реализация не начата. Исследование обновлено
+22.10.2026 по `re_app_new` — Royal Enfield 10.1.23(45), versionCode 193.
+План сохраняет независимые автоматические и полевые гейты.
 
 ## 0. Как читать этот план
 
@@ -42,9 +43,11 @@ wire формы проверяются отдельно. Unresolved hardware н�
 
 ## 0.1. Статус
 
-Где план сейчас (04.10.2026): реализация не начата. ✅ Исследование оригинала
-по Java и авторитетному smali завершено 04.10.2026; факты и источники —
-[`spec/multimedia.md`](../../spec/multimedia.md). Это не проверка порта или железа.
+Где план сейчас (22.10.2026): реализация не начата. Исследование от
+04.10.2026 относилось к 10.1.22; его факты и источники остаются в
+[`spec/multimedia.md`](../../spec/multimedia.md). Повторная статическая сверка
+10.1.23(45) и границы доказательств записаны ниже. Это не проверка порта
+или железа; задачи реализации и `[ride]` не отмечаются выполненными.
 
 Уточнение 20.10.2026: media-автомат этого плана ещё не реализован, но текстовая
 baseline изменена отдельным требованием пользователя. После отклонения
@@ -54,14 +57,22 @@ windows-1251/ISO-8859-5/KOI8-R/IBM866 выбран ASCII через Android ICU,
 SDK-route/codec проверены на Android-эмуляторе; читаемость новой сборки на
 приборке ещё не подтверждена. Остальные hardware-гейты остаются открыты.
 
+Сверка 22.10.2026: основные формы media TLV подтверждены в 10.1.23(45).
+Уточнены дефект exact-multiple art, область `IllegalStateException` fallback,
+initial dedup, lifecycle и владение Bitmap. Новые anchors — §1.2; намеренные
+отличия порта уточнены в §2 и этапах 2/4/7. ICU→ASCII, совместимая карточка,
+1 Hz и текущие кнопки не пересматриваются по одной декомпиляции.
+
 Отложенные решения и отклонённые посылки:
 
 - порядок, ширина `05 0D`, удаление 1 Hz-повтора и mapping кнопок —
   независимые решения после проверки прошивки 11.63; encoding baseline с
   20.10.2026 — ICU-транслитерация, не прежний UTF-8;
 - ❌ 04.10.2026 универсальный отдельный пустой `FF` после любого art:
-  оригинал отправляет его только для singleton; при ненулевом остатке финальный
-  `FF` несёт данные. Дефект exact-multiple оригинала сознательно не переносить;
+  для singleton оригинал добавляет пустой `FF`, при ненулевом остатке финальный
+  `FF` несёт данные. Уточнение 22.10.2026: при exact-multiple ≥2000 оригинал
+  тоже отправляет пустой `FF`, но теряет последние 1000 байт; этот дефект
+  сознательно не переносить.
 - ❌ 04.10.2026 поиск firmware-mode boundary `INFOTAINMENT`: это тип
   подключения приложения (`NONE/TRIPPER/INFOTAINMENT`), не входящий UI/media-mode.
   Задача на guessed source снята; взаимодействие media/video проверяется отдельно;
@@ -70,8 +81,10 @@ SDK-route/codec проверены на Android-эмуляторе; читаем
 
 ## 1. Контекст за пять минут
 
-[`spec/multimedia.md`](../../spec/multimedia.md) хранит исходные факты оригинала,
-допроверенные 04.10.2026 по Java/smali, но не подтверждённые на железе.
+[`spec/multimedia.md`](../../spec/multimedia.md) хранит исходные факты
+10.1.22, допроверенные 04.10.2026 по Java/smali, но не подтверждённые на
+железе. Для реализации использовать также сверку 10.1.23(45) в §1.1:
+обфусцированные имена старой версии нельзя искать в новом APK буквально.
 Текущий порт отправляет media-карточку `05 0D` (`title, album, artist`,
 ICU → ASCII, до 20 байт на поле после расширения) раз в секунду при `nowPlaying != null`.
 `05 17`, `05 19`, `05 58` и `05 40` не имеют
@@ -94,6 +107,96 @@ Heartbeat отправляет захваченные константы `05 4C 
 совместимую карточку до проверки 11.63. Lifecycle остаётся active-ride-only,
 а `DashKeepAliveService` остаётся владельцем процесса и foreground-сервиса.
 
+### 1.1 Источник и границы повторной сверки — 22.10.2026
+
+Исследуемый APK: `re_app_new/base.apk`, пакет `com.royalenfield.reprime`,
+версия **10.1.23(45)** / **193**, minSdk **31**, targetSdk **36**.
+SHA-256: `889b9c42f21ef426c114cadac788c9c6220a29dc686e8a5b0e3fbd07a0e4f404`.
+
+Выполнено REA **6.7.0**:
+
+- `rea inspect-artifact re_app_new/base.apk --format json` — инвентарь APK
+  и отпечаток; не доказательство семантики DEX;
+- `REA_APKTOOL_COMMAND=/opt/homebrew/bin/apktool rea decode-android-resources
+  re_app_new/base.apk --no-strings --format json` — Apktool **3.0.3**,
+  подтверждены пакет/версия/SDK; декодирование идёт с `--no-src`;
+- `rea inspect-android-package re_app_new/base.apk --format json` —
+  `capability_unavailable`: отсутствует отдельно поставляемый
+  `jadx-headless-mcp 0.7.1` (`REA_JADX_MCP_JAR`). Методная декомпиляция и
+  xrefs через REA в этой сверке **не выполнены**.
+
+Поведение проверяется по уже имеющимся `re_app_new/jadx_out/sources/` и
+`re_app_new/apktool_out/`; спорные условия — по smali, не по псевдокоду
+неудачно декомпилированного метода. `re_app_new/overview.md` — навигационная
+заметка, не доказательство неизменности media-автомата. Приложение не
+запускалось, wire capture и наблюдение приборки этой сверкой не получены.
+
+### 1.2 Что перепроверено и где искать в новом APK
+
+Старые имена ниже взяты из исследования 10.1.22; соответствие семантическое,
+не утверждение побайтной идентичности двух версий. Корни: Java —
+`re_app_new/jadx_out/sources/`, smali — `re_app_new/apktool_out/`.
+Локальные выгрузки не входят в git; для повторения нужен APK с SHA-256 из §1.1.
+
+| Узел | Источник 10.1.23(45) и anchors |
+|---|---|
+| Service path | [`REForeGroundService.java`](../../re_app_new/jadx_out/sources/com/royalenfield/reprime/ui/home/navigation/service/REForeGroundService.java): `x/J/y/S`, `A`, callback `b`, timer `d.run`; одноимённые `.smali`, `$b.smali`, `$d.smali` в `smali_classes8/com/royalenfield/reprime/ui/home/navigation/service/` |
+| Metadata bytes | [`bluconnect/l3d.java`](../../re_app_new/jadx_out/sources/bluconnect/l3d.java), `n` (259–282), вместо `pbh.n`; service `A` (671–740) задаёт порядок/обрезку |
+| Art framing / очередь | [`bluconnect/c3c.java`](../../re_app_new/jadx_out/sources/bluconnect/c3c.java), `a/c/d/e/f`, вместо `nbg`; `bluconnect/y2c.java:o` → `bluconnect/sw2.java:d/run`, вместо sender `zx4` |
+| Bitmap / альтернативный metadata path | [`bluconnect/djf.java`](../../re_app_new/jadx_out/sources/bluconnect/djf.java), `e1/h1/z1` (272–308), вместо `x9k`; `djf.A1` — другой metadata path, не service `A` |
+| Кнопки и TLV | [`bluconnect/clk.smali`](../../re_app_new/apktool_out/smali_classes8/bluconnect/clk.smali), `S` (1697–2070), вместо `aaq.S`; Java `S` повреждён декомпилятором. `bluconnect/w2c.java` — constants вместо `hbg`; `bluconnect/fpd.java` — listener вместо `igi` |
+| Android actions / тип подключения | [`NavigationRootFragment.java`](../../re_app_new/jadx_out/sources/com/royalenfield/reprime/ui/home/navigation/fragment/NavigationRootFragment.java): `B` mute, `S1/q0` call-volume, `Y/i9` missed calls, `t9` connection setter; `bluconnect/zif.java:b` вместо `t9k.b` |
+
+Выводы, влияющие на исполнение плана:
+
+- **Карточка подтверждена, compatibility не отменена.** Service сериализует
+  album/title/artist без последнего NUL; normal fields режет до 19 UTF-16 units,
+  `l3d.n` превращает char ≤255 в байт, остальные — в `FF`. Это не ICU/ASCII20
+  порта и не основание вернуть снятый charset-эксперимент.
+- **Lifecycle оригинала нельзя переносить целиком.** `x()` (1057–1091)
+  регистрирует listener до notification grant, берёт первую сессию; пустой
+  список не очищает старый token/controller, а на холодном старте даёт два
+  inactive. `J()` (811–822) работает только при null-controller: повторный
+  start с новым token не гарантирует rebind. `y()` (1094–1107) снимает callback,
+  но не counter/cache; `S()` (885–904) не снимает callback/command listener,
+  `onDestroy()` (990–997) вызывает только super. Исправления — этап 2.
+- **Initial и callback null различаются.** `J()` вызывает `A(metadata)`
+  напрямую: counter обходится, dedup остаётся. `A(null)` даёт inactive;
+  второй callback null сбрасывает counter, но не вызывает `A`.
+  All-null проверяется до advertisement; whitespace не равен empty.
+  Cache raw title/id обновляется после thumbnail, до отправки; ошибка отправки
+  не откатывает cache. Callback `b`: Java 211–237, smali `$b`:49–152.
+- **Fallback узкий.** Service smali `A`:598–729 охватывает assembly/enqueue
+  карточки, marker, art conversion/send и recycle; getters, thumbnail,
+  dedup/cache и выбор tuple находятся вне catch. Ветка 733–800 добавляет
+  только `05 0D ("NowPlaying","","")`, без active/marker/clear-art и без
+  отмены уже поставленных в очередь карточки и обложки.
+- **Art encoder порта безопаснее оригинала.** Service берёт только
+  `ALBUM_ART`; `djf.h1` recycle-ит вход до компрессии scaled Bitmap, `e1`
+  игнорирует boolean результата `compress`, затем есть повторные recycle.
+  Риск alias входа/scaled — статический, crash APK не наблюдался. Владение
+  и обработка ошибок задаются отдельно в этапе 2. `c3c.f` спит 10 ms после
+  enqueue, включая последний; независимый `sw2.run` не доказывает wire spacing.
+- **Heartbeat оригинала условный.** Timer `d.run` (Java 275–460;
+  smali `$d`:896–1037) выбирает header count 9/10/11 по наличию cell signal
+  и температуре-сентинелу 200. Float-шкала не вычитает min из current и
+  может вообще опустить volume TLV; выбор header эту потерю не учитывает.
+  Фиксированные 11 TLV и fallback13/19 порта сохраняются, остальные поля
+  heartbeat здесь не динамизируются.
+- **Коды кнопок подтверждены, gates различаются.** `03/04` call-volume,
+  `05` play/pause, `06/07` volume, `08` mute, `09/0A` next/previous.
+  Новый play/pause — `fpd.H` / service `H` (785–805), не `I`: `I` теперь setter
+  token. Пять helpers `clk.c0/D/E/F/d0` проверяют listener `zif.V()`, не
+  title/controller/mediaActive, затем action и ACK. Null-controller допускает
+  ACK после no-op; null-listener — нет ACK; исключение action прерывает ACK.
+  `18` → `NavigationRootFragment.Y/i9` (5216–5219,6115–6118) отправляет
+  missed-call count `06 0A`, а не запускает музыку; нового media API для него нет.
+- **INFOTAINMENT не стал firmware mode.** Это enum `zif.b`, устанавливаемый
+  `SsidScanActivity.G0` при сетевом подключении. `clk.Q/Z/a0` разбирают
+  `09 04/06` отдельными навигационными путями, не устанавливают media mode
+  и не служат основанием останавливать media collector. Совместный рендер
+  и переходы media/video по-прежнему требуют этапа 7.
+
 ## 2. Инварианты, которые нельзя нарушить
 
 1. Все control packets, включая media events, проходят через единственный
@@ -106,7 +209,8 @@ Heartbeat отправляет захваченные константы `05 4C 
    не обходят writer.
 4. `Heartbeat` сохраняет 11 TLV, их порядок, `segCount = 11`, статические
    `06 01/03/04/0F` и захваченные burst-значения. Динамичны только `05 4C` и
-   `05 1B`.
+   `05 1B`. Это контракт порта: условные 9/10/11 TLV и omission громкости
+   оригинала (§1.2) не переносить.
 5. `VolumeLevel.encode(current: Int, min: Int, max: Int): Int?`: invalid
    `min < 0 || max <= min` → null; иначе `current <= 0` → `0x10`.
    Для положительного current: clamp в `min..max`, корзина
@@ -127,16 +231,21 @@ Heartbeat отправляет захваченные константы `05 4C 
    активной поездки; active-ride stop очищает его и pending art.
 8. Старый controller отписывается до rebind; collector существует до start.
    Per-token counter/cache сбрасываются при switch/stop (отклонение от оригинала);
-   initial metadata snapshot обходит counter. Каждый callback, включая null,
-   увеличивает counter; первый пропускается, второй обрабатывается и сбрасывает
-   counter. Обработанный null очищает state (отклонение от оригинала).
+   initial metadata snapshot обходит counter, но проходит общий dedup.
+   Каждый callback, включая null, увеличивает counter; первый пропускается,
+   второй обрабатывается и сбрасывает counter. Обработанный null очищает state
+   (отклонение от оригинала); прямой initial null также очищает state.
 9. Dedup: nonnull mediaId без учёта регистра + nonnull raw title с учётом регистра,
    до art; late art/artist/album/advertisement changes могут быть потеряны.
-   Только все три поля null означают inactive; пустые строки — не null.
+   Только все три поля null означают inactive, даже при advertisement≠0;
+   пустые строки — не null, whitespace — не empty. Advertisement отсутствует
+   или равен 0 → normal; любой numeric nonzero → advertisement.
    Оригинальные tuple `(album,title,artist)`: normal; no-title
-   `("", "Now Playing", "")`; advertisement nonzero `("Advertisement","","")`;
-   IllegalStateException `("NowPlaying","","")` (album slot, не обязательно clear art).
-   Framework exceptions проверять через seam отдельно от безопасного art encoder.
+   `("", "Now Playing", "")`; advertisement `("Advertisement","","")`.
+   Узкий IllegalStateException fallback отправки — `("NowPlaying","","")`
+   в album slot, только карточка, без active/marker/clear-art (§1.2).
+   Не распространять эту ветку на ошибки getters/thumbnail: они вне catch
+   оригинала. Safe art encoder result и legacy fallback проверяются отдельно.
 10. Единственный authoritative nullable playback — `DashChrome.mediaPlaying`;
     NowPlaying не содержит второго playing. PLAYING/PAUSED → active + indicator;
     OTHER/null callback → active без нового indicator. Initial known playback
@@ -145,12 +254,16 @@ Heartbeat отправляет захваченные константы `05 4C 
     предыдущего, но обслуживает pending projection/buttons/heartbeat между chunks;
     не держит весь transfer внутри delay-loop, не использует Thread.sleep.
     4 Hz и ACK latency проверяются по timestamps с max-size art, не по count.
+    Это scheduling-контракт порта: оригинал задерживает producer после enqueue,
+    а не гарантирует 10 ms между отправками отдельного sender.
 12. Call answer/reject precedence и текущие `_isLooseNextButton`/
     `_isLoosePreviousButton` не меняются до hardware gate. Новые direct API
     доступны независимо от текущего remap.
     ACK-before-forward — намеренный существующий контракт порта, сохраняется,
-    хотя оригинал выполняет action-before-ACK. Будущий official mapping использует
-    stateful `mediaActive`, не непустой title; mute не требует controller.
+    хотя оригинал выполняет action-before-ACK. Будущий mapping использует
+    stateful `mediaActive` для `05/06/07/09/0A`, не непустой title; это политика
+    порта вместо original listener gate. Mute и call-volume этим media gate
+    не ограничиваются; mute не требует controller.
 
 Механическая проверка: `K1GGoldenTest`, pure tests helpers, `DashSessionTest`,
 provider/reducer tests, Dart button tests, `flutter analyze`,
@@ -220,17 +333,26 @@ snapshot и безопасными Android adapters.
   невозможно получить без следующего callback — cutover не завершён.
 - [ ] `[auto]` Реализовать bind/rebind/destroy/stop transitions, выбор
   `sessions.firstOrNull()`, active + current metadata/playback публикацию и
-  тихий no-op без notification access.
+  тихий no-op без notification access. Не переносить stale token/controller
+  при пустом списке, двойной inactive холодного старта и отсутствие unregister
+  при stop (§1.2); старый callback после switch/stop не меняет новый snapshot.
   **Что опровергнет посылку:** если старый callback способен публиковать после
   смены token, порядок unsubscribe/register считается сломанным.
 - [ ] `[auto]` Реализовать callback/caches/null-vs-blank и точные fallback tuples
-  по §2.8–9; не смешивать альтернативный старый `x9k.A1` с service path.
+  по §2.8–9; не смешивать `bluconnect.djf.A1` (старое имя `x9k.A1`)
+  с service `REForeGroundService.A`. Metadata event: card→marker→art при наличии,
+  без дополнительного active; bind/playback публикуют active отдельно.
   **Что опровергнет посылку:** direct initial snapshot теряется из-за counter
   или null и empty имеют один результат — reducer не соответствует контракту.
 - [ ] `[auto]` `AlbumArtEncoder.encode(bitmap: Bitmap?): ByteArray?` через seam:
-  thumbnail/scaled75×75, JPEG quality50; null/empty/exception/>65535 → null,
-  metadata сохраняется. Framework failure не смешивать с оригинальным
-  IllegalStateException tuple; safeencoder result тестировать отдельно.
+  thumbnail/scaled75×75 с filter=true, JPEG quality50;
+  null/failed-compress/empty/exception/>65535 → null, metadata сохраняется.
+  Сохранить текущий fallback порта `ALBUM_ART → ART → DISPLAY_ICON`;
+  оригинал читает только `ALBUM_ART`, это не основание сужать поддержку.
+  Не recycle-ить заимствованный metadata Bitmap; собственные временные bitmap
+  освобождать с учётом alias входа/thumbnail/scaled, только после компрессии.
+  Framework failure до send catch, safe encoder result и узкий legacy
+  IllegalStateException fallback не объединять в одну ветку.
   **Что опровергнет посылку:** если Android framework не позволяет стабильно
   тестировать bitmap conversion на JVM, оставить framework call behind seam и
   тестировать reducer/result contract.
@@ -239,13 +361,19 @@ snapshot и безопасными Android adapters.
   PLAYING → pause, любой другой nonnull → play; volume controller.adjustVolume
   ±1 с FLAG_SHOW_UI=1; mute через AudioManager STREAM_MUSIC, isStreamMute →
   ADJUST_UNMUTE(100), иначе ADJUST_MUTE(-100), flags=0, без controller gate.
-  Ошибки adapters → тихий no-op; не добавлять media FGS.
+  Ошибки adapters → тихий no-op (защита порта, не гарантия оригинала);
+  сохранить эту защиту и для existing skipNext/skipPrevious. Не добавлять media FGS.
   **Что опровергнет посылку:** mute без controller не работает или exception
   выходит наружу — adapter нарушает контракт.
 
-**Готово:** provider/reducer tests покрывают no access, no session, bind/rebind,
-dedup, advertisement, fallback, PLAYING/PAUSED/OTHER, destruction и stop;
-Android live `MediaSession` не нужен для JVM tests.
+**Готово:** provider/reducer tests покрывают no access, bind/rebind, пустой
+список после bound-controller, late callback после switch/stop; initial null
+и второй callback null; обход counter начальным snapshot; all-null + ad≠0,
+empty/whitespace title, null/empty id, case-only id/title и late art/artist/album/ad
+при прежней паре id/title. Отдельно проверены границы fallback/ошибок encoder,
+PLAYING/PAUSED/OTHER, next/previous вне PLAYING и mute без controller.
+Android live `MediaSession` не нужен для JVM tests; bitmap alias/ownership
+проверяется Android smoke, а не mock-echo.
 
 ### Этап 3 — Single-writer session и media forwarding [auto]
 
@@ -308,6 +436,8 @@ timestamp projection interval ≤250 ms и button receipt→ACK ≤250 ms при
   AudioManager: STREAM_MUSIC→05 4C, STREAM_VOICE_CALL→05 1B, temp25;
   nullable VolumeLevel/exception каждого stream независимо fallback13/19.
   Подключить live supplier вместо captured этапа3.
+  Не переносить original omission volume TLV или условный header count;
+  фиксированный состав heartbeat проверять также при ошибке одного stream.
   **Что опровергнет посылку:** если `AudioManager` отсутствует или getter
   бросает exception, tick loop не должен падать и должен отправить fallback.
 - [ ] `[auto]` Live supplier работает на каждом streaming heartbeat; не вводить
@@ -377,8 +507,10 @@ public Dart façade, fake-platform tests зелёные; generated source text �
   throwaway smoke. Проверки не зависят от live `MediaSession` или source text.
   **Что опровергнет посылку:** mock echo/wiring-only tests не считаются покрытием
   поведения и удаляются.
-- [ ] `[auto]` Обновить `spec/multimedia.md` §8/§9 только фактами текущей
-  реализации и явно оставить hardware-dependent claims открытыми.
+- [ ] `[auto]` Обновить `spec/multimedia.md`: источники и уточнения оригинала
+  в §1–7 по сверке §1.2 этого плана; §8/§9 — только фактами текущей реализации.
+  Не выдавать 10.1.23-статику за проверку порта; hardware-dependent claims
+  явно оставить открытыми.
   **Что опровергнет посылку:** если факт известен только из codec/unit test,
   его нельзя записывать как hardware support.
 - [ ] `[auto]` Обновить русскую и английскую копии hardware checklist только
@@ -432,6 +564,8 @@ public Dart façade, fake-platform tests зелёные; generated source text �
   Обычный APK с 1 Hz не доказывает retention.
 - [ ] `[ride]` Отдельно проверить inactive `05 17 AA`, PLAYING/PAUSED indicator,
   no-art→art→no-art, singleton/multichunk/exact2000 art и media/video interaction.
+  В последнем опыте фиксировать входящие `09 04/06`, продолжение media packets
+  и фактическую картинку, не объявляя эти команды guessed media-mode boundary.
   **Что опровергнет посылку:** marker/art игнорируется или ломает карту —
   отклонить соответствующий path по screen+pcap, не менять соседние branches.
 - [ ] `[ride]` Независимые music/call volume min/max/silence, включая mute без
@@ -443,9 +577,11 @@ public Dart façade, fake-platform tests зелёные; generated source text �
 - [ ] `[ride]` Official buttons проверять ТОЛЬКО явно gated fixture mapping:
   `03/04` call-volume, `05` play/pause, `06/07` music volume, `08` mute,
   `09/0A` next/previous; active/no-media/ringing call и call precedence.
-  Phone action и ACK-before-forward проверить вместе с pcap; mediaActive
-  определяет gate, пустой title не выключает его. Старый mapping APK не
-  доказывает новый mapping.
+  Проверять отдельно original code→phone action и портовые ACK-before-forward/
+  mediaActive-gate для `05/06/07/09/0A`: это не gate оригинального listener.
+  Пустой title не выключает mediaActive; mute/call-volume доступны без него.
+  Phone action и ACK проверить вместе с pcap; старый mapping APK не доказывает
+  новый mapping. Код `18` не считать play и не добавлять как alias.
   **Что опровергнет посылку:** любое расхождение оставляет текущий mapping,
   direct API доступны независимо; не принимать alias как доказательство.
 - [ ] `[ride]` Записать findings и обновить обе checklist copies, не объявляя

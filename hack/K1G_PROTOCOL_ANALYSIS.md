@@ -1,11 +1,13 @@
 # K1G: разбор протокола оригинального приложения и отличия snatch-dash
 
-**Дата исследования:** 19.10.2026.  
-**Объект:** Royal Enfield App 10.1.22(8), versionCode 189, пакет
-`com.royalenfield.reprime`; ARM64 split APK и декомпилированный DEX в `re_app/`.  
+**Дата первоначального исследования:** 19.10.2026.  
+**Повторная сверка:** 22.10.2026, по Royal Enfield App **10.1.23(45)**,
+versionCode **193**, пакет `com.royalenfield.reprime`, APK/Java/smali в
+`re_app_new/` и текущему Kotlin-порту. Первоначальные anchors относятся к
+10.1.22(8), versionCode 189, в `re_app/`; новые anchors приведены отдельно.  
 **Статус:** исследовательский отчёт, не нормативная спецификация прошивки и не
-план изменения движка. Код приложения и диссектор по результатам этого разбора
-не менялись.
+план изменения движка. Исправляется только отчёт; код приложения и диссектор
+по результатам повторной сверки не менялись.
 
 Действующий контракт порта — [spec/k1g_protocol.md][protocol-spec]. Номера его
 инвариантов этот отчёт не изменяет. Порядок реального захвата —
@@ -32,6 +34,14 @@
 Новый PCAP, Android runtime trace, дамп прошивки и проверка на физической
 приборке в этой сессии не выполнялись. Нельзя превращать условие в коде
 отправителя в доказательство того, что прошивка требует именно такое условие.
+
+Повторная сверка также статическая. APK 10.1.23(45) имеет SHA-256
+`889b9c42f21ef426c114cadac788c9c6220a29dc686e8a5b0e3fbd07a0e4f404`.
+REA 6.7.0 идентифицировал архив и манифест через Apktool 3.0.3; method/xref
+provider JADX недоступен без отдельно поставляемого `jadx-headless-mcp 0.7.1`.
+Поэтому DEX-поведение ниже сверено по локальным Java/smali, а не выдано за
+новую REA-декомпиляцию Java. Native-путь Ghidra 12.1.4 доступен и перепроверен
+отдельно (§13); наличие одного provider не означает доступность другого.
 
 ### 1.1. Основные точки входа
 
@@ -101,6 +111,32 @@ DEX — его исполняемые сериализаторы, crypto-выз�
 Android MediaCodec, JCA и сокеты могут исполнять платформенный native code;
 это не отдельная K1G-реализация в найденной библиотеке Aptener.
 
+**Повторно 22.10.2026:** библиотека из `re_app_new/native_lib/` и одноимённый
+член `re_app_new/split_config.arm64_v8a.apk` имеют тот же SHA-256, что указан
+выше; в split девять `.so`. Оба JNI-экспорта и `_INIT_2` снова разобраны
+REA/Ghidra. Новый `BluConnectServiceImpl` также вызывает `loadConfig(false)`
+и разбирает три части для Firebase (`java:324–331`); это не K1G crypto.
+
+### 1.3. Anchors повторной сверки 10.1.23(45)
+
+Имена и номера строк в первоначальных разделах относятся к 10.1.22, если
+версия явно не указана. Таблица ниже связывает их с проверенными путями нового
+APK; это семантическое соответствие, не доказательство идентичности всего класса.
+Java-корень — `re_app_new/jadx_out/sources/`, smali-корень —
+`re_app_new/apktool_out/`. Локальные выгрузки не входят в git.
+
+| Раздел | Старые имена → проверенные источники 10.1.23 |
+|---|---|
+| §2, оболочка/очереди | `hbg→`[w2c](../re_app_new/jadx_out/sources/bluconnect/w2c.java); `jbg→`[y2c](../re_app_new/jadx_out/sources/bluconnect/y2c.java) `m/n/o/w`; `zx4→`[sw2](../re_app_new/jadx_out/sources/bluconnect/sw2.java) `c/d/h/i/run`; `z9q→`[blk](../re_app_new/jadx_out/sources/bluconnect/blk.java) `k/run` |
+| §3–4, auth/VSD | `aaq→`[clk](../re_app_new/jadx_out/sources/bluconnect/clk.java) `B/T/X/Y/o0`; `idk→`[omf](../re_app_new/jadx_out/sources/bluconnect/omf.java) `c/d/h/j/k/m`; `pbh→`[l3d](../re_app_new/jadx_out/sources/bluconnect/l3d.java) `f/n`; критические gates — `smali_classes8/bluconnect/clk.smali:199–305` |
+| §5, действия | [NavigationRootFragment](../re_app_new/jadx_out/sources/com/royalenfield/reprime/ui/home/navigation/fragment/NavigationRootFragment.java): `C2/L`, `Y/i9`; [NavigationFragment](../re_app_new/jadx_out/sources/com/royalenfield/reprime/ui/home/navigation/fragment/NavigationFragment.java): `W8/X8/Y9/Z9`; switch `clk.S` — `smali_classes8/bluconnect/clk.smali:1697–2118`, ответы `2930–3028` |
+| §6, настройки | `ykq→`[awk](../re_app_new/jadx_out/sources/bluconnect/awk.java) `340–569`; `yah→t2d` prefs; builder `w2c:953–1205`, low-fuel/ABS `clk:1117–1137,1518–1547` |
+| §7–8, nav/text | `kbg→`[z2c](../re_app_new/jadx_out/sources/bluconnect/z2c.java) `79–325`; `lbg→a3c`, `fag→u1c`, `j2h→guc`, `n2h→kuc`; `y2c.c/l` связывают caller и encoder |
+| §8–9, media/call/status | [REForeGroundService](../re_app_new/jadx_out/sources/com/royalenfield/reprime/ui/home/navigation/service/REForeGroundService.java) `b/d/A/J/x/y/S`; `t9k→zif`; `nbg→`[c3c](../re_app_new/jadx_out/sources/bluconnect/c3c.java) `a/c/d/e/f`; `x9k→djf` bitmap helpers; [b52](../re_app_new/jadx_out/sources/bluconnect/b52.java) и [r42](../re_app_new/jadx_out/sources/bluconnect/r42.java) — call events; `c5r→fgl` weather mapping |
+| §10, FOTA | `u59→`[vk6](../re_app_new/jadx_out/sources/bluconnect/vk6.java) `b.a/K/Z/g0/y0`, smali `smali/bluconnect/vk6$b.smali`; raw splitter `blk.k`, `smali_classes8/bluconnect/blk.smali:509–680` |
+| §11, encoder/RTP | `r2g→`[gub](../re_app_new/jadx_out/sources/bluconnect/gub.java) `d/e/f`; `gwq→j7l`, `mbb→`[a78](../re_app_new/jadx_out/sources/bluconnect/a78.java), `vzn→`[hbi](../re_app_new/jadx_out/sources/bluconnect/hbi.java), `n6g→cyb`; encoder facade нового пути `w9f→gub` (тождество старому `q0k` не установлено); RTP smali — `smali_classes4/bluconnect/` |
+
+
 ## 2. Транспорт, оболочка и счётчики
 
 ### 2.1. Адреса и сокеты
@@ -167,9 +203,11 @@ ASCII-цифры, строки, флаги, шифротекст и прикла
 к seq и общей retransmit-очереди в этом пути не найдено. Ответы кнопок,
 crypto-повторы, периодические состояния и FOTA имеют отдельную семантику.
 
-У FOTA другая очередь: глобальный режим `I2` очищает/подавляет обычную очередь,
-а `zx4.h()` отправляет FOTA-байты без обычного patch seq. Нельзя переносить
-свойства normal-control sender на все сообщения обновления прошивки.
+Для transfer-сообщений FOTA есть отдельная очередь: `zx4.h()` (10.1.23:
+`sw2.h`) отправляет bytes без patch seq; глобальный режим `I2` (новый `z2`)
+очищает/подавляет normal queue. Однако начальные `0A01/0A02` из нового
+`vk6` идут **normal-путём с patch byte16**. RX `0B` снимает этот режим
+до state gate; это не непрерывная блокировка normal traffic на весь update.
 
 ### 2.4. Проверенные примеры и несогласованные длины
 
@@ -187,8 +225,9 @@ crypto-повторы, периодические состояния и FOTA и�
 |---|---|---|
 | Обычный AuthRequest | 22 байта, 2 сегмента | Совпадает; один сегмент служебный |
 | Текущий captured heartbeat | 73 байта, 11 сегментов | 12 физических TLV с учётом `02/01`; count сохранён из захвата |
-| `hbg.d`, `U2…c3`, `k0`, `k1` | Длины полного будущего сообщения | Незавершённые runtime-префиксы; не считать готовыми пакетами |
+| `hbg.d`, `U2…c3`, `k0`, `k1` | Объявления длины будущего сообщения | Незавершённые runtime-префиксы; их внутренняя согласованность не гарантирована |
 | `hbg.o3`, запрос VSD | 67 байт, 12 сегментов | 72 байта, 12 TLV; длина неконсистентна |
+| Chassis echo `U2` (подтверждено `w2c.U2`) | outer_len 36, `06/13 length=17` | Для 17 plaintext-байт полная длина 38; шаблон внутренне противоречив |
 
 `o3` состоит из служебного сегмента и одиннадцати `0E/01…0B`, каждый с одним
 нулевым байтом. Путь достижим: успешный auth → `NavigationRootFragment.e2()` →
@@ -200,6 +239,12 @@ patch seq → send. `pbh.f()` лишь переводит hex в bytes, длин
 Источники: `hbg.java:555`; `NavigationRootFragment.java:5630–5632,5759–5774`;
 `pbh.java:147–159`; `zx4.java:143–154`. Captured-count особенности порта
 описаны в `K1GPacket.build()` и `Scripts.initialBurst()`.
+
+В 10.1.23 запрос VSD достижим через `clk.X → Root.h2 → Root.Y8` при
+ненулевых Context и vehicle listener; `l3d.f(w2c.o3)` и `sw2.i` длину
+не исправляют. Для `U2` caller так же просто дописывает расшифрованные bytes:
+`0024 … 0613 0011` требует минимум 38 байт при объявленных 36.
+Это отдельная ошибка шаблона, даже если входной chassis имеет ожидаемую длину.
 
 ## 3. Авторизация: сообщения, криптография и повторы
 
@@ -251,8 +296,8 @@ singleton не найдено. Поэтому точнее говорить о *
 
 | Стадия | Оригинал | Текущий порт |
 |---|---|---|
-| До RSA offer | Таймер запроса 3 с, до пяти повторов; входящий `07` отменяет ожидание «ничего не получено» | Запрос раз в 2 с, пока не получена часть ключа; общее ожидание авторизации 15 с |
-| Ciphertext отправлен | Отдельный таймер 3 с повторяет тот же ciphertext, до пяти повторов | Эквивалентного периодического повтора ciphertext в исследованном пути нет |
+| До RSA offer | Первичная отправка и максимум пять повторов через nominal 3 с; первый обработанный `07`, даже неизвестный sub, снимает ожидание | Запрос раз в 2 с, пока не получена часть ключа; ожидание 15 с после initial burst |
+| Ciphertext отправлен | Первичная отправка и максимум пять повторов того же ciphertext через nominal 3 с; seq меняется при каждой отправке | Эквивалентного периодического повтора ciphertext в исследованном пути нет |
 | Rejected | Отдельный счётчик в `aaq.l`, до пяти новых запросов; таймер ciphertext отменяется | Сброс offer-state и до пяти запросов после reject |
 | Повтор полного RSA offer | Оригинал может снова вызвать генерацию ciphertext с тем же singleton AES | `keySent` подавляет повтор до reset |
 | Accept | Весь value равен `01` | Первый байт равен `01`; session дополнительно проверяет наличие `sessionKey` |
@@ -261,11 +306,18 @@ singleton не найдено. Поэтому точнее говорить о *
 `NavigationRootFragment.java:2499–2527,2842–2854,4258–4271,5714–5726`;
 `DashAuth.ingest/reset/buildKeyPacket()`; `DashSession.dispatch()`.
 
+В новом Root у request/ciphertext разные Handler runnable, но общий `F2`,
+сбрасываемый на переходах; отдельный reject-counter остаётся в `clk.l`.
+Три секунды — задержка планирования Handler, не гарантия точного wire interval.
+
 Есть дополнительная граница защиты порта: `DashAuth.reset()` очищает RSA-пару
 и `keySent`, но не `sessionKey`; session принимает accept при ненулевом
 `sessionKey`. **[INFERENCE]** После reject эта проверка доказывает наличие
 ключа одной из прошлых попыток, а не отправку ключа текущей попытки. Это
 вывод по состояниям кода, не воспроизведённая атака и не наблюдение прошивки.
+Более того, `sessionKey` присваивается до RSA encrypt и помещения ciphertext
+в outbox (`DashAuth.buildKeyPacket`): даже в первой попытке ненулевой ключ
+сам по себе не доказывает состоявшуюся UDP-отправку.
 
 ### 3.4. Что авторизация не доказывает
 
@@ -314,9 +366,12 @@ Aggregate gate проверен по `smali_classes12/bluconnect/aaq.smali`.
 | `0F 0B` | UTF-8 variant; удаляется один конечный NUL, если присутствует | Нет в этом обработчике | — |
 
 FOTA-строка для интерфейса преобразуется, но в `06/1B` возвращаются полные
-расшифрованные байты, не отформатированная строка. По завершении aggregate-разбора
-вызываются vehicle-parameter callbacks, отменяется VSD timeout и сохраняется
-cluster record.
+расшифрованные байты, не отформатированная строка. Завершение aggregate-пути
+условно: при наличии vehicle listener вызывается его callback; внутри этой
+ветки при наличии auth listener вызывается completion. В 10.1.23 это
+`Root.h0 → Ha`: отмена VSD timeout и сохранение cluster record при ненулевом
+Context. Завершение этого пути не доказывает успешную расшифровку всех полей.
+VSD query имеет собственные повторы через Handler: initial + максимум пять.
 
 Источники: `aaq.java:98–108,818–832,905–911,1239–1429`;
 `hbg.java:272–375`; `NavigationRootFragment.f0()/Na()`.
@@ -327,12 +382,17 @@ cluster record.
 `doFinal()` они возвращают соответственно пустую строку и `{00}`. Копирование
 IV и инициализация Cipher находятся вне этих локальных catch, поэтому нельзя
 говорить, что любые короткие/повреждённые данные безопасно проглатываются.
+Кроме того, `0F0B` обращается к последнему plaintext-байту без проверки
+пустого массива (`clk.java:1256–1273`). Gate из hex-подстрок не гарантирует
+наличие настоящих девяти TLV: маркеры могут встретиться внутри ciphertext.
 
 Оригинал нередко расшифровывает поле дважды: для строки и для echo bytes.
 Echo `06/13…1B` отправляется **открытым текстом**, с заранее заданными длинами,
 склеенными с фактическим результатом расшифровки без проверки его длины.
 Шифрование входящего `0F` поэтому не означает сквозную конфиденциальность
 этих данных на WiFi.
+Chassis echo дополнительно наследует внутренне неверный `U2` (§2.4);
+normal sender меняет только seq, не исправляет outer/TLV lengths.
 
 **[порт]** Любой `0F` классифицируется как `Identity`, независимо от sub;
 предпринимается AES-расшифровка для DebugLog. Нет эквивалентных aggregate gate,
@@ -368,13 +428,16 @@ Echo `06/13…1B` отправляется **открытым текстом**, 
 `NavigationFragment.S8()` регистрирует наблюдатель; `T8()` при нужном состоянии
 вызывает остановку, `V9()` освобождает encoder и отправляет `06/05=AA`.
 Это подтверждается действиями, не только текстом log.
+В 10.1.23 соответствующая цепочка — `Root.C2 → NavigationFragment.W8/X8 →
+Y9 → Z9`; `Y9` запускает отдельный Thread. Ответ `06/12` следует после
+публикации события, но не подтверждает завершение остановки encoder.
 
 Источники: `aaq.java:424–475,835–850`;
 `NavigationRootFragment.java:4228–4238,7628–7632`;
 `NavigationFragment.java:1865–1907,3844–3851`.
 Dispatch и сравнения с `55` проверены по smali.
 
-**Граница вывода:** исходник приложения 10.1.22 не устанавливает IDR/P-frame
+**Граница вывода:** исследованные 10.1.22 и 10.1.23 не устанавливают IDR/P-frame
 ACK или decoder-open semantics этих двух команд. Текущий порт называет их
 `DecoderOpened(keyFrame=...)`, сохраняет ответы и обновляет счётчики, но
 не выполняет соответствующие оригинальные stop/compass действия.
@@ -391,6 +454,9 @@ ACK или decoder-open semantics этих двух команд. Текущий
 Для обычного однобайтного события результат одинаков; длинные формы требуют
 учёта направления и фактического захвата. Switch в JADX повреждён; карта
 проверена по `smali_classes12/bluconnect/aaq.smali`, метод `S()`.
+В 10.1.23 switch также проверен по `clk.smali:S`. Media helpers и compass
+дополнительно ищут полный literal `09000001XX`; первый байт нужного кода
+при объявленной length=2 сам по себе не гарантирует действие/ACK оригинала.
 
 | Code | Эффект оригинала | Непосредственный ответ |
 |---|---|---|
@@ -408,7 +474,7 @@ ACK или decoder-open semantics этих двух команд. Текущий
 | `14` | Zoom out | `06 80 14` |
 | `15` | Recenter | `06 0C 30`, затем `06 80 15` |
 | `17` | Establish call | В показанном callback только log, без ответа |
-| `18` | Start music | Вызов `m9()`, прямого echo в этом callback нет |
+| `18` | Вызов `m9()` (10.1.23: `i9()`): отправка счётчика missed calls `06/0A`; подпись log «start music» не доказывает запуск музыки | Прямого button echo в callback нет |
 | `19` | Navigation notification/destination action | `06 80 19` |
 | `20` | Remove waypoint | `06 80 20` |
 | `21` | RSA-call action: создаётся call intent | `06 80 21`; запуск intent этим callback не доказан |
@@ -460,11 +526,12 @@ ACK или decoder-open semantics этих двух команд. Текущий
 В индексированных запросах те же байты обозначают классы списков. Нельзя вводить
 глобальное правило «55=true, AA=false» для всего K1G.
 
-В `hbg.a0()` исходящий пакет содержит восемь TLV в порядке
-`04/08 → 04/09 → 04/01 → 04/02 → 04/03 → 04/04 → 04/06 → 04/07`,
-со служебным сегментом count равен 9. Настройки отправляются при состоянии
-INFOTAINMENT в показанном пути. RX сравнивается с preferences и может вызвать
-повторную отправку app settings.
+В `hbg.a0()` (10.1.23: `w2c.a0`) при распознанных preferences получаются
+восемь TLV в порядке
+`04/08 → 04/09 → 04/01 → 04/02 → 04/03 → 04/04 → 04/06 → 04/07`.
+Header count=9 захардкожен: неизвестные scalar preferences могут опустить
+поле без пересчёта count. Настройки отправляются при INFOTAINMENT в показанном
+пути. RX сравнивается с preferences и может вызвать повтор app settings.
 
 В оригинальных literal shortcuts есть несогласованные формы `030A0004...`
 наряду с подробным пятифлаговым разбором `030A`; detailed POI-путь использует
@@ -478,7 +545,7 @@ INFOTAINMENT в показанном пути. RX сравнивается с pr
 | RX | Длина в распознаваемом шаблоне | Реальный обработчик |
 |---|---:|---|
 | `0C 05` | 1 | Low-fuel mode. `55` включает, любое другое значение снимает активное состояние. При переходе off → on запрашиваются gas-station POI; повторный on не дублирует запрос |
-| `0C 14` | 1 | `00`: PrefAbs=true; `01`: PrefAbs=false; `02`: EcoAbs=true; `03`: EcoAbs=false; после распознанного изменения уведомляется observer |
+| `0C 14` | 1 | `00`: PrefAbs=true; `01`: PrefAbs=false; `02`: EcoAbs=true; `03`: EcoAbs=false; после распознанной команды уведомляется observer, даже если значение уже совпадало |
 | `0C 01` | Префикс объявляет 1 | Константа есть, содержательный обработчик не найден |
 | Остальные sub | Здесь не установлена | Исследованный normal dispatcher не даёт достоверной семантики/масштаба/единиц |
 
@@ -501,7 +568,7 @@ Low-fuel — boolean mode, не измеренный уровень топлив
 
 | TLV | Представление | Условие / замечание |
 |---|---|---|
-| `05 01` | Road/instruction text + NUL | Особый encoder, см. §8 |
+| `05 01` | Road/instruction text + NUL | Null/empty опускаются; особый encoder, см. §8 |
 | `05 02` | Primary maneuver, 1 байт | Не посылается для `-1` |
 | `05 03` | Secondary maneuver, 1 байт | Посылается всегда; `-1` становится `FF` |
 | `05 04` | Primary distance, u16 BE | Не посылается при `<=0` |
@@ -512,17 +579,32 @@ Low-fuel — boolean mode, не измеренный уровень топлив
 | `05 09` | Remaining distance, u16 BE | Не посылается при `<=0` |
 | `05 46` | Remaining-distance unit, 1 байт | Zero опускается |
 | `05 0A` | Decimal separator flag, 1 байт | Raw hex `55` / `AA` |
-| `05 0C` | Maneuver proximity/progress, 1 байт | Когда вычисленное значение >=5, caller подавляет secondary maneuver |
+| `05 0C` | Maneuver proximity/progress, 1 байт | `-1` опускается; когда вычисленное значение >=5, caller подавляет secondary maneuver |
 | `05 0B` | Шесть ASCII-цифр `HHMMDD` | Duration: часы, минуты, дни |
 | `05 55` | Duration unit selector, 1 байт | `10` / `20` / `30` |
-| `06 05` | Projection flag, 1 байт | Из `lbg.o`, всегда в конце |
+| `06 05` | Projection flag, 1 байт | Из `lbg.o`, всегда в хвосте перед `06/0D` |
 | `06 0D` | Второй display boolean, 1 байт | Из `lbg.p`; полная firmware-семантика не установлена |
 
 Есть source-level несогласованность ETA format: caller выдаёт `10/20/30`, а
 encoder сравнивает с `1/2`. В исследованном обычном пути получается `05/54=30`;
-это поведение кода, не доказательство задуманной enum-семантики прошивки.
+при этом сами часы caller при 12-hour настройке остаются 12-hour. Это ошибка
+согласования caller/encoder, не доказательство задуманной enum-семантики прошивки.
 
 Источники: `kbg.java:85–314`; `jbg.c()`; `j2h.java`; `n2h.java`.
+
+**[порт]** Динамическая навигация перенесена лишь частично:
+
+| Поля | Текущий `K1GCodec` |
+|---|---|
+| Secondary maneuver / distance `05/03,05/05` | RouteCard сохраняет `34` / `0000`, не следующий манёвр SDK |
+| Progress `05/0C` | Capture-константа `04` |
+| Duration `05/0B,05/55` | `"001000"` / `20`, не live duration |
+| Primary distance `05/04` | Отдельный ActiveNav, не RouteCard |
+| ETA format `05/54` | `30`; Dart передаёт 24-hour часы |
+| Separator / second display boolean | `05/0A=55`, `06/0D=AA` |
+
+Живые maneuver/ETA/remaining distance не делают перечисленные поля живыми.
+Источники: `DashMessage.kt:179–224`, `DashSession.routeCard/activeNav`.
 
 ### 7.2. Контекст списков и имена порта
 
@@ -541,7 +623,7 @@ encoder сравнивает с `1/2`. В исследованном обычн�
 | Producer | Оригинал | Текущий порт |
 |---|---|---|
 | Начало подключения | Hostname → clock → `05/57=55`, отдельные projection-off/auth ветки | Скрипт из 9 команд, пауза 20 мс после каждой |
-| Projection-live `05/56=55` | После подачи bitmap энкодеру, cadence зависит от frame feed; есть дополнительный fallback | Во время STREAMING каждые 250 мс |
+| Projection-live `05/56=55` | После подачи bitmap, delayed fallback и отдельные nav producers (`10.1.23: k9/l9/u7/v6`); не только frame timer | Во время STREAMING каждые 250 мс |
 | Nav metadata | Callback Google Navigation SDK | RouteCard, затем ActiveNav раз в секунду |
 | Статус телефона/погода | Fixed-rate 1000 мс, начальная задержка 0 | Heartbeat раз в секунду, также до STREAMING |
 | Музыка | Metadata/playback callbacks, dedup | NowPlaying раз в секунду при наличии состояния |
@@ -565,8 +647,9 @@ context 40 мс → empty lists 40 мс → четыре off route card с па�
 
 При остановке оригинал освобождает encoder и отправляет projection-off;
 некоторые UI-пути сначала отправляют projection-stop. Это не доказательство
-единой пары на каждом lifecycle-переходе. Порт явно ставит в очередь
-`05/56=AA`, затем `06/05=AA`.
+единой пары на каждом lifecycle-переходе. При guarded farewell-остановке порт
+ставит в очередь `05/56=AA`, затем `06/05=AA`; это не обещание отправки при
+любой потере соединения.
 
 ## 8. Кодировки текста: три разных пути
 
@@ -596,16 +679,39 @@ ASCII-примеров не позволяет объявить протокол
 Это один байт на UTF-16 unit с substitution, не UTF-8.
 
 Hostname оригинала ограничен 19 Java chars и заканчивается NUL.
-Periodic active-call text использует аналогичный путь. Для всех остальных
-call-name event paths одна общая подтверждённая кодировка не установлена:
-там есть отдельные helpers, поэтому обобщать periodic-путь нельзя.
+Periodic active-call text использует аналогичный plaintext-путь.
+Но event caller `05/22` в 10.1.23 идёт иначе:
+`NavigationRootFragment.onCallDialed/onIncomingCall` → `b52.e/h` →
+`r42.h` → `omf.g` → `r42.y/d`. `omf.g` преобразует каждый UTF-16 unit
+в один байт (char <255 — напрямую, иначе `FF`), добавляет NUL **до**
+AES/CBC/PKCS7Padding и возвращает `IV[16] || ciphertext`.
+Название `encrypt2` здесь действительно соответствует шифрованию.
+
+Ограничение event name тоже отличается: `r42.h` режет имя до 19 units
+только при `length >20`; имя длиной 20 сохраняется. При пустом имени
+используется номер без этой обрезки. Следовательно, даже один sub `05/22`
+не означает единую форму value: в этих callsites есть encrypted event
+и plaintext periodic. Firmware-приём обоих форматов здесь не проверялся.
+
+Новые источники: `bluconnect/b52.java:64–72,104–113`,
+`r42.java:213–220,268–277,611–625`, `omf.java:130–159`;
+`REForeGroundService.java:423–440`.
 
 ### 8.3. Текущий порт
 
-K1GCodec использует UTF-8 с разными ограничениями: hostname 200 байт,
-route title 60 байт, media `take(20)` перед UTF-8 encoding. Это явное отличие
-от оригинала, не доказательство поддержки кириллицы прошивкой. Byte truncation
-и Java/Kotlin character truncation не взаимозаменяемы.
+**Актуально на 22.10.2026:** `K1GCodec.displayText` использует Android ICU
+`NFC; Russian-Latin/BGN; Any-Latin; Latin-ASCII`, затем ASCII с заменой
+оставшихся non-ASCII code points на `?`. Лимит применяется к результату
+транслитерации: route title — 60 байт, каждое media-поле и caller — 20 байт.
+Исходная работа ICU ограничена 4096 UTF-16 units без разрыва surrogate pair;
+ASCII fast path не требует транслитератора.
+
+Hostname остался отдельным UTF-8-путём с byte-limit 200 и NUL в конце.
+Route title/caller также заканчиваются NUL, media разделяется двумя NUL
+без терминатора после artist. Прежнее описание media как `take(20)` перед
+UTF-8 устарело после смены baseline 20.10.2026; переносить его в новые тесты
+нельзя. Это не доказательство поддержки кириллицы прошивкой и не копия
+lossy encoder оригинала. Источник: `DashMessage.kt`, `encode/displayText`.
 
 ## 9. Статус телефона, погода, музыка, звонки и обложки
 
@@ -622,12 +728,23 @@ route title 60 байт, media `take(20)` перед UTF-8 encoding. Это яв
 | `05 4C` | Music volume: `10` silent, `11…1A` buckets |
 | `05 2D` | Округлённое `t9k.i()` в двух байтах BE; более сильное назначение здесь не установлено |
 | `05 1B` | Call volume: `10…1A` |
-| `05 21` | Call state: incoming `0A`, active `14`, outgoing `1E`, no-call `32` |
+| `05 21` | В status task: incoming `0A`, active `14`, no-call `32`; outgoing `1E` отправляется отдельным call-event helper |
 | `05 4D` | В исследованных путях `32`; более глубокий смысл не установлен |
 
 WeatherEngine сворачивает коды провайдера в пять glyph-групп. `06/04` —
 не громкость, а `06/08` — не media flag. Варианты оригинального пакета имеют
 длины `003F/0044/0049` в зависимости от omission temperature/cellular.
+Mapping нового `fgl.getWeatherIconID` не является идеальной классификацией
+погоды: `MOSTLY_CLOUDY_W_FLURRIES_43` попадает в группу `02`, а несколько
+других flurries/cold/windy вариантов дают `-1` (`FF`). Названия групп в таблице
+не следует превращать в универсальное правило для всех provider codes.
+
+Шкала volume использует `D=(max-min)/10f`, но **не вычитает min из current**.
+Первый подходящий включительный диапазон выигрывает; последний — `[9D,11D]`.
+Положительный current вне диапазонов оставляет volume TLV отсутствующим.
+Выбор header `003F/0044/0049` эту дополнительную потерю не учитывает.
+Это дефект sender, а не требование копировать omission или нормализованную
+шкалу из плана порта.
 
 **[порт]** Heartbeat оставляет weather=`05`, GPS=`55`, battery=`A2`, charging=`AA`
 и другие capture-values. При default temperature=25 wire temperature=`41`.
@@ -648,23 +765,37 @@ WeatherEngine сворачивает коды провайдера в пять g
 | `05 40` | JPEG artwork fragments |
 
 Обычные поля metadata ограничены 19 UTF-16 units и проходят `pbh.n()`.
-Metadata callback обрабатывается через счётчик каждый второй раз; direct
-initial-send — отдельный путь. Все три source-поля null приводят к inactive,
-пустые строки не равны null. Dedup по mediaId/title происходит до обработки
-изображения и способен подавить обновление обложки при неизменных ключах.
-Playback callback отдельно посылает active и playing/paused.
+Metadata callback обрабатывается через счётчик каждый второй раз, включая
+увеличение счётчика на null. Обработанный callback null **игнорируется**;
+прямой initial `A(null)` отправляет inactive. Initial вызов обходит counter,
+но проходит общий dedup. All-null gate идёт до advertisement; пустые строки
+не равны null, whitespace не равен empty.
 
-Порт отправляет `title 00 album 00 artist`, UTF-8 после `take(20)`, повторяет
-карточку по таймеру. Это не byte-for-byte перенос автомата оригинала. Какой
-порядок полей рисует конкретная прошивка, статический sender не доказывает.
+Dedup требует nonnull mediaId, совпадающий без учёта регистра, и nonnull raw
+title с точным совпадением; выполняется до art/artist/album/ad updates.
+Playback callback всегда посылает active, включая null; только PLAYING/PAUSED
+добавляют `05/19`. Initial bind явно не воспроизводит текущий playback.
+
+В 10.1.23 узкий `IllegalStateException` catch вокруг сборки/отправки карточки
+и art-ветки отправляет дополнительную card-only `("NowPlaying","","")`
+в порядке album/title/artist. Getters/thumbnail extraction находятся вне
+этого catch; fallback не очищает уже поставленные в очередь art/marker.
+Источники: service Java `211–237,671–740,811–822`; smali `A:598–800`.
+
+Порт отправляет `title 00 album 00 artist`, ICU→ASCII до 20 байт на поле,
+повторяет карточку по таймеру. Это не byte-for-byte перенос автомата оригинала.
+Какой порядок полей рисует конкретная прошивка, статический sender не доказывает.
 
 ### 9.3. Звонки
 
-`05/21` передаёт состояние звонка, `05/22` — caller/contact card. Оригинал
-при завершении посылает no-call state, тогда как порт имеет отдельное
-`CallClear`, сериализуемое как `05/22=00`. В оригинале active caller может
-дублироваться в секундной периодике. Полное сравнение автоматов и исключений
-находится в [spec/multimedia.md][media-spec].
+`05/21` передаёт состояние звонка, `05/22` — caller/contact card, причём event
+и periodic value различаются (§8.2). В 10.1.23 `r42.u` отправляет выбранный
+call state, затем отдельный `05/4D=32`; завершение даёт `05/21=32`.
+Порт имеет отдельный `CallClear`, сериализуемый как plaintext `05/22=00`,
+а heartbeat всегда несёт captured `05/21=32`, не live call state.
+Active caller оригинала может дублироваться в секундной периодике.
+`spec/multimedia.md` описывает главным образом media-автомат; полного
+сравнения call FSM и всех исключений в ней нет.
 
 ### 9.4. Прикладная фрагментация обложки
 
@@ -677,9 +808,11 @@ Playback callback отдельно посылает active и playing/paused.
 | Средний | index:u8, затем image bytes | image bytes +1 |
 | Последний | `FF`, затем image bytes | image bytes +1 |
 
-Порции данных обычно до 1000 байт. Для JPEG до 1000 байт после первого
-пакета идёт отдельный пустой FF terminator. Producer спит 10 мс после enqueue;
-это не замер расстояния между датаграммами на проводе.
+Порции данных обычно до 1000 байт. Для JPEG **1…1000 байт** после первого
+пакета идёт отдельный пустой FF terminator. Пустой массив — не этот случай:
+оригинальный slicer пытается прочитать первый блок 1000 байт и выходит за
+границы; размер >65535 обрезается в BE16. Producer спит 10 мс после enqueue,
+включая последний; это не замер интервала между датаграммами на проводе.
 
 Есть source-level крайний случай: при размере **2000,3000,… байт** final remainder
 равен нулю, а код не подставляет вместо него 1000; последний полный блок
@@ -696,24 +829,28 @@ Playback callback отдельно посылает active и playing/paused.
 записи слушателю FOTA. Для последующих записей он формирует восьмибайтный
 нулевой prefix перед TLV. Обычный `aaq.b0()` для `0B` лишь логирует сообщение.
 
-`u59.b.a()` обрабатывает sub только если он совпадает с ожидаемым state `q`.
-Ниже `vN` — байт value после TLV-header, а не offset всей датаграммы.
+`u59.b.a()` (10.1.23: `vk6.b.a`) выполняет state-specific обработку sub,
+только если он совпадает с ожидаемым `q`. Но **до** проверки совпадения
+сбрасывается retry timer и снимается firmware-режим sender: несовпадение
+не означает отсутствия побочных действий. Ниже `vN` — offset внутри value,
+не всей переданной обработчику записи.
 
 | RX sub | Обработка оригинала |
 |---|---|
-| `01` | `v0=AA`: принято, переход к запросу `0A03`; `55/78` — pending |
+| `01` | `v0=AA`: принято, переход к `0A03`; pending требует одновременно `v0=55` и `v1=78` |
 | `02` | `v0=AA`: software-version response; APP version читается десятичными парами из `v13–14`, `v16–17` при соответствующем запросе |
 | `03` | `v0=AA`: supported block size из `v2,v3`, переход к transfer |
 | `04` | `v0=AA`: block ACK, u16BE block id из `v3,v4` сравнивается с ожидаемым; `v2` выбирает продолжение стадии |
 | `05` | `v0=AA`: restart/advance partition/final stage в зависимости от `v2` |
 | `06` | `v0=AA`: отправка header/следующего блока по внутреннему состоянию |
-| `07` | Проверка завершения по нескольким фиксированным позициям `AA`; успешная ветка требует response длиной не меньше 104 байт |
+| `07` | При непустом manifest map: успешная ветка требует response ≥104 байт с prefix/TLV-header и `AA` в `v0,v10,v19,v28,v37,v46,v55,v64,v73,v82,v91` |
 
-Для стадий `01,03…06` показана комбинация pending `55 78`. `AA` в этом
-семействе означает успешный ответ, поэтому общий boolean helper для всех
-K1G-семейств был бы неверен. Реализация block-size буквально использует signed
-Java bytes без обоих unsigned masks; таблица описывает роль поля, не объявляет
-код идеально корректным unsigned parser.
+Комбинация `v0=55,v1=78` встречается в `01–07`: перевзводится retry timer
+и обнуляется retry counter; в `02` лог называет её `Failure code`.
+`AA` здесь означает успешный ответ, не универсальный boolean K1G.
+Block-size буквально вычисляется как signed `v3 | (v2 << 8)`, без unsigned
+masks. Минимум 104 байта для `07` включает 8-байтный prefix и 4-байтный TLV-header
+(value ≥92); это локальный guard успешной ветки, не общая валидация parser.
 
 Источники: `z9q.java:158–199`; `u59.java:146–413,844–864`.
 
@@ -721,10 +858,13 @@ Java bytes без обоих unsigned masks; таблица описывает �
 наблюдение не отменяется, но его протокольная роль шире «маркер оживания»:
 оригинал имеет содержательный FOTA/version handler.
 
-**[порт]** Захваченный `0A/02` blob входит в initial burst. Его присутствие там
-не доказывает, что это универсальная nav-настройка: найденное оригинальное
-применение относится к подготовке FOTA manifest. Обновление прошивки данным
-исследованием не запускалось.
+**[порт]** Восьмой шаг initial burst содержит `0A/02` value
+`AA55000000000000`. В оригинале тот же TLV отправляет `vk6.K()` как
+**запрос software versions**; ответ используется для проверки доступности
+обновления и затем сравнения с manifest. Сам запрос не запускает чтение
+manifest или transfer: это последующий путь `v0/Y/Z`, reflash начинается
+с `0A01`. Наличие `0A02` в burst не доказывает nav-настройку, обязательность
+для auth или начало update. Прошивка здесь не обновлялась.
 
 ## 11. Видеопоток H.264/RTP
 
@@ -747,15 +887,17 @@ Java bytes без обоих unsigned masks; таблица описывает �
 телефона. Интервал IDR при изменении фактического feed fps не обязан совпадать
 с wall-clock секундами, переданными в MediaFormat.
 
-Оригинал выбирает high при `0 < distance <1000 м`, low — после достаточного
-изменения сохранённой reference distance в ветке `>1000 м`; используется
-200-метровая разница. Это не просто пара порогов 1000/1200 м. При ровно 1000 м
-данные ветки профиль не меняют.
+В 10.1.23 при INFOTAINMENT выбирается high для `0 < distance <1000 м`
+и обнуляется reference distance. В ветке `distance >1000 м` нулевой reference
+сначала запоминается; low выбирается при **абсолютной** разнице ≥200 м,
+затем reference обновляется. Это не пара порогов 1000/1200 м. Ровно 1000 м,
+0 и null данные ветки не переключают.
 
-**[INFERENCE по use sites]** Смена `P3` в оригинале меняет feed/snapshot cadence,
-но параметры fps/bitrate читаются при создании encoder; live `setParameters()`
-в исследованных `r2g/q0k` не найден. Порт выбирает профиль по движению камеры и
-реально вызывает live bitrate update. Это различие реализации, не wire-инвариант.
+**[INFERENCE по use sites]** Поле preset — старое `P3`, новое `G3`; оно
+меняет feed/snapshot cadence. Параметры fps/bitrate читаются при создании
+encoder; в проверенной новой цепочке `w9f→gub` live `setParameters()` не найден.
+Порт выбирает профиль по движению камеры и вызывает live bitrate update.
+Это различие реализации, не wire-инвариант.
 
 Источники: `NavigationFragment.java:730–752,872–888,949–972,6814–6836`;
 `NavigationRootFragmentViewModel.java:835–837`; `r2g.java:84–147`;
@@ -779,6 +921,8 @@ Java bytes без обоих unsigned masks; таблица описывает �
 Точная арифметика original timestamp: `((90000/1000)*(ns/100))/10000`, low32 BE.
 Порт продвигает `videoPtsMs` по каждому не-config выходному кадру на 250/500 мс,
 не по каждой попытке drain; шаги RTP составляют 22500/45000 ticks.
+Clock и RTP sequence продвигаются до попытки enqueue AU; overflow-drop
+не откатывает их. Это не счётчик успешно доставленных приборке кадров.
 
 FU-A использует type28, S=`80`, E=`40`, исходный NAL type — low5 bits. Original
 сохраняет NRI и очищает F, текущий sender сохраняет F и NRI. В `mbb` встречается
@@ -807,10 +951,13 @@ Optional parameter-set injection ветка `mbb.e()` не является до
 активным STAP-A-путём: её поля в исследованном smali остаются null.
 
 Порт разбирает 3/4-byte Annex-B prefixes, кэширует SPS/PPS, пропускает SEI/AUD.
-Малую склейку до1380 байт сохраняет вместе с IDR; большую выдаёт отдельными
-SPS/PPS/IDR, фрагментируя IDR отдельно. В узком SPS-префиксе `67 42 xx 29…`
-constraint-byte переписывается в00. Необходимость такого rewrite для прошивки
-из оригинального sender не следует.
+При наличии обоих cached parameter sets bundle до 1380 байт сохраняется
+вместе с IDR; больший bundle разделяется на SPS/PPS/IDR. Каждый из них
+фрагментируется только при **собственном** размере >1380: split bundle
+не обязательно означает FU-A для IDR.
+SPS rewrite имеет точный guard: size≥4, `(byte0 & 0x1f)==7`, byte1=`42`,
+byte3=`29`; byte2 заменяется на `00`. Literal byte0=`67` — лишь частный случай.
+Необходимость rewrite для прошивки из оригинального sender не следует.
 
 Таким образом, старое утверждение «SPS/PPS-поведение полностью совпадает»
 нужно ограничивать: для больших keyframe buffers wire-пакетизация отличается.
@@ -819,14 +966,17 @@ constraint-byte переписывается в00. Необходимость т
 
 | Политика | Оригинал | Текущий движок |
 |---|---|---|
-| Очередь encoded buffers | Static, 30 элементов; при заполнении drop oldest | Четыре AU в outbox; overflow дропает новый целый AU |
+| Очередь encoded buffers | Static, 30 элементов; при заполнении drop oldest | Четыре ожидающих AU плюс обрабатываемый sender; overflow дропает новый целый AU |
 | RTP buffers | Ring300×1400, semaphores могут блокировать packetizer | Пакеты собираются для AU перед enqueue |
 | Начало UDP передачи | Первые31 committed RTP packets не отправляются; packet32 первый допустимый | Такого startup discard нет |
 | Пауза без пакетов | Sender выходит после ожидания около4 с, сбрасывает ring/counter | Собственный lifecycle stream/session |
 | Разборка | Очистка static encoded queue при start/stop не найдена | Отмена, не drain AU-очереди; проверка отмены между пакетами |
 
-Startup discard подтверждён smali postincrement и условием `oldCounter>30`,
-не только декомпиляцией. Не следует копировать его как требование K1G.
+Startup discard подтверждён smali postincrement и условием `oldCounter>30`.
+После timeout sender сбрасывает ring/discard counter, и следующий запуск
+снова пропускает 31 пакет; RTP sequence этим reset не обнуляется. Первый
+сформированный пакет изначально имеет seq1, первый допустимый к отправке —
+seq32. Не следует копировать это как требование K1G.
 Timestamp deltas original sender не превращаются в показанном пути в
 per-packet sleep/pacing.
 
@@ -845,9 +995,11 @@ per-packet sleep/pacing.
 | Весь `0C` не расшифрован по смыслу | Low-fuel `05` и ABS prefs `14` установлены; остальные не угадывать |
 | `0B02` — только маркер возвращения | В оригинале есть FOTA/software-version handler |
 | `55/AA` — универсальные boolean | Есть инверсные settings flags, категории списков и FOTA status enums |
-| Все строки UTF-8 | Три разных encoder-пути; оригинальный navigation encoder особенно ограничен |
+| Все строки UTF-8 | Original nav — unpadded char-hex; media/hostname/periodic caller — lossy bytes; event caller — encrypted bytes; порт display text уже ICU→ASCII |
 | Скрипт порта — обязательный алгоритм оригинала | Это действующий capture-derived контракт порта; original lifecycle/callbacks устроены иначе |
 | Строковые константы — полный исходящий command inventory | Они смешивают RX patterns, TX, templates и dead constants; dynamic TLV отсутствуют в таком inventory |
+| Все TX-префиксы внутренне согласованы | `U2` противоречит своей TLV length, `o3` объявляет неверный outer_len; normal sender длины не исправляет |
+| RouteCard воспроизводит всю живую навигацию оригинала | Secondary/progress/duration остаются capture-константами |
 
 Смысловые подписи [Lua-диссектора][dissector], некоторые комментарии
 [DashMessage][messages], [spec/video.md][video-spec] и старого
@@ -857,6 +1009,8 @@ per-packet sleep/pacing.
 ## 13. Проверка и воспроизводимость
 
 ### 13.1. Что действительно запускалось
+
+Проверки ниже относятся к **19.10.2026**, а не к текущему дереву после ICU-cutover:
 
 | Проверка исследования | Результат |
 |---|---|
@@ -875,7 +1029,7 @@ Kotlin smoke включал `K1GPacket.kt`, `DashMessage.kt`, `DashCommand.kt`,
   двухбайтная кнопка с trailing code;
 - patch seq `FF→00` без изменения исходного массива;
 - length-mismatch/truncated-TLV counters на synthetic input;
-- физическое число TLV heartbeat и UTF-8 media payload порта.
+- физическое число TLV heartbeat и тогдашний UTF-8 media payload порта.
 
 Пример использованной **синтетической**, не захваченной датаграммы:
 
@@ -891,7 +1045,7 @@ Kotlin smoke включал `K1GPacket.kt`, `DashMessage.kt`, `DashCommand.kt`,
 
 ### 13.2. Повторить проверку структурных констант
 
-Запускать из корня репозитория с имеющейся локальной декомпиляцией `re_app`.
+Запускать из корня репозитория с имеющейся локальной декомпиляцией `re_app_new`.
 Скрипт читает исходник, ничего не отправляет в сеть и не изменяет файлы.
 Он не заменяет проверку достижимости найденной константы.
 
@@ -900,9 +1054,10 @@ from pathlib import Path
 import re
 import struct
 
-source = Path('re_app/jadx_out/sources/bluconnect/hbg.java').read_text()
+source = Path('re_app_new/jadx_out/sources/bluconnect/w2c.java').read_text()
 literals = re.findall(r'\bString\s+(\w+)\s*=\s*"([0-9A-Fa-f]+)";', source)
 counts = dict(framed=0, complete=0, prefix=0, mismatch=0)
+prefix_conflicts = []
 for name, text in literals:
     if len(text) % 2 or len(text) < 34:
         continue
@@ -912,19 +1067,24 @@ for name, text in literals:
     declared_len, declared_count = struct.unpack_from('>HH', raw)
     counts['framed'] += 1
     pos, actual_count, truncated = 8, 0, False
+    required_end = 0
     while pos < len(raw):
         if pos + 4 > len(raw):
+            required_end = pos + 4
             truncated = True
             break
         size = int.from_bytes(raw[pos + 2:pos + 4], 'big')
         pos += 4
         if pos + size > len(raw):
+            required_end = pos + size
             truncated = True
             break
         pos += size
         actual_count += 1
     if truncated:
         counts['prefix'] += 1
+        if required_end > declared_len:
+            prefix_conflicts.append((name, declared_len, required_end))
     elif declared_len != len(raw) or declared_count != actual_count:
         counts['mismatch'] += 1
         print(name, 'length', declared_len, len(raw),
@@ -932,24 +1092,38 @@ for name, text in literals:
     else:
         counts['complete'] += 1
 print(counts)
+print('prefix minimum-length conflicts:', prefix_conflicts)
 ```
 
 Для исследованного файла полная самосогласованность — только структурный
 критерий. Скрипт намеренно не приписывает семантику командам и называет
 усечённые literals prefix-кандидатами; их назначение подтверждается callsites.
 
+Повторно 22.10.2026 на `w2c`: `framed=99`, `complete=86`, `prefix=12`,
+`mismatch=1`. Единственный complete mismatch — `o3`: outer_len 67 при
+72 фактических байтах, объявленные/фактические TLV 12/12. Совпадение этих
+счётчиков с 10.1.22 не означает побайтную идентичность всего DEX.
+Проверка минимально необходимой длины усечённого TLV отдельно выявляет
+`U2`: declared 36, minimum 38. Поэтому «12 runtime-prefix» не означает
+«12 внутренне корректных шаблонов».
+
+Также проверены длина синтетического примера §13.1 (29 байт) и SHA-256
+библиотеки внутри нового ARM64 split. Текущий Android ICU runtime здесь
+не запускался; исторический standalone Kotlin smoke не доказывает новую
+транслитерацию.
+
 ### 13.3. Повторить native decompilation через REA/Ghidra
 
-На машине исследования использовалось следующее окружение; пути относятся
-к установленным здесь Ghidra12.1.4 и JDK21, не к зависимости проекта:
+Для повторной сверки 22.10.2026 использованы Ghidra12.1.4 и JDK21 по путям
+ниже. Все три `rea function` выполнены успешно; это статическая декомпиляция,
+не вызов JNI внутри Android:
 
 ```bash
 export GHIDRA_INSTALL_DIR=/opt/homebrew/Cellar/ghidra/12.1.4/libexec
 export JAVA_HOME=/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home
-rea analyze re_app/native_lib/libBluConnect-Lib.so --provider ghidra --format json
-rea function re_app/native_lib/libBluConnect-Lib.so Java_com_aptener_bluconnect_BluConnectServiceImpl_loadConfig --provider ghidra --format json
-rea function re_app/native_lib/libBluConnect-Lib.so Java_com_aptener_bluconnect_di_module_FirebaseModule_Companion_FirebaseAppFactory_loadConfig2 --provider ghidra --format json
-rea function re_app/native_lib/libBluConnect-Lib.so 0x121dbc --provider ghidra --format json
+rea function re_app_new/native_lib/libBluConnect-Lib.so Java_com_aptener_bluconnect_BluConnectServiceImpl_loadConfig --provider ghidra --format json
+rea function re_app_new/native_lib/libBluConnect-Lib.so Java_com_aptener_bluconnect_di_module_FirebaseModule_Companion_FirebaseAppFactory_loadConfig2 --provider ghidra --format json
+rea function re_app_new/native_lib/libBluConnect-Lib.so 0x121dbc --provider ghidra --format json
 ```
 
 REA использует ephemeral-source-immutable import. При обращении по адресу
@@ -963,8 +1137,8 @@ REA использует ephemeral-source-immutable import. При обраще�
 - Реакция конкретной прошивки на неверную длину VSD query и на отличия
   video packetization, timestamps, startup discard и codec settings.
 - Что приборка действительно рисует для Unicode/разного порядка media-полей.
-- Являются ли некоторые расхождения межверсионными; исследован один APK,
-  не история всех companion/firmware версий.
+- Полная история межверсионных расхождений: повторная сверка двух версий
+  приложения не охватывает все companion/firmware версии.
 
 Повторять оригинальные дефекты ради формального совпадения нельзя считать
 автоматически правильным решением. И обратное: более корректная по стандарту

@@ -1,5 +1,8 @@
 package com.opendash.opendash_dash_engine.dash.map
 
+import kotlin.math.atan
+import kotlin.math.tan
+
 /**
  * Where the camera target lands on the dash frame.
  *
@@ -58,6 +61,20 @@ object DashCamera {
      * wired to zoom only).
      */
     const val MAX_PAN_FRACTION = 0.12f
+
+    /**
+     * Native 13.6.0 further limits pitch when padding moves the perspective centre.
+     * Match Transform.getMaxPitchForEdgeInsets before capture so the snapshot,
+     * rider arrow and camera log use one angle. CameraPosition.Builder alone does
+     * not apply this limit (60 requested with our 210 px top inset becomes 48.896°).
+     */
+    fun effectiveTilt(tilt: Double, fieldOfView: Double, height: Int, padding: IntArray): Double {
+        val halfFov = Math.toRadians(fieldOfView) / 2.0
+        val offsetY = (padding[1] - padding[3]) / 2.0
+        val fovAboveCenter = atan((1.0 + 2.0 * offsetY / height) * tan(halfFov))
+        val maximum = 60.0 + Math.toDegrees(halfFov - fovAboveCenter)
+        return tilt.coerceIn(0.0, minOf(60.0, maximum))
+    }
 
     /**
      * Padding as MapLibre wants it: `[left, top, right, bottom]`, frame pixels.

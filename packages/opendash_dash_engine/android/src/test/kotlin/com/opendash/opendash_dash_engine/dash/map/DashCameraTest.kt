@@ -2,6 +2,7 @@ package com.opendash.opendash_dash_engine.dash.map
 
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
+import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
@@ -111,5 +112,23 @@ class DashCameraTest {
 
         val expectedTop = (2 * (h * DashCamera.MAX_TARGET_Y_FRACTION - h / 2f)).toInt()
         assertContentEquals(intArrayOf(0, expectedTop, 0, 0), padding)
+    }
+
+    @Test
+    fun `top padding limits a requested 60 degree tilt before the arrow and snapshot diverge`() {
+        val padding = DashCamera.padding(w, h, headingUp = true, panX = 0f, panY = 0f)
+        val actual = DashCamera.effectiveTilt(60.0, 36.86989764584402, h, padding)
+        assertEquals(48.896167, actual, 0.000001)
+        assertEquals(0.657426, riderArrowForwardScale(actual).toDouble(), 0.000001)
+        assertEquals(45.0, DashCamera.effectiveTilt(45.0, 36.86989764584402, h, padding))
+    }
+
+    @Test
+    fun `no top bias preserves the Android tilt limit and north-up stays flat`() {
+        val centered = intArrayOf(0, 0, 0, 0)
+        val bottomBias = intArrayOf(0, 0, 0, 210)
+        assertEquals(60.0, DashCamera.effectiveTilt(60.0, 36.86989764584402, h, centered))
+        assertEquals(60.0, DashCamera.effectiveTilt(60.0, 36.86989764584402, h, bottomBias))
+        assertEquals(0.0, DashCamera.effectiveTilt(0.0, 36.86989764584402, h, centered))
     }
 }

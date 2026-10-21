@@ -77,7 +77,6 @@ void main() {
           maneuvers: [
             Maneuver(
               type: ManeuverType.arrive,
-              instruction: 'Arrive',
               location: geometry.last,
               cumulativeMeters: cumulative.last,
             ),
@@ -100,6 +99,53 @@ void main() {
         expect(progress.arrived, isFalse);
       },
     );
+
+    test('arrival clears a next street even when its turn is still ahead', () {
+      const start = GeoPoint(0, 0);
+      const finish = GeoPoint(0, 0.01);
+      final length = GeoPoint.distMeters(start, finish);
+      final route = Route(
+        geometry: const [start, finish],
+        maneuvers: [
+          Maneuver(
+            type: ManeuverType.left,
+            location: const GeoPoint(0, 0.00985),
+            cumulativeMeters: length * 0.985,
+            roadName: 'Final Lane',
+          ),
+          Maneuver(
+            type: ManeuverType.arrive,
+            location: finish,
+            cumulativeMeters: length,
+          ),
+        ],
+        totalMeters: length,
+        totalSeconds: 100,
+        cumulative: [0, length],
+      );
+
+      final approaching = NavEngine.progress(
+        route,
+        const GeoPoint(0, 0.0097),
+        10,
+      );
+      expect(approaching.arrived, isFalse);
+      expect(approaching.roadName, 'Final Lane');
+
+      final arrived = NavEngine.progress(route, const GeoPoint(0, 0.0098), 10);
+      expect(arrived.remainingMeters, closeTo(22.24, 0.01));
+      expect(arrived.arrived, isTrue);
+      expect(arrived.nextManeuver?.roadName, 'Final Lane');
+      expect(arrived.roadName, isNull);
+
+      final movedAway = NavEngine.progress(
+        route,
+        const GeoPoint(0, 0.0097),
+        10,
+      );
+      expect(movedAway.arrived, isFalse);
+      expect(movedAway.roadName, 'Final Lane');
+    });
 
     test('progress detects off-route when far from the line', () {
       final geometry = [const GeoPoint(0.0, 0.0), const GeoPoint(0.0, 0.02)];

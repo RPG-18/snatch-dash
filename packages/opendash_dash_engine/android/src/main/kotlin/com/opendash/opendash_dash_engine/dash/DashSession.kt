@@ -503,7 +503,7 @@ internal class DashSession private constructor(
 
             // Always nav-mode entry, idle or not: the dash opens its video decoder only as
             // part of nav mode, so there is no separate idle mode (see spec/fsm.md).
-            sendScript(Scripts.enterNavMode(chrome.value.destinationName))
+            sendScript(Scripts.enterNavMode(chrome.value.routeTitle))
             DebugLog.i(TAG) { "Nav mode kick sent" }
 
             // Cancellation is cooperative and the script's last step has no pause after it,
@@ -662,7 +662,7 @@ internal class DashSession private constructor(
         // reach the dash once real guidance is running: this card repeats at 1 Hz and would
         // stomp the live numbers every second.
         return DashCommand.RouteCard(
-            title = c.destinationName,
+            title = c.routeTitle,
             projectionOn = projectionOn,
             maneuver = nav.maneuver,
             primaryUnit = nav.primaryUnit,

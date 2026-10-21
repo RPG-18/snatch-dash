@@ -764,8 +764,9 @@ interface DashEngineApi {
    * `points.length - 1` entries and index `i` covers `points[i]` to
    * `points[i + 1]` — the same convention as `nav.Route.jamSegments` on the app
    * side. Ignored, with a solid line drawn instead, if the length disagrees.
+   * [roadName] is the next maneuver's English SDK toponym; `null` clears it.
    */
-  fun setNavState(remainingMeters: Double?, nextTurnMeters: Double?, maneuver: Long, etaHHMM: String?, offRoute: Boolean, points: List<NavPoint>, jamSegments: List<Long>)
+  fun setNavState(remainingMeters: Double?, nextTurnMeters: Double?, maneuver: Long, etaHHMM: String?, offRoute: Boolean, points: List<NavPoint>, jamSegments: List<Long>, roadName: String?)
   fun setFollowMode(enabled: Boolean)
   fun panBy(dx: Double, dy: Double)
   fun zoomIn()
@@ -901,8 +902,9 @@ interface DashEngineApi {
             val offRouteArg = args[4] as Boolean
             val pointsArg = args[5] as List<NavPoint>
             val jamSegmentsArg = args[6] as List<Long>
+            val roadNameArg = args[7] as String?
             val wrapped: List<Any?> = try {
-              api.setNavState(remainingMetersArg, nextTurnMetersArg, maneuverArg, etaHHMMArg, offRouteArg, pointsArg, jamSegmentsArg)
+              api.setNavState(remainingMetersArg, nextTurnMetersArg, maneuverArg, etaHHMMArg, offRouteArg, pointsArg, jamSegmentsArg, roadNameArg)
               listOf(null)
             } catch (exception: Throwable) {
               MessagesPigeonUtils.wrapError(exception)

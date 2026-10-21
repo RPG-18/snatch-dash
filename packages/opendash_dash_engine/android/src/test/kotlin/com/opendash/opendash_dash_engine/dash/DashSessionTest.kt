@@ -105,7 +105,7 @@ class DashSessionTest {
 
     @Test
     fun `the full handshake reaches READY through nav entry, byte for byte`() = runTest {
-        val r = rig(chrome = MutableStateFlow(DashChrome(destinationName = "Мурманск")))
+        val r = rig(chrome = MutableStateFlow(DashChrome(destinationName = "Murmansk")))
         advanceTimeBy(200)
         runCurrent()
         r.wire.clearSent()
@@ -128,7 +128,7 @@ class DashSessionTest {
 
         val heartbeat = enc(DashCommand.Heartbeat())
         val navEntry = r.wire.sent.filterNot { it.bytes.toHex() == heartbeat }
-        val script = Scripts.enterNavMode("Мурманск")
+        val script = Scripts.enterNavMode("Murmansk")
         assertEquals(
             script.map { K1GCodec.encode(it.cmd).toHex() },
             navEntry.map { it.bytes.toHex() },
@@ -147,12 +147,63 @@ class DashSessionTest {
 
     @Test
     fun `the destination the card carries is the one set before the session opened`() = runTest {
-        val r = rig(chrome = MutableStateFlow(DashChrome(destinationName = "Дом")))
+        val r = rig(chrome = MutableStateFlow(DashChrome(destinationName = "Home")))
         reachReady(r)
 
         val cards = r.wire.sent.map { it.bytes.toHex() }
-            .filter { it.contains(K1GCodec.encode(DashCommand.RouteCard("Дом")).toHex().drop(20)) }
+            .filter { it.contains(K1GCodec.encode(DashCommand.RouteCard("Home")).toHex().drop(20)) }
         assertTrue(cards.isNotEmpty(), "the chrome set before open() is what nav entry announces")
+        r.close()
+    }
+
+    @Test
+    fun `nav entry and reconnect announce the known next street without a destination flash`() = runTest {
+        val chrome = MutableStateFlow(
+            DashChrome(
+                destinationName = "Home",
+                nav = NavFigures(0x14, 120, 0x30, 4200, 0x30, roadName = "First Street"),
+            ),
+        )
+        val first = rig(chrome = chrome)
+        reachReady(first)
+        assertEquals(List(5) { "First Street" }, routeTitles(first))
+        first.close()
+
+        chrome.value = chrome.value.copy(nav = chrome.value.nav!!.copy(roadName = "Second Street"))
+        val second = rig(chrome = chrome)
+        reachReady(second)
+        assertEquals(List(5) { "Second Street" }, routeTitles(second))
+        second.close()
+    }
+
+    @Test
+    fun `periodic titles follow street changes and fall back on null blank and cleared guidance`() = runTest {
+        val chrome = MutableStateFlow(
+            DashChrome(
+                destinationName = "Home",
+                nav = NavFigures(0x14, 120, 0x30, 4200, 0x30, roadName = "First Street"),
+            ),
+        )
+        val r = rig(chrome = chrome)
+        reachReady(r)
+        r.session.startStreaming()
+        for ((street, expected) in listOf(
+            "First Street" to "First Street",
+            "Second Street" to "Second Street",
+            null to "Home",
+            "  " to "Home",
+        )) {
+            chrome.value = chrome.value.copy(nav = chrome.value.nav!!.copy(roadName = street))
+            r.wire.clearSent()
+            advanceTimeBy(1_000)
+            runCurrent()
+            assertEquals(listOf(expected), routeTitles(r), "street=$street")
+        }
+        chrome.value = chrome.value.copy(destinationName = "Snatch", nav = null)
+        r.wire.clearSent()
+        advanceTimeBy(1_000)
+        runCurrent()
+        assertEquals(listOf("Snatch"), routeTitles(r), "cleared guidance has no stale street")
         r.close()
     }
 
@@ -337,7 +388,7 @@ class DashSessionTest {
     @Test
     fun `one second of streaming is four projection frames, one card and one heartbeat`() = runTest {
         val chrome = MutableStateFlow(
-            DashChrome(destinationName = "Дом", nav = NavFigures(0x14, 120, 0x30, 4200, 0x30)),
+            DashChrome(destinationName = "Home", nav = NavFigures(0x14, 120, 0x30, 4200, 0x30)),
         )
         val r = rig(chrome = chrome)
         reachReady(r)
@@ -355,7 +406,7 @@ class DashSessionTest {
         assertEquals(1, hexes.count { it == enc(DashCommand.Heartbeat()) }, "1 Hz heartbeat")
         assertEquals(
             1,
-            hexes.count { it == enc(DashCommand.RouteCard("Дом", true, 0x14, 0x30, 4200, 0x30)) },
+            hexes.count { it == enc(DashCommand.RouteCard("Home", true, 0x14, 0x30, 4200, 0x30)) },
             "1 Hz route card, carrying the live figures",
         )
         assertEquals(
@@ -370,7 +421,7 @@ class DashSessionTest {
     fun `the order inside a one-second tick is fixed`() = runTest {
         val chrome = MutableStateFlow(
             DashChrome(
-                destinationName = "Дом",
+                destinationName = "Home",
                 nav = NavFigures(0x14, 120, 0x30, 4200, 0x30),
                 nowPlaying = NowPlaying("Song"),
             ),
@@ -395,7 +446,7 @@ class DashSessionTest {
         assertEquals(
             listOf(
                 enc(DashCommand.ProjectionFrame),
-                enc(DashCommand.RouteCard("Дом", true, 0x14, 0x30, 4200, 0x30)),
+                enc(DashCommand.RouteCard("Home", true, 0x14, 0x30, 4200, 0x30)),
                 enc(DashCommand.ActiveNav(0x14, 120, 0x30, 4200, 0x30)),
                 enc(DashCommand.NowPlaying("Song", "", "")),
                 enc(DashCommand.Heartbeat()),
@@ -746,6 +797,15 @@ class DashSessionTest {
     // ── Rig helpers ───────────────────────────────────────────────────────
 
     private fun enc(cmd: DashCommand) = K1GCodec.encode(cmd).toHex()
+
+    private fun routeTitles(r: Rig): List<String> = r.wire.sent
+        .map { it.bytes }
+        .filter { it.size >= 21 && it[17].toInt() == 0x05 && it[18].toInt() == 0x01 }
+        .map {
+            val size = ((it[19].toInt() and 0xFF) shl 8) or (it[20].toInt() and 0xFF)
+            assertEquals(0, it[20 + size].toInt(), "route title is NUL-terminated")
+            String(it, 21, size - 1, Charsets.US_ASCII)
+        }
 
     private fun rsaKey(): RSAPublicKey = KeyPairGenerator.getInstance("RSA")
         .apply { initialize(1024) }.generateKeyPair().public as RSAPublicKey

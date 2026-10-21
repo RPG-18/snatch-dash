@@ -15,6 +15,7 @@ internal data class NavFigures(
     val totalDist: Int,
     val totalUnit: Int,
     val etaHHMM: String? = null,
+    val roadName: String? = null,
 )
 
 /** Title/album/artist of whatever is playing, as the dash's media card wants them. */
@@ -40,11 +41,14 @@ internal data class NowPlaying(
  */
 internal data class DashChrome(
     /**
-     * The card's title. Blank is not representable — the dash shows this string, and an
-     * empty one reads on the hardware as a card with no destination at all.
+     * Destination fallback when guidance has no next-street name. Blank is not representable:
+     * an empty card title reads on the hardware as a card with no destination at all.
      */
     val destinationName: String = "Snatch",
     val nav: NavFigures? = null,
     val nowPlaying: NowPlaying? = null,
     val caller: String? = null,
-)
+) {
+    val routeTitle: String
+        get() = nav?.roadName?.takeIf { it.isNotBlank() } ?: destinationName
+}

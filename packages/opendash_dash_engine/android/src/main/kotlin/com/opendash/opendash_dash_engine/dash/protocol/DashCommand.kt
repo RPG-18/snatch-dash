@@ -80,7 +80,7 @@ internal sealed interface DashCommand {
     /** 1 Hz status. On-wire temperature byte is `°C + 40`. */
     data class Heartbeat(val tempC: Int = 25) : DashCommand
 
-    /** The 0x007E route card: destination title plus the live nav figures. */
+    /** The 0x007E route card: next-street title (destination fallback) plus live nav figures. */
     data class RouteCard(
         val title: String,
         val projectionOn: Boolean = false,

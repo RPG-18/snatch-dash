@@ -102,16 +102,18 @@ int _roundaboutDashCode(bool clockwise, int? exitNumber) {
 class Maneuver {
   const Maneuver({
     required this.type,
-    required this.instruction,
     required this.location,
     required this.cumulativeMeters,
+    this.roadName,
     this.roundaboutClockwise,
     this.roundaboutExitNumber,
   });
 
   final ManeuverType type;
-  final String instruction;
   final GeoPoint location;
+
+  /// The next street's English SDK toponym, absent for unnamed roads/arrival.
+  final String? roadName;
 
   /// Cumulative distance (m) from the route start to this maneuver's location.
   final double cumulativeMeters;

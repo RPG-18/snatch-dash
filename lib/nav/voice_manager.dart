@@ -12,26 +12,12 @@ enum VoiceMode { off, chime, full }
 
 const _prefsKeyMode = 'voice_mode';
 
-/// Turn-by-turn voice guidance. [ManeuverCueScheduler] de-duplicates the
-/// 300/150/60 metre cues. FULL speaks via `flutter_tts`; CHIME beeps through
-/// the native plugin's `playChime()` (no Dart/Flutter equivalent to
-/// `ToneGenerator`, see the plugin's `DashEngineController`).
+/// Turn-by-turn voice guidance with locally localized maneuver phrases.
 ///
-/// Note: the original's `turnPhrase` covered every `ManeuverType` from OSRM's
-/// step-by-step instructions with hand-written per-direction l10n strings.
-/// This port originally spoke `Maneuver.instruction` as-is — SDK-generated
-/// `descriptionText` from `DrivingOptions.annotationLanguage` — but Yandex's
-/// own guidance is not to rely on `descriptionText` for voice guidance (no
-/// contract on wording/tense/language fidelity, it's meant for on-screen
-/// display). [_turnPhrase] now builds the phrase itself, hand-written per
-/// l10n like the original, for the three maneuvers that make up the bulk of
-/// real turns: `left`, `right`, and both U-turn variants (spoken direction-
-/// agnostic — "make a U-turn" either way). The synthetic `arrive` maneuver
-/// (appended by `Router`, not from the SDK) keeps its own l10n phrase same
-/// as before. Every other `ManeuverType` (slight/hard turns, forks, ramps,
-/// roundabouts, ferries) still falls back to the SDK's `instruction`, or the
-/// generic "continue" phrase if that's empty — narrowing that gap (i.e.
-/// hand-writing the rest of the table) is follow-up work, not done here.
+/// [ManeuverCueScheduler] de-duplicates the 300/150/60 metre cues. FULL speaks
+/// via `flutter_tts`; CHIME beeps through the native plugin's `playChime()`.
+/// Every [ManeuverType] has a local phrase, independent of the SDK annotation
+/// language, so English route annotations never change Russian voice guidance.
 /// The dash glyph is a separate concern: `NavLoop` sends [Maneuver.dashCode].
 class VoiceManager {
   VoiceManager._();
@@ -123,22 +109,29 @@ class VoiceManager {
   /// Reset trip state when nav starts/stops so the next route announces cleanly.
   void resetTrip() => _cueScheduler.reset();
 
-  /// See the class doc for why this doesn't just speak `m.instruction`
-  /// anymore. The synthetic `arrive` maneuver has no SDK-generated
-  /// `descriptionText` behind it regardless, so it always kept its own l10n
-  /// phrase. `left`/`right` and the two U-turn variants are hand-written
-  /// here now — U-turn direction matters (a left U-turn crosses oncoming
-  /// traffic, a right one doesn't), so `uturnLeft`/`uturnRight` get distinct
-  /// phrases rather than a shared "make a U-turn". Everything else still
-  /// falls back to `m.instruction` (from `descriptionText`) or the generic
-  /// "continue" phrase if that's empty.
   String _turnPhrase(AppLocalizations l10n, Maneuver m) => switch (m.type) {
-    ManeuverType.arrive => l10n.voiceTurnArrive,
+    ManeuverType.straight => l10n.voiceTurnContinue,
+    ManeuverType.slightLeft => l10n.voiceTurnSlightLeft,
+    ManeuverType.slightRight => l10n.voiceTurnSlightRight,
     ManeuverType.left => l10n.voiceTurnLeft,
     ManeuverType.right => l10n.voiceTurnRight,
+    ManeuverType.hardLeft => l10n.voiceTurnHardLeft,
+    ManeuverType.hardRight => l10n.voiceTurnHardRight,
+    ManeuverType.forkLeft => l10n.voiceTurnForkLeft,
+    ManeuverType.forkRight => l10n.voiceTurnForkRight,
     ManeuverType.uturnLeft => l10n.voiceTurnUturnLeft,
     ManeuverType.uturnRight => l10n.voiceTurnUturnRight,
-    _ => m.instruction.isNotEmpty ? m.instruction : l10n.voiceTurnContinue,
+    ManeuverType.enterRoundabout => l10n.voiceTurnEnterRoundabout,
+    ManeuverType.leaveRoundabout =>
+      m.roundaboutExitNumber != null && m.roundaboutExitNumber! > 0
+          ? l10n.voiceTurnLeaveRoundaboutNumber(m.roundaboutExitNumber!)
+          : l10n.voiceTurnLeaveRoundabout,
+    ManeuverType.boardFerry => l10n.voiceTurnBoardFerry,
+    ManeuverType.leaveFerry => l10n.voiceTurnLeaveFerry,
+    ManeuverType.exitLeft => l10n.voiceTurnExitLeft,
+    ManeuverType.exitRight => l10n.voiceTurnExitRight,
+    ManeuverType.finish || ManeuverType.arrive => l10n.voiceTurnArrive,
+    ManeuverType.waypoint => l10n.voiceTurnWaypoint,
   };
 }
 

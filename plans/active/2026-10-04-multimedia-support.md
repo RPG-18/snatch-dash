@@ -31,8 +31,8 @@
 переформулируется.
 
 Нельзя менять без отдельного доказательства с железа: текущий wire-контракт
-`05 0D` (`title, album, artist`, 20 UTF-16 code units, затем UTF-8, без
-завершающего NUL после artist), повтор карточки раз в секунду,
+`05 0D` (`title, album, artist`, ASCII-транслитерация Android ICU с пределом
+20 байт после расширения, без завершающего NUL после artist), повтор раз в секунду,
 текущий порядок конфликтующих кнопок,
 порядок heartbeat TLV и отсутствие отдельного media foreground service. До
 hardware gate добавляются новые подтверждённые по декомпиляции пути, но эти
@@ -46,10 +46,19 @@ wire формы проверяются отдельно. Unresolved hardware н�
 по Java и авторитетному smali завершено 04.10.2026; факты и источники —
 [`spec/multimedia.md`](../../spec/multimedia.md). Это не проверка порта или железа.
 
+Уточнение 20.10.2026: media-автомат этого плана ещё не реализован, но текстовая
+baseline изменена отдельным требованием пользователя. После отклонения
+windows-1251/ISO-8859-5/KOI8-R/IBM866 выбран ASCII через Android ICU, не
+дальнейший поиск кириллической кодировки. Контракт и границы —
+[`spec/k1g_protocol.md`](../../spec/k1g_protocol.md#кодирование-текста-на-приборке).
+SDK-route/codec проверены на Android-эмуляторе; читаемость новой сборки на
+приборке ещё не подтверждена. Остальные hardware-гейты остаются открыты.
+
 Отложенные решения и отклонённые посылки:
 
-- порядок, ширина, encoding `05 0D`, удаление 1 Hz-повтора и mapping кнопок —
-  независимые решения после проверки прошивки 11.63; UTF-8 сохраняется до evidence;
+- порядок, ширина `05 0D`, удаление 1 Hz-повтора и mapping кнопок —
+  независимые решения после проверки прошивки 11.63; encoding baseline с
+  20.10.2026 — ICU-транслитерация, не прежний UTF-8;
 - ❌ 04.10.2026 универсальный отдельный пустой `FF` после любого art:
   оригинал отправляет его только для singleton; при ненулевом остатке финальный
   `FF` несёт данные. Дефект exact-multiple оригинала сознательно не переносить;
@@ -64,7 +73,7 @@ wire формы проверяются отдельно. Unresolved hardware н�
 [`spec/multimedia.md`](../../spec/multimedia.md) хранит исходные факты оригинала,
 допроверенные 04.10.2026 по Java/smali, но не подтверждённые на железе.
 Текущий порт отправляет media-карточку `05 0D` (`title, album, artist`,
-`take(20)` UTF-16 units, затем UTF-8) раз в секунду при `nowPlaying != null`.
+ICU → ASCII, до 20 байт на поле после расширения) раз в секунду при `nowPlaying != null`.
 `05 17`, `05 19`, `05 58` и `05 40` не имеют
 рабочего event-пути; поле `NowPlaying.art` вычитывается, но не используется.
 Heartbeat отправляет захваченные константы `05 4C = 0x13` и `05 1B = 0x19`.
@@ -91,7 +100,7 @@ Heartbeat отправляет захваченные константы `05 4C 
    `DashSession` writer/outbox. Chunking обложки не выполняется в frame/encoder
    loop.
 2. `05 0D` до hardware gate кодируется как `title + NUL + album + NUL +
-   artist`: поля ограничены 20 UTF-16 code units, затем UTF-8; после artist NUL нет.
+   artist`: ICU-транслитерация до 20 ASCII-байт на поле; после artist NUL нет.
 3. Периодический порядок 1 Hz не меняется: route/nav, call notify/clear,
    совместимая `05 0D`, heartbeat. Media events вставляются в момент события и
    не обходят writer.
@@ -170,7 +179,7 @@ provider/reducer tests, Dart button tests, `flutter analyze`,
   AlbumArtMarker → `05 58 55/AA`, AlbumArtChunk → `05 40 value`.
   Логический AlbumArt раскрывается writer до scalar encoder; не выдавать
   несколько packets из старого ByteArray API. Сохранить текущий `05 0D`
-  порядок, UTF-8, лимит 20 UTF-16 units и отсутствие финального NUL.
+  порядок, ICU-транслитерацию с лимитом 20 ASCII-байт и отсутствие финального NUL.
   **Что опровергнет посылку:** если существующие `05 0D` goldens меняются без
   hardware gate, реализация нарушила compatibility branch.
 - [ ] `[auto]` `AlbumArtFrames.encode(jpeg: ByteArray): List<DashCommand.AlbumArtChunk>`
@@ -402,19 +411,20 @@ public Dart façade, fake-platform tests зелёные; generated source text �
 
 Задачи:
 
-- [ ] `[ride]` Field order: при неизменных width20/UTF-8/periodic сравнить
+- [ ] `[ride]` Field order: при неизменных width20/ICU→ASCII/periodic сравнить
   title,album,artist с album,title,artist на unambiguous A/B и записать подписи.
   **Что опровергнет посылку:** original order не улучшает/портит отображение —
   оставить нынешний order независимо от других опытов.
-- [ ] `[ride]` Width: при фиксированных order/encoding сравнить 19/20 UTF-16
-  units, длины 18/19/20/21 в каждом поле, отличимые финальные символы.
+- [ ] `[ride]` Width: при фиксированных order/encoding сравнить 19/20 ASCII-байт
+  после транслитерации, длины 18/19/20/21 в каждом поле, отличимые финальные символы.
   **Что опровергнет посылку:** 19 теряет допустимый символ без улучшения —
   сохранить20, не связывать решение с order/retention.
-- [ ] `[ride]` Encoding: отдельно сравнить текущий UTF-8 и original char≤255
-  → byte, иначе FF, с ASCII/Latin1/кириллицей/суррогатной парой (emoji → FF FF).
-  Независимый вариант не меняет order/width; сопоставить bytes и glyphs.
-  **Что опровергнет посылку:** byte encoder ухудшает любой обязательный набор —
-  оставить UTF-8; доказательство order не разрешает encoding cutover.
+- ❌ 20.10.2026 `[ride]` Снят прежний опыт Encoding: сравнить UTF-8 и original
+  char≤255 → byte, иначе FF, с ASCII/Latin1/кириллицей/emoji.
+  Причина: пользователь изменил требование после четырёх отрицательных charset
+  опытов — нужна библиотечная транслитерация. Это не доказательство работоспособности
+  lossy encoder оригинала и не подтверждение русских глифов. Новая baseline —
+  ICU→ASCII; её проверка на приборке не разрешает менять order/width/retention.
 - [ ] `[ride]` Retention: fixture ЯВНО отключает periodic `05 0D`, отправляет
   одну карточку A, выдерживает 30 s без metadata callbacks, затем B,
   pause/resume и reconnect. Сравнить с periodic variant.
@@ -448,7 +458,7 @@ public Dart façade, fake-platform tests зелёные; generated source text �
 
 - order подтверждён → изменить только order, иначе сохранить текущий;
 - width19 подтверждена → только `MEDIA_FIELD_MAX=19`, иначе20;
-- encoding подтверждён отдельным опытом → только encoding, иначе UTF-8;
+- encoding — сохранить ICU→ASCII baseline; новый charset допустим только по новому требованию и отдельному evidence;
 - retention без periodic подтверждён → удалить только repeat, иначе1 Hz;
 - каждый marker/playback/art path принят или отклонён отдельно по evidence;
   best-effort не означает hardware verified;

@@ -24,6 +24,9 @@ class NavProgress {
   final double etaSeconds;
   final bool offRoute;
   final bool arrived;
+
+  /// The next street for the firmware card, absent after arrival.
+  String? get roadName => arrived ? null : nextManeuver?.roadName;
 }
 
 class NavEngine {

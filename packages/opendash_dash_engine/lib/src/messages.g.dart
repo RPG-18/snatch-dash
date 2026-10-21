@@ -766,14 +766,15 @@ class DashEngineApi {
   /// `points.length - 1` entries and index `i` covers `points[i]` to
   /// `points[i + 1]` — the same convention as `nav.Route.jamSegments` on the app
   /// side. Ignored, with a solid line drawn instead, if the length disagrees.
-  Future<void> setNavState(double? remainingMeters, double? nextTurnMeters, int maneuver, String? etaHHMM, bool offRoute, List<NavPoint> points, List<int> jamSegments) async {
+  /// [roadName] is the next maneuver's English SDK toponym; `null` clears it.
+  Future<void> setNavState(double? remainingMeters, double? nextTurnMeters, int maneuver, String? etaHHMM, bool offRoute, List<NavPoint> points, List<int> jamSegments, String? roadName) async {
     final pigeonVar_channelName = 'dev.flutter.pigeon.opendash_dash_engine.DashEngineApi.setNavState$pigeonVar_messageChannelSuffix';
     final pigeonVar_channel = BasicMessageChannel<Object?>(
       pigeonVar_channelName,
       pigeonChannelCodec,
       binaryMessenger: pigeonVar_binaryMessenger,
     );
-    final Future<Object?> pigeonVar_sendFuture = pigeonVar_channel.send(<Object?>[remainingMeters, nextTurnMeters, maneuver, etaHHMM, offRoute, points, jamSegments]);
+    final Future<Object?> pigeonVar_sendFuture = pigeonVar_channel.send(<Object?>[remainingMeters, nextTurnMeters, maneuver, etaHHMM, offRoute, points, jamSegments, roadName]);
     final pigeonVar_replyList = await pigeonVar_sendFuture as List<Object?>?;
 
     _extractReplyValueOrThrow(

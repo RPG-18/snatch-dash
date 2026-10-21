@@ -69,6 +69,7 @@ class NavLoop {
           .map((p) => NavPoint(lat: p.lat, lng: p.lng))
           .toList(),
       jamSegments: _route.jamSegments.map((j) => j.index).toList(),
+      roadName: _route.maneuvers.firstOrNull?.roadName,
     );
     _sub = DashEngine.instance.stateStream.listen(_onEngineEvent);
     _timer = Timer.periodic(const Duration(seconds: 1), (_) => _tick());
@@ -125,6 +126,7 @@ class NavLoop {
       maneuver: progress.nextManeuver?.dashCode ?? 0x09,
       etaHHMM: etaHHMM,
       offRoute: progress.offRoute,
+      roadName: progress.roadName,
       points: const [],
     );
 
@@ -193,6 +195,7 @@ class NavLoop {
               .map((p) => NavPoint(lat: p.lat, lng: p.lng))
               .toList(),
           jamSegments: newRoute.jamSegments.map((j) => j.index).toList(),
+          roadName: newRoute.maneuvers.firstOrNull?.roadName,
         ),
       );
     } finally {

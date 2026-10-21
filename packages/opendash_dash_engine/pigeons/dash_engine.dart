@@ -201,6 +201,7 @@ abstract class DashEngineApi {
   /// `points.length - 1` entries and index `i` covers `points[i]` to
   /// `points[i + 1]` — the same convention as `nav.Route.jamSegments` on the app
   /// side. Ignored, with a solid line drawn instead, if the length disagrees.
+  /// [roadName] is the next maneuver's English SDK toponym; `null` clears it.
   void setNavState(
     double? remainingMeters,
     double? nextTurnMeters,
@@ -209,6 +210,7 @@ abstract class DashEngineApi {
     bool offRoute,
     List<NavPoint> points,
     List<int> jamSegments,
+    String? roadName,
   );
 
   void setFollowMode(bool enabled);

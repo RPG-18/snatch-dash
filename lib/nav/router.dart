@@ -1,6 +1,5 @@
 import 'dart:async';
 
-import 'package:flutter/widgets.dart' show WidgetsBinding;
 import 'package:yandex_maps_mapkit/directions.dart' as ymk;
 import 'package:yandex_maps_mapkit/mapkit.dart' as ymk;
 
@@ -56,15 +55,6 @@ class Router {
     ymk.JamType.VeryHard: JamLevel.veryHard,
   };
 
-  /// Matches [deviceLocalizations]'s locale resolution (OS locale, ru/en
-  /// supported, no in-app switcher) so the SDK-generated
-  /// `annotation.descriptionText` [VoiceManager] speaks comes back in the
-  /// same language as the rest of the UI.
-  static ymk.AnnotationLanguage get _annotationLanguage =>
-      WidgetsBinding.instance.platformDispatcher.locale.languageCode == 'ru'
-      ? ymk.AnnotationLanguage.Russian
-      : ymk.AnnotationLanguage.English;
-
   static const _maneuverTypeByAction = {
     ymk.DrivingAction.Straight: ManeuverType.straight,
     ymk.DrivingAction.SlightLeft: ManeuverType.slightLeft,
@@ -109,7 +99,7 @@ class Router {
     final session = _router.requestRoutes(
       ymk.DrivingOptions(
         routesCount: routesCount,
-        annotationLanguage: _annotationLanguage,
+        annotationLanguage: ymk.AnnotationLanguage.English,
       ),
       const ymk.DrivingVehicleOptions(),
       ymk.DrivingSessionRouteListener(
@@ -178,13 +168,8 @@ class Router {
           .map((s) => _toManeuver(s, geometry, cumulative))
           .whereType<Maneuver>(),
       Maneuver(
-        // Synthetic — not from a `DrivingSection.metadata.annotation`, so
-        // there's no SDK `descriptionText` to put here. Left untranslated
-        // deliberately: `VoiceManager._turnPhrase` special-cases `arrive`
-        // and speaks its own l10n phrase instead of this field, and nothing
-        // else reads `Maneuver.instruction`.
+        // Arrival has no next street; the firmware falls back to the destination.
         type: ManeuverType.arrive,
-        instruction: 'Arrive at destination',
         location: geometry.last,
         cumulativeMeters: weight.distance.value,
       ),
@@ -230,7 +215,7 @@ class Router {
 
     return Maneuver(
       type: type,
-      instruction: annotation.descriptionText,
+      roadName: annotation.toponym,
       location: GeoPoint(
         a.lat + (b.lat - a.lat) * t,
         a.lng + (b.lng - a.lng) * t,

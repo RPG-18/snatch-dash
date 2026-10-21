@@ -56,6 +56,8 @@ abstract class OpendashDashEnginePlatform extends PlatformInterface {
   /// — same convention as `nav.Route.jamSegments`/`JamLevel.index` on the
   /// Dart app side. Only meaningful when [points] is non-empty; ignored
   /// (native side falls back to a solid line) if its length doesn't match.
+  /// [roadName] is the next street from the English route, replaced on every
+  /// update; `null` falls back to the destination rather than keeping stale text.
   Future<void> setNavState({
     double? remainingMeters,
     double? nextTurnMeters,
@@ -64,6 +66,7 @@ abstract class OpendashDashEnginePlatform extends PlatformInterface {
     bool offRoute = false,
     List<NavPoint> points = const [],
     List<int> jamSegments = const [],
+    String? roadName,
   }) => throw UnimplementedError();
 
   Future<void> setFollowMode(bool enabled) => throw UnimplementedError();
@@ -83,7 +86,8 @@ abstract class OpendashDashEnginePlatform extends PlatformInterface {
       throw UnimplementedError();
 
   /// Shows the system prompt. Returns false when there was nothing to ask.
-  Future<bool> requestIgnoreBatteryOptimisations() => throw UnimplementedError();
+  Future<bool> requestIgnoreBatteryOptimisations() =>
+      throw UnimplementedError();
 
   /// One Flutter-side error into the ride file, rate-limited natively.
   Future<void> rideError(String message) => throw UnimplementedError();

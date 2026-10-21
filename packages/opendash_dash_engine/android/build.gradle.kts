@@ -93,6 +93,9 @@ android {
         getByName("test") {
             java.srcDirs("src/test/kotlin")
         }
+        getByName("androidTest") {
+            java.srcDirs("src/androidTest/kotlin")
+        }
     }
 
     defaultConfig {
@@ -100,6 +103,7 @@ android {
         // floor its code carries (WifiNetworkSpecifier, NetworkCapabilities
         // .transportInfo) belongs here first — see android/app/build.gradle.kts.
         minSdk = 29
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         buildConfigField("String", "GIT_SHA", "\"$gitLabel\"")
     }
 
@@ -179,6 +183,9 @@ dependencies {
     implementation("org.maplibre.gl:android-sdk-opengl:13.6.0")
 
     testImplementation("org.jetbrains.kotlin:kotlin-test")
+    // Platform ICU is stubbed in JVM android.jar; text regressions run on Android.
+    androidTestImplementation("androidx.test:runner:1.7.0")
+    androidTestImplementation("androidx.test.ext:junit:1.3.0")
     // `org.json` ships with Android but is stubbed in JVM unit tests; the real
     // implementation lets the style assembler be tested without a device.
     testImplementation("org.json:json:20240303")

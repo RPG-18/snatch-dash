@@ -15,6 +15,7 @@ import com.opendash.opendash_dash_engine.util.monotonicMs
 import java.util.Locale
 import kotlinx.coroutines.flow.StateFlow
 import org.maplibre.android.camera.CameraPosition
+import org.maplibre.android.constants.MapLibreConstants
 import org.maplibre.android.geometry.LatLng
 import kotlin.math.exp
 
@@ -62,11 +63,11 @@ internal class MapFrameRenderer(
         private const val CAM_MOVING_DWELL_MS = 2_000L
 
         // Perspective tilt for the heading-up view, in degrees. MapLibre clamps
-        // the value to 0..60. Stage 3 starts at 45 degrees: the final value is
-        // selected on the dash, not at the keyboard. Real tilt changes what
+        // the value to 0..60. Stage 3 currently tests 60 degrees; the final value
+        // is selected on the dash. Real tilt changes what
         // falls off the edge of a pack (the camera looks further, so the 2 km
         // cut buffer is eaten sooner); see «Камера, а не поворот растра».
-        private const val NAV_TILT_DEG = 45.0
+        private const val NAV_TILT_DEG = 60.0
 
         // How long the frame loop waits for a snapshot before giving up on it and
         // keeping the previous frame. Two frame intervals at 4 fps; a snapshot
@@ -402,12 +403,20 @@ internal class MapFrameRenderer(
         // for the whole frame; taking it as a parameter makes that the only read there is.
         // Review, 2026-09-15.
         headingUp: Boolean,
+        padding: IntArray,
     ): CameraPosition =
         CameraPosition.Builder()
             .target(LatLng(centerLat, centerLng))
             .zoom(camera.zoom / DashCameraState.ZOOM_SCALE)
             .bearing(if (headingUp) heading.toDouble() else 0.0)
-            .tilt(if (headingUp) NAV_TILT_DEG else 0.0)
+            .tilt(
+                DashCamera.effectiveTilt(
+                    if (headingUp) NAV_TILT_DEG else 0.0,
+                    MapLibreConstants.DEFAULT_FOV,
+                    frameHeight,
+                    padding,
+                ),
+            )
             .build()
 
     /**
@@ -454,8 +463,8 @@ internal class MapFrameRenderer(
     ): Boolean {
         val bmp = frameBitmap ?: return false
 
-        val cam = cameraFor(centerLat, centerLng, heading, headingUpNow)
         val padding = DashCamera.padding(frameWidth, frameHeight, headingUpNow, camera.panX, camera.panY)
+        val cam = cameraFor(centerLat, centerLng, heading, headingUpNow, padding)
         logCameraSend(cam, padding, headingUpNow)
 
         val snapshotStart = monotonicMs()
@@ -492,8 +501,8 @@ internal class MapFrameRenderer(
             // so that note no longer claims they are only ever read one at a time.
             headingUp = headingUpNow,
             heading = heading,
-            // Use the actual camera value, after MapLibre's clamp, so the screen-space
-            // rider arrow gets the same tilt that produced this snapshot.
+            // Apply the native padding-dependent limit before capture; Builder's
+            // 0..60 clamp alone does not describe the rendered pitch.
             tiltDeg = cam.tilt,
             riderLat = if (haveRider) camera.lat else null,
             riderLng = if (haveRider) camera.lng else null,
@@ -517,9 +526,18 @@ internal class MapFrameRenderer(
         overlays.draw(
             canvas,
             frame,
-            MapProjection { lat, lng ->
-                val p = snapshot.pixelForLatLng(LatLng(lat, lng))
-                if (projScale == 1f) p else PointF(p.x * projScale, p.y * projScale)
+            object : MapProjection {
+                override fun project(lat: Double, lng: Double): PointF {
+                    val p = snapshot.pixelForLatLng(LatLng(lat, lng))
+                    return if (projScale == 1f) p else PointF(p.x * projScale, p.y * projScale)
+                }
+
+                override fun unproject(x: Float, y: Float): GeoPoint {
+                    // Native latLngForPixel takes logical snapshot coordinates,
+                    // unlike pixelForLatLng which multiplies its result by pixelRatio.
+                    val p = snapshot.latLngForPixel(PointF(x, y))
+                    return GeoPoint(p.latitude, p.longitude)
+                }
             },
         )
 

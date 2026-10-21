@@ -40,6 +40,7 @@ class MockOpendashDashEnginePlatform
     bool offRoute = false,
     List<NavPoint> points = const [],
     List<int> jamSegments = const [],
+    String? roadName,
   }) async {}
 
   @override

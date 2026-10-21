@@ -6,13 +6,11 @@ import 'package:snatch_dash/nav/route.dart';
 void main() {
   const firstManeuver = Maneuver(
     type: ManeuverType.left,
-    instruction: 'Turn left',
     location: GeoPoint(0, 0),
     cumulativeMeters: 1000,
   );
   const secondManeuver = Maneuver(
     type: ManeuverType.right,
-    instruction: 'Turn right',
     location: GeoPoint(0, 0),
     cumulativeMeters: 2000,
   );

@@ -69,6 +69,7 @@ class DashEngine {
     bool offRoute = false,
     List<NavPoint> points = const [],
     List<int> jamSegments = const [],
+    String? roadName,
   }) => OpendashDashEnginePlatform.instance.setNavState(
     remainingMeters: remainingMeters,
     nextTurnMeters: nextTurnMeters,
@@ -77,6 +78,7 @@ class DashEngine {
     offRoute: offRoute,
     points: points,
     jamSegments: jamSegments,
+    roadName: roadName,
   );
 
   Future<void> setFollowMode(bool enabled) =>

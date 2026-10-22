@@ -10,6 +10,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.StandardTestDispatcher
@@ -20,8 +21,13 @@ import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.withTimeout
 import java.security.KeyPairGenerator
 import java.security.interfaces.RSAPublicKey
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.FutureTask
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -658,6 +664,90 @@ class DashSessionTest {
     // ── One session at a time ─────────────────────────────────────────────
 
     @Test
+    fun `streaming already past its guard cannot overwrite a concurrent link loss`() = runTest {
+        assertStreamingCannotRevive(DashState.IDLE) { r ->
+            r.wire.close()
+            runCurrent()
+            assertIs<SessionEvent.Failed>(r.events.last())
+        }
+    }
+
+    @Test
+    fun `streaming already past its guard cannot overwrite a concurrent failure`() = runTest {
+        assertStreamingCannotRevive(DashState.ERROR) { r ->
+            // Exercise fail() through the real writer, not reflection or a test-only API.
+            r.session.send(DashCommand.AuthSendKey(ByteArray(1)))
+            runCurrent()
+            assertIs<SessionEvent.Failed>(r.events.last())
+        }
+    }
+
+    @Test
+    fun `streaming already past its guard cannot overwrite a concurrent farewell close`() = runTest {
+        assertStreamingCannotRevive(DashState.IDLE) { r ->
+            r.wire.clearSent()
+            r.session.close(farewell = true)
+            assertEquals(
+                listOf(enc(DashCommand.ProjectionStop), enc(DashCommand.ProjectionOff)),
+                r.wire.sent.map { it.bytes.toHex() },
+            )
+        }
+    }
+
+    @Test
+    fun `handshake state publication cannot overwrite a concurrent link loss`() = runBlocking {
+        // These writes originate inside run(), not from an external startStreaming caller.
+        // Use real worker threads so RX can terminate while the handshake is paused.
+        for ((before, after) in listOf(
+            DashState.CONNECTING to DashState.AUTHENTICATING,
+            DashState.AUTHENTICATING to DashState.READY,
+        )) {
+            val parent = Job()
+            val wire = FakeDashTransport { System.nanoTime() / 1_000_000 }
+            val key = rsaKey()
+            wire.deliver(incoming(0x07, 0x00, key.modulus.toByteArray()))
+            wire.deliver(incoming(0x07, 0x03, key.publicExponent.toByteArray()))
+            wire.deliver(incoming(0x07, 0x01, byteArrayOf(0x01, 0x02)))
+            StateLogPause(before, after).use { pause ->
+                val session = DashSession.open(
+                    ssid = ssid,
+                    chrome = MutableStateFlow(DashChrome()),
+                    clock = { System.nanoTime() / 1_000_000 },
+                    parent = parent,
+                    context = Dispatchers.Default,
+                ) { wire }
+                try {
+                    pause.awaitPaused()
+                    wire.close()
+                    withTimeout(5_000) { session.state.first { it == DashState.IDLE } }
+                    pause.resume()
+                    parent.complete()
+                    withTimeout(5_000) { parent.join() }
+                    assertEquals(DashState.IDLE, session.state.value, "late $after publication")
+                    session.startStreaming()
+                    assertEquals(DashState.IDLE, session.state.value)
+                    val events = mutableListOf<SessionEvent>()
+                    withTimeout(5_000) {
+                        session.events.first {
+                            events += it
+                            it is SessionEvent.Failed
+                        }
+                    }
+                    assertEquals(
+                        if (after == DashState.READY) listOf(SessionEvent.Ready) else emptyList(),
+                        events.dropLast(1),
+                        "Ready, if committed, precedes the terminal event",
+                    )
+                } finally {
+                    pause.resume()
+                    session.close(farewell = false)
+                    parent.cancel()
+                }
+            }
+        }
+    }
+
+    @Test
     fun `a closed session cannot write to a later one's transport`() = runTest {
         val first = rig()
         reachReady(first)
@@ -699,12 +789,12 @@ class DashSessionTest {
         }
 
     /**
-     * The one test on the real clock, and the one that would have caught the 2026-09-19
-     * deadlock in review instead of after it.
+     * Runs on the real clock, and would have caught the 2026-09-19 deadlock in review
+     * instead of after it.
      *
-     * Everything else here runs on virtual time, where "close() never returns" shows up as a
-     * build that hangs — which is not a red test, it is a stuck CI job nobody can read. This
-     * one runs the session on a real dispatcher and puts a wall-clock bound on the close, so
+     * On virtual time, "close() never returns" shows up as a build that hangs — not a red
+     * test, but a stuck CI job nobody can read. This test runs the session on a real
+     * dispatcher and puts a wall-clock bound on the close, so
      * the failure has a name.
      *
      * What it guards: [DashSession.close] cancels the scope and joins it, and the receive
@@ -795,6 +885,80 @@ class DashSessionTest {
     }
 
     // ── Rig helpers ───────────────────────────────────────────────────────
+
+    /**
+     * Pause an actual transition at the existing logger seam. Before lifecycle ownership
+     * was atomic, this line followed the finished check but preceded the state write.
+     * The fixed implementation commits first and logs outside its lifecycle lock.
+     *
+     * Latches establish the interleaving; the wall-clock bound only prevents a broken
+     * implementation from hanging CI. DebugLog swallows sink exceptions, hence the explicit
+     * timedOut flag rather than an assertion inside the sink.
+     */
+    private class StateLogPause(before: DashState, after: DashState) : AutoCloseable {
+        private val previousSink = DebugLog.sink
+        private val reached = CountDownLatch(1)
+        private val released = CountDownLatch(1)
+        private val timedOut = AtomicBoolean(false)
+
+        init {
+            DebugLog.sink = { _, _, _ -> }
+            DebugLog.sink = { tag, _, message ->
+                if (tag == "DashSession" && message == "state $before -> $after") {
+                    reached.countDown()
+                    if (!released.await(10, TimeUnit.SECONDS)) timedOut.set(true)
+                }
+            }
+        }
+
+        fun awaitPaused() {
+            assertTrue(reached.await(5, TimeUnit.SECONDS), "state writer reached the pause")
+        }
+
+        fun resume() {
+            released.countDown()
+        }
+
+        override fun close() {
+            released.countDown()
+            DebugLog.sink = previousSink
+            assertFalse(timedOut.get(), "termination must finish without the paused logger")
+        }
+    }
+
+    private suspend fun TestScope.assertStreamingCannotRevive(
+        terminal: DashState,
+        terminate: suspend (Rig) -> Unit,
+    ) {
+        val r = rig()
+        try {
+            reachReady(r)
+            StateLogPause(DashState.READY, DashState.STREAMING).use { pause ->
+                val startTask = FutureTask<Unit> { r.session.startStreaming() }
+                val thread = Thread(startTask, "session-start-race").apply {
+                    isDaemon = true
+                    start()
+                }
+                try {
+                    pause.awaitPaused()
+                    terminate(r)
+                    assertEquals(terminal, r.session.state.value)
+                    assertTrue(r.wire.closed)
+                    pause.resume()
+                    startTask.get(5, TimeUnit.SECONDS)
+                    assertEquals(terminal, r.session.state.value, "the late writer cannot revive it")
+                    r.session.startStreaming()
+                    assertEquals(terminal, r.session.state.value)
+                } finally {
+                    pause.resume()
+                    thread.join(5_000)
+                    assertFalse(thread.isAlive, "the streaming caller must return")
+                }
+            }
+        } finally {
+            r.close()
+        }
+    }
 
     private fun enc(cmd: DashCommand) = K1GCodec.encode(cmd).toHex()
 

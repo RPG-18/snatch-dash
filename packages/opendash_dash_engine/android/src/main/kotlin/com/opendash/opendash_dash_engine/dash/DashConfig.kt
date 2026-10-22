@@ -59,7 +59,10 @@ class DashConfig private constructor(context: Context) {
 
     var password: String
         get() = prefs.getString(KEY_PASSWORD, DEFAULT_PASSWORD) ?: DEFAULT_PASSWORD
-        set(v) = prefs.edit().putString(KEY_PASSWORD, v).apply()
+        set(v) {
+            validatePassword(v)
+            prefs.edit().putString(KEY_PASSWORD, v).apply()
+        }
 
     /** True until a specific dash has been identified — connect by prefix discovery. */
     val needsDiscovery: Boolean get() = ssid.isBlank()
@@ -199,6 +202,15 @@ class DashConfig private constructor(context: Context) {
 
         const val DEFAULT_PREFIX   = "RE_"
         const val DEFAULT_PASSWORD = "12345678"
+
+        internal fun validatePassword(password: String) {
+            // Match the Wi-Fi layer's intentional open-network semantics; never trim a
+            // nonblank passphrase, because spaces can be part of its credentials.
+            if (password.isBlank()) return
+            require(password.length in 8..63 && password.all { it.code <= 0x7f }) {
+                "Wi-Fi password must contain 8–63 ASCII characters, or be blank for an open network"
+            }
+        }
 
         @Volatile private var instance: DashConfig? = null
         fun get(context: Context): DashConfig =

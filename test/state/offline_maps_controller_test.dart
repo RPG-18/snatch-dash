@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -37,10 +39,13 @@ class _FakeApi extends MapManifestApi {
   MapManifest? local;
   Object? remoteThrows;
   int fetchCount = 0;
+  Future<MapManifest>? remotePending;
 
   @override
   Future<MapManifest> fetchRemote() async {
     fetchCount++;
+    final pending = remotePending;
+    if (pending != null) return pending;
     final failure = remoteThrows;
     if (failure != null) throw failure;
     final manifest = remote;
@@ -58,13 +63,18 @@ class _FakeDownloader extends MapPackDownloader {
   final List<String> started = [];
   final List<String> cancelled = [];
   final List<String> deleted = [];
+  Future<bool>? roomPending;
+  Future<void>? startPending;
+  Future<void>? cancelPending;
+  Future<List<PackProgress>>? progressPending;
+  Future<List<PackDownloadResult>>? reconcilePending;
 
   /// Queued so a test can hand back one batch of outcomes and then nothing.
   final List<List<PackDownloadResult>> harvests = [];
   List<PackProgress> live = const [];
 
   @override
-  Future<bool> hasRoomFor(int bytes) async => room;
+  Future<bool> hasRoomFor(int bytes) async => await roomPending ?? room;
 
   @override
   Future<void> start(
@@ -76,10 +86,15 @@ class _FakeDownloader extends MapPackDownloader {
     final failure = startThrows;
     if (failure != null) throw failure;
     started.add(region.code);
+    final pending = startPending;
+    if (pending != null) await pending;
   }
 
   @override
-  Future<void> cancel(String code) async => cancelled.add(code);
+  Future<void> cancel(String code) async {
+    cancelled.add(code);
+    await cancelPending;
+  }
 
   bool deleteSucceeds = true;
 
@@ -90,7 +105,7 @@ class _FakeDownloader extends MapPackDownloader {
   }
 
   @override
-  Future<List<PackProgress>> progress() async => live;
+  Future<List<PackProgress>> progress() async => await progressPending ?? live;
 
   /// What the render engine would see on disk. Defaults to "everything the
   /// registry claims", so the drift check is a no-op unless a test says otherwise.
@@ -104,7 +119,8 @@ class _FakeDownloader extends MapPackDownloader {
 
   @override
   Future<List<PackDownloadResult>> reconcile() async =>
-      harvests.isEmpty ? const [] : harvests.removeAt(0);
+      await reconcilePending ??
+      (harvests.isEmpty ? const [] : harvests.removeAt(0));
 }
 
 ProviderContainer _container({
@@ -514,6 +530,386 @@ void main() {
     });
   });
 
+  group('cancellation owns the download generation', () {
+    for (final outcome in [
+      PackOutcome.conflict,
+      PackOutcome.checksumMismatch,
+    ]) {
+      for (final delete in [false, true]) {
+        test(
+          '${delete ? 'delete' : 'cancel'} during $outcome refresh',
+          () async {
+            final api = _FakeApi(remote: _manifest());
+            final downloader = _FakeDownloader();
+            final container = _container(api: api, downloader: downloader);
+            final controller = container.read(
+              offlineMapsControllerProvider.notifier,
+            );
+            await _settle();
+            await controller.download(_adygea, 'Адыгея');
+            final refresh = Completer<MapManifest>();
+            api.remotePending = refresh.future;
+            downloader.harvests.add([
+              PackDownloadResult(
+                code: 'ru-ad',
+                outcome: outcome,
+                generatedAt: 'T1',
+              ),
+            ]);
+            final poll = controller.pollForTest();
+            await _settle();
+            expect(api.fetchCount, 2);
+
+            if (delete) {
+              await controller.delete('ru-ad');
+            } else {
+              await controller.cancel('ru-ad');
+            }
+            refresh.complete(_manifest(generatedAt: 'T2', sha: 'bbb'));
+            await poll;
+
+            expect(downloader.started, ['ru-ad']);
+            expect(downloader.cancelled, ['ru-ad']);
+            expect(
+              container.read(offlineMapsControllerProvider).progress,
+              isEmpty,
+            );
+            expect(
+              container.read(offlineMapsControllerProvider).lastError,
+              isNull,
+            );
+            expect(
+              await container.read(installedPacksRepositoryProvider).list(),
+              isEmpty,
+            );
+          },
+        );
+      }
+    }
+
+    for (final retry in [false, true]) {
+      test(
+        'cancel during ${retry ? 'retry' : 'manual'} disk space check',
+        () async {
+          final api = _FakeApi(remote: _manifest());
+          final downloader = _FakeDownloader();
+          final container = _container(api: api, downloader: downloader);
+          final controller = container.read(
+            offlineMapsControllerProvider.notifier,
+          );
+          await _settle();
+          final room = Completer<bool>();
+          downloader.roomPending = room.future;
+          Future<void> pending;
+          if (retry) {
+            downloader.harvests.add([
+              const PackDownloadResult(
+                code: 'ru-ad',
+                outcome: PackOutcome.conflict,
+              ),
+            ]);
+            pending = controller.pollForTest();
+          } else {
+            pending = controller.download(_adygea, 'Адыгея');
+          }
+          await _settle();
+          await controller.cancel('ru-ad');
+          room.complete(true);
+          await pending;
+          expect(downloader.started, isEmpty);
+          expect(
+            container.read(offlineMapsControllerProvider).lastError,
+            isNull,
+          );
+        },
+      );
+    }
+
+    test(
+      'a manual restart has its own retry budget and ignores the old refresh',
+      () async {
+        final api = _FakeApi(remote: _manifest());
+        final downloader = _FakeDownloader();
+        final container = _container(api: api, downloader: downloader);
+        final controller = container.read(
+          offlineMapsControllerProvider.notifier,
+        );
+        await _settle();
+        await controller.download(_adygea, 'Адыгея');
+        final refresh = Completer<MapManifest>();
+        api.remotePending = refresh.future;
+        downloader.harvests.add([
+          const PackDownloadResult(
+            code: 'ru-ad',
+            outcome: PackOutcome.conflict,
+          ),
+        ]);
+        final oldPoll = controller.pollForTest();
+        await _settle();
+        await controller.cancel('ru-ad');
+        await controller.download(_adygea, 'Адыгея');
+        api.remotePending = null;
+        refresh.complete(_manifest());
+        await oldPoll;
+        expect(downloader.started, ['ru-ad', 'ru-ad']);
+
+        for (var attempt = 0; attempt < 3; attempt++) {
+          downloader.harvests.add([
+            const PackDownloadResult(
+              code: 'ru-ad',
+              outcome: PackOutcome.conflict,
+            ),
+          ]);
+          await controller.pollForTest();
+        }
+        expect(downloader.started, ['ru-ad', 'ru-ad', 'ru-ad', 'ru-ad']);
+        expect(
+          container.read(offlineMapsControllerProvider).lastError,
+          'downloadFailed',
+        );
+      },
+    );
+
+    test(
+      'cancel completion cannot clear a manually restarted generation',
+      () async {
+        final downloader = _FakeDownloader();
+        final container = _container(
+          api: _FakeApi(remote: _manifest()),
+          downloader: downloader,
+        );
+        final controller = container.read(
+          offlineMapsControllerProvider.notifier,
+        );
+        await _settle();
+        final cancelled = Completer<void>();
+        downloader.cancelPending = cancelled.future;
+        final cancel = controller.cancel('ru-ad');
+        await controller.download(_adygea, 'Адыгея');
+        downloader.live = const [
+          PackProgress(code: 'ru-ad', bytesSoFar: 1, totalBytes: 100),
+        ];
+        await controller.pollForTest();
+        cancelled.complete();
+        await cancel;
+        expect(container.read(offlineMapsControllerProvider).progress.keys, [
+          'ru-ad',
+        ]);
+      },
+    );
+
+    test('failed cancellation keeps observing the live download', () async {
+      final downloader = _FakeDownloader();
+      final container = _container(
+        api: _FakeApi(remote: _manifest()),
+        downloader: downloader,
+      );
+      final controller = container.read(offlineMapsControllerProvider.notifier);
+      await _settle();
+      await controller.download(_adygea, 'Адыгея');
+      final cancelled = Completer<void>();
+      downloader.cancelPending = cancelled.future;
+      final cancellation = controller.cancel('ru-ad');
+      final failed = expectLater(cancellation, throwsStateError);
+      cancelled.completeError(StateError('platform cancellation failed'));
+      await failed;
+      downloader.live = const [
+        PackProgress(code: 'ru-ad', bytesSoFar: 50, totalBytes: 100),
+      ];
+      await controller.pollForTest();
+      expect(
+        container
+            .read(offlineMapsControllerProvider)
+            .progress['ru-ad']
+            ?.bytesSoFar,
+        50,
+      );
+      downloader.harvests.add([
+        const PackDownloadResult(
+          code: 'ru-ad',
+          outcome: PackOutcome.installed,
+          sha256: 'aaa',
+          generatedAt: 'T1',
+          sizeBytes: 100,
+        ),
+      ]);
+      await controller.pollForTest();
+      expect(container.read(installedPacksProvider)!.single.code, 'ru-ad');
+      expect(downloader.started, ['ru-ad']);
+    });
+
+    for (final restart in [false, true]) {
+      test(
+        'late reconcile does not revive cancellation (restart=$restart)',
+        () async {
+          final api = _FakeApi(remote: _manifest());
+          final downloader = _FakeDownloader();
+          final container = _container(api: api, downloader: downloader);
+          final controller = container.read(
+            offlineMapsControllerProvider.notifier,
+          );
+          await _settle();
+          final reconcile = Completer<List<PackDownloadResult>>();
+          downloader.reconcilePending = reconcile.future;
+          final poll = controller.pollForTest();
+          await _settle();
+          await controller.cancel('ru-ad');
+          if (restart) await controller.download(_adygea, 'Адыгея');
+          reconcile.complete([
+            const PackDownloadResult(
+              code: 'ru-ad',
+              outcome: PackOutcome.conflict,
+            ),
+          ]);
+          await poll;
+          expect(downloader.started, restart ? ['ru-ad'] : isEmpty);
+          expect(api.fetchCount, 1);
+        },
+      );
+    }
+
+    test(
+      'a cancelled result in a later reconcile is not adopted as bootstrap work',
+      () async {
+        final downloader = _FakeDownloader();
+        final container = _container(
+          api: _FakeApi(remote: _manifest()),
+          downloader: downloader,
+        );
+        final controller = container.read(
+          offlineMapsControllerProvider.notifier,
+        );
+        await _settle();
+        await controller.cancel('ru-ad');
+        downloader.harvests.add([
+          const PackDownloadResult(
+            code: 'ru-ad',
+            outcome: PackOutcome.conflict,
+          ),
+        ]);
+        await controller.pollForTest();
+        expect(downloader.started, isEmpty);
+      },
+    );
+
+    test('late progress cannot restore a cancelled pack', () async {
+      final downloader = _FakeDownloader();
+      final container = _container(
+        api: _FakeApi(remote: _manifest()),
+        downloader: downloader,
+      );
+      final controller = container.read(offlineMapsControllerProvider.notifier);
+      await _settle();
+      final progress = Completer<List<PackProgress>>();
+      downloader.progressPending = progress.future;
+      final poll = controller.pollForTest();
+      await controller.cancel('ru-ad');
+      progress.complete([
+        const PackProgress(code: 'ru-ad', bytesSoFar: 1, totalBytes: 100),
+      ]);
+      await poll;
+      expect(container.read(offlineMapsControllerProvider).progress, isEmpty);
+    });
+
+    test(
+      'cancelling one pack does not invalidate another pack in the same batch',
+      () async {
+        const other = MapRegion(
+          code: 'ru-alt',
+          path: 'ru/ru-alt.pmtiles',
+          sizeBytes: 100,
+          sha256: 'bbb',
+        );
+        final manifest = MapManifest(
+          schemaVersion: 1,
+          generatedAt: 'T2',
+          fileCount: 2,
+          totalSizeBytes: 200,
+          regions: [_adygea, other],
+        );
+        final api = _FakeApi(remote: manifest);
+        final downloader = _FakeDownloader();
+        final container = _container(api: api, downloader: downloader);
+        final controller = container.read(
+          offlineMapsControllerProvider.notifier,
+        );
+        await _settle();
+        final refresh = Completer<MapManifest>();
+        api.remotePending = refresh.future;
+        downloader.harvests.add([
+          const PackDownloadResult(
+            code: 'ru-ad',
+            outcome: PackOutcome.conflict,
+          ),
+          const PackDownloadResult(
+            code: 'ru-alt',
+            outcome: PackOutcome.conflict,
+          ),
+        ]);
+        final poll = controller.pollForTest();
+        await _settle();
+        await controller.cancel('ru-ad');
+        refresh.complete(manifest);
+        await poll;
+        expect(downloader.started, ['ru-alt']);
+      },
+    );
+
+    test(
+      'cancel still adopts a file already installed by native reconcile',
+      () async {
+        final downloader = _FakeDownloader();
+        final container = _container(
+          api: _FakeApi(remote: _manifest()),
+          downloader: downloader,
+        );
+        final controller = container.read(
+          offlineMapsControllerProvider.notifier,
+        );
+        await _settle();
+        final reconcile = Completer<List<PackDownloadResult>>();
+        downloader.reconcilePending = reconcile.future;
+        final poll = controller.pollForTest();
+        await _settle();
+        await controller.cancel('ru-ad');
+        reconcile.complete([
+          const PackDownloadResult(
+            code: 'ru-ad',
+            outcome: PackOutcome.installed,
+            sha256: 'aaa',
+            generatedAt: 'T1',
+            sizeBytes: 100,
+          ),
+        ]);
+        await poll;
+        final packs = await container
+            .read(installedPacksRepositoryProvider)
+            .list();
+        expect(packs.map((p) => p.code), ['ru-ad']);
+      },
+    );
+
+    test('a refused delete leaves the pending retry valid', () async {
+      final api = _FakeApi(remote: _manifest());
+      final downloader = _FakeDownloader()..deleteSucceeds = false;
+      final container = _container(api: api, downloader: downloader);
+      final controller = container.read(offlineMapsControllerProvider.notifier);
+      await _settle();
+      final refresh = Completer<MapManifest>();
+      api.remotePending = refresh.future;
+      downloader.harvests.add([
+        const PackDownloadResult(code: 'ru-ad', outcome: PackOutcome.conflict),
+      ]);
+      final poll = controller.pollForTest();
+      await _settle();
+      await controller.delete('ru-ad');
+      expect(downloader.cancelled, isEmpty);
+      refresh.complete(_manifest(generatedAt: 'T2'));
+      await poll;
+      expect(downloader.started, ['ru-ad']);
+    });
+  });
+
   group('regressions fixed after review', () {
     test('a download that outlived the app is picked up at startup', () async {
       // The whole reason for using the system downloader: the transfer survives
@@ -541,6 +937,121 @@ void main() {
         reason: 'progress must be visible without starting a new download',
       );
     });
+
+    test(
+      'a rejected replacement still harvests the recovered native transfer',
+      () async {
+        final progress = Completer<List<PackProgress>>();
+        final room = Completer<bool>();
+        final downloader = _FakeDownloader()
+          ..progressPending = progress.future
+          ..roomPending = room.future;
+        final repo = InMemoryInstalledPacksRepository();
+        final container = _container(
+          api: _FakeApi(remote: _manifest()),
+          downloader: downloader,
+          repo: repo,
+        );
+        final controller = container.read(
+          offlineMapsControllerProvider.notifier,
+        );
+        await _settle(); // Bootstrap is waiting for native progress.
+
+        final replacement = controller.download(_adygea, 'Адыгея');
+        // Native FIFO: the old progress arrives, then the room check rejects the
+        // replacement, then reconciliation finds the original transfer unfinished.
+        progress.complete(const [
+          PackProgress(code: 'ru-ad', bytesSoFar: 50, totalBytes: 100),
+        ]);
+        room.complete(false);
+        await replacement;
+        await _settle();
+        expect(downloader.started, isEmpty);
+        expect(
+          container.read(offlineMapsControllerProvider).lastError,
+          'noSpace',
+        );
+        expect(container.read(offlineMapsControllerProvider).progress, isEmpty);
+
+        final installed = Completer<InstalledPack>();
+        container.listen(installedPacksProvider, (_, packs) {
+          final pack = packs?.where((p) => p.code == 'ru-ad').firstOrNull;
+          if (pack != null && !installed.isCompleted) installed.complete(pack);
+        });
+        downloader.progressPending = null;
+        downloader.harvests.add(const [
+          PackDownloadResult(
+            code: 'ru-ad',
+            outcome: PackOutcome.installed,
+            sha256: 'aaa',
+            generatedAt: 'T1',
+            sizeBytes: 100,
+          ),
+        ]);
+
+        // No manual tick or refresh: only the surviving periodic poller can
+        // collect the download that finishes after the failed replacement.
+        final pack = await installed.future.timeout(const Duration(seconds: 5));
+        expect(pack.sha256, 'aaa');
+        expect(pack.generatedAt, 'T1');
+        expect(pack.sizeBytes, 100);
+        expect((await repo.list()).map((p) => p.code), ['ru-ad']);
+      },
+    );
+
+    test(
+      'a superseded native start is harvested when its replacement is rejected',
+      () async {
+        final start = Completer<void>();
+        final downloader = _FakeDownloader()..startPending = start.future;
+        final repo = InMemoryInstalledPacksRepository();
+        final container = _container(
+          api: _FakeApi(remote: _manifest()),
+          downloader: downloader,
+          repo: repo,
+        );
+        final controller = container.read(
+          offlineMapsControllerProvider.notifier,
+        );
+        await _settle(); // Bootstrap found nothing; there is no poller.
+
+        final original = controller.download(_adygea, 'Адыгея');
+        await _settle(); // The first native start is now in flight.
+        expect(downloader.started, ['ru-ad']);
+        final room = Completer<bool>();
+        downloader.roomPending = room.future;
+        final replacement = controller.download(_adygea, 'Адыгея');
+        // FIFO: the first enqueue succeeds before the second room check fails.
+        start.complete();
+        room.complete(false);
+        await Future.wait([original, replacement]);
+        expect(
+          container.read(offlineMapsControllerProvider).lastError,
+          'noSpace',
+        );
+
+        final installed = Completer<InstalledPack>();
+        container.listen(installedPacksProvider, (_, packs) {
+          final pack = packs?.where((p) => p.code == 'ru-ad').firstOrNull;
+          if (pack != null && !installed.isCompleted) installed.complete(pack);
+        });
+        downloader.harvests.add(const [
+          PackDownloadResult(
+            code: 'ru-ad',
+            outcome: PackOutcome.installed,
+            sha256: 'aaa',
+            generatedAt: 'T1',
+            sizeBytes: 100,
+          ),
+        ]);
+
+        // No manual polling: observing the successful native start is independent
+        // of whether its Dart continuation still owns the download generation.
+        await installed.future.timeout(const Duration(seconds: 5));
+        expect((await repo.list()).map((p) => p.code), ['ru-ad']);
+        expect(downloader.started, ['ru-ad']);
+      },
+    );
 
     test('overlapping ticks do not pile up on the same reconcile', () async {
       var reconciles = 0;

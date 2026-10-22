@@ -1,3 +1,5 @@
+import 'dart:math';
+
 import 'geo_point.dart';
 import 'route.dart';
 
@@ -58,10 +60,11 @@ class NavEngine {
       }
     }
 
-    final remaining = (route.totalMeters - bestCum).clamp(
-      0.0,
-      double.maxFinite,
-    );
+    // Snapping to the final vertex does not mean the rider is there. Keep the
+    // actual distance as a lower bound for both arrival and voice guidance:
+    // otherwise a missed turn can announce arrival and stop background MapKit.
+    final distanceToDestination = GeoPoint.distMeters(pos, geom.last);
+    final remaining = max(route.totalMeters - bestCum, distanceToDestination);
     final arrived = remaining <= _arriveM;
     final offRoute = bestDist > _offRouteM;
 
@@ -70,7 +73,12 @@ class NavEngine {
       orElse: () => null,
     );
     final distToManeuver = next != null
-        ? (next.cumulativeMeters - bestCum).clamp(0.0, double.maxFinite)
+        ? max(
+            next.cumulativeMeters - bestCum,
+            next.location == geom.last
+                ? distanceToDestination
+                : GeoPoint.distMeters(pos, next.location),
+          )
         : remaining;
 
     final speed = speedMps > 0.5 ? speedMps : _defaultSpeedMps;

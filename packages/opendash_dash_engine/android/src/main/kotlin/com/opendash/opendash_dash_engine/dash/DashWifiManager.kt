@@ -65,6 +65,29 @@ data class WifiState(
 )
 
 /**
+ * Contain only platform request construction, before either the link job or poller starts.
+ * Kept independent of Android builders so JVM tests can exercise their failure boundary.
+ */
+internal inline fun <T : Any> buildWifiRequestOrReportFailure(
+    ssid: String,
+    reportFailure: (WifiState) -> Unit,
+    build: () -> T,
+): T? = try {
+    build()
+} catch (e: CancellationException) {
+    throw e
+} catch (e: Exception) {
+    reportFailure(
+        WifiState(
+            status = WifiConnStatus.ERROR,
+            ssid = ssid,
+            error = "${e.javaClass.simpleName}: ${e.message}",
+        ),
+    )
+    null
+}
+
+/**
  * Programmatically connects to the Tripper Dash WiFi hotspot using
  * WifiNetworkSpecifier + ConnectivityManager.requestNetwork().
  *
@@ -787,16 +810,26 @@ class DashWifiManager(
             }
         }
 
-        val specBuilder = WifiNetworkSpecifier.Builder()
-        if (pendingPrefix) specBuilder.setSsidPattern(PatternMatcher(pendingSsid, PatternMatcher.PATTERN_PREFIX))
-        else specBuilder.setSsid(pendingSsid)
-        if (pendingPassword.isNotBlank()) specBuilder.setWpa2Passphrase(pendingPassword)
+        val request = buildWifiRequestOrReportFailure(
+            ssid = pendingSsid,
+            reportFailure = { failure ->
+                RideDiagnostics.warn(TAG, "WiFi request construction failed: ${failure.error}")
+                // The controller translates ERROR to WifiGaveUp, releasing Wi-Fi,
+                // service, GPS and locks through the existing FSM teardown.
+                _state.value = failure
+            },
+        ) {
+            val specBuilder = WifiNetworkSpecifier.Builder()
+            if (pendingPrefix) specBuilder.setSsidPattern(PatternMatcher(pendingSsid, PatternMatcher.PATTERN_PREFIX))
+            else specBuilder.setSsid(pendingSsid)
+            if (pendingPassword.isNotBlank()) specBuilder.setWpa2Passphrase(pendingPassword)
 
-        val request = NetworkRequest.Builder()
-            .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
-            .removeCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-            .setNetworkSpecifier(specBuilder.build())
-            .build()
+            NetworkRequest.Builder()
+                .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+                .removeCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                .setNetworkSpecifier(specBuilder.build())
+                .build()
+        } ?: return
 
         linkJob = scope.launch {
             try {

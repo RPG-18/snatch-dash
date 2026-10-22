@@ -178,6 +178,16 @@ class OfflineMapsController extends Notifier<OfflineMapsState> {
   /// make us download forever (spec/remote_map_server.md — "двух достаточно").
   final Map<String, int> _retries = {};
 
+  // Generation zero belongs to transfers recovered at bootstrap. Cancellation
+  // leaves a tombstone: a late native result must not adopt a fresh generation.
+  final Map<String, int> _generations = {};
+  final Set<String> _cancelled = {};
+
+  bool _isCurrent(String code, int generation) =>
+      ref.mounted &&
+      !_cancelled.contains(code) &&
+      (_generations[code] ?? 0) == generation;
+
   /// Localised pack names by code, so a retry doesn't lose them.
   ///
   /// In-memory only: a conflict on a download started in a *previous* app
@@ -329,10 +339,21 @@ class OfflineMapsController extends Notifier<OfflineMapsState> {
   /// Starts downloading [region]. [title] is the localised name — it becomes
   /// the system download notification's title.
   Future<void> download(MapRegion region, String title) async {
+    final generation = (_generations[region.code] ?? 0) + 1;
+    _generations[region.code] = generation;
+    _cancelled.remove(region.code);
+    _retries.remove(region.code);
+    await _download(region, title, generation);
+  }
+
+  Future<void> _download(MapRegion region, String title, int generation) async {
+    if (!_isCurrent(region.code, generation)) return;
     final downloader = ref.read(mapPackDownloaderProvider);
     final api = ref.read(mapManifestApiProvider);
 
-    if (!await downloader.hasRoomFor(region.sizeBytes)) {
+    final hasRoom = await downloader.hasRoomFor(region.sizeBytes);
+    if (!_isCurrent(region.code, generation)) return;
+    if (!hasRoom) {
       _reportError('noSpace');
       return;
     }
@@ -344,22 +365,41 @@ class OfflineMapsController extends Notifier<OfflineMapsState> {
         generatedAt: state.manifest?.generatedAt ?? '',
         title: title,
       );
+      if (!ref.mounted) return;
+      // Native success needs a watcher even if a newer attempt superseded this
+      // one while enqueue was pending. That attempt may fail before replacing it.
+      _wantsPolling = true;
+      _startPolling();
+      if (!_isCurrent(region.code, generation)) return;
       // Remembered so an automatic retry keeps the localised name in the system
       // notification instead of falling back to the raw pack code.
       _titles[region.code] = title;
-      _wantsPolling = true;
-      _startPolling();
     } catch (e) {
+      if (!_isCurrent(region.code, generation)) return;
       talker.error('[OfflineMaps] enqueue failed for ${region.code}', e);
       _reportError('enqueueFailed');
     }
   }
 
   Future<void> cancel(String code) async {
-    await ref.read(mapPackDownloaderProvider).cancel(code);
+    final generation = (_generations[code] ?? 0) + 1;
+    _generations[code] = generation;
+    _cancelled.add(code);
+    _titles.remove(code);
     _retries.remove(code);
-    if (!ref.mounted) return;
     state = state.copyWith(progress: {...state.progress}..remove(code));
+    try {
+      await ref.read(mapPackDownloaderProvider).cancel(code);
+    } catch (_) {
+      // A failed platform call may leave the transfer alive. Keep observing it,
+      // without reviving old retries or disturbing a newer manual operation.
+      if (ref.mounted && _generations[code] == generation) {
+        _cancelled.remove(code);
+        _wantsPolling = true;
+        _startPolling();
+      }
+      rethrow;
+    }
   }
 
   /// Removes an installed pack — the file and its registry row.
@@ -435,12 +475,21 @@ class OfflineMapsController extends Notifier<OfflineMapsState> {
     // this belongs to.
     _wantsPolling = false;
     try {
+      final generations = Map<String, int>.of(_generations);
       final live = await ref.read(mapPackDownloaderProvider).progress();
       if (!ref.mounted) return;
-      state = state.copyWith(progress: {for (final p in live) p.code: p});
+      state = state.copyWith(
+        progress: {
+          for (final p in live)
+            if (_isCurrent(p.code, generations[p.code] ?? 0)) p.code: p,
+        },
+      );
       await _harvest();
       if (!ref.mounted) return;
-      if (state.progress.isEmpty && !_wantsPolling) {
+      // A new generation may hide an old transfer from the UI without replacing
+      // it (for example, its room check failed). Only native progress can prove
+      // that no transfer remains to be watched and installed.
+      if (live.isEmpty && !_wantsPolling) {
         _poller?.cancel();
         _poller = null;
       } else {
@@ -476,11 +525,20 @@ class OfflineMapsController extends Notifier<OfflineMapsState> {
 
   /// Collects finished downloads and acts on each outcome.
   Future<void> _harvest() async {
+    final generations = Map<String, int>.of(_generations);
     final results = await ref.read(mapPackDownloaderProvider).reconcile();
     for (final result in results) {
+      if (!ref.mounted) return;
+      final generation = generations[result.code] ?? 0;
+      // Cancellation stops transfers, not an install already completed by the
+      // native serial worker. Keep adopting those files into the registry.
+      if (result.outcome != PackOutcome.installed &&
+          !_isCurrent(result.code, generation)) {
+        continue;
+      }
       switch (result.outcome) {
         case PackOutcome.installed:
-          _retries.remove(result.code);
+          if (_isCurrent(result.code, generation)) _retries.remove(result.code);
           await ref
               .read(installedPacksProvider.notifier)
               .put(result.toInstalledPack());
@@ -491,10 +549,10 @@ class OfflineMapsController extends Notifier<OfflineMapsState> {
           // for this corpus means a rebuild. Re-read the manifest and try once
           // more with the new expected hash — bounded, or a server publishing in
           // a loop would keep us downloading forever.
-          await _retryAfterConflict(result);
+          await _retryAfterConflict(result, generation);
 
         case PackOutcome.checksumMismatch:
-          await _handleChecksumMismatch(result);
+          await _handleChecksumMismatch(result, generation);
 
         case PackOutcome.failed:
           talker.warning(
@@ -523,10 +581,14 @@ class OfflineMapsController extends Notifier<OfflineMapsState> {
   ///   object in the bucket really is corrupt, and two more attempts would pull
   ///   hundreds of megabytes (Yakutia is 356 MB) to fail in exactly the same
   ///   way. Report it and stop.
-  Future<void> _handleChecksumMismatch(PackDownloadResult result) async {
+  Future<void> _handleChecksumMismatch(
+    PackDownloadResult result,
+    int generation,
+  ) async {
+    if (!_isCurrent(result.code, generation)) return;
     final startedAgainst = result.generatedAt;
     await refresh();
-    if (!ref.mounted) return;
+    if (!_isCurrent(result.code, generation)) return;
     final now = state.manifest?.generatedAt;
     // Only a manifest that actually came from the server can settle this.
     // refresh() falls back to the cached copy when the network is down, and that
@@ -554,13 +616,15 @@ class OfflineMapsController extends Notifier<OfflineMapsState> {
       '[OfflineMaps] ${result.code} checksum mismatch across a manifest change '
       '($startedAgainst -> $now) — retrying',
     );
-    await _retryAfterConflict(result, manifestIsFresh: true);
+    await _retryAfterConflict(result, generation, manifestIsFresh: true);
   }
 
   Future<void> _retryAfterConflict(
-    PackDownloadResult result, {
+    PackDownloadResult result,
+    int generation, {
     bool manifestIsFresh = false,
   }) async {
+    if (!_isCurrent(result.code, generation)) return;
     final attempts = _retries[result.code] ?? 0;
     if (attempts >= _maxRetries) {
       talker.warning(
@@ -576,7 +640,7 @@ class OfflineMapsController extends Notifier<OfflineMapsState> {
     // here at all; fetching it twice would be a second network round trip for
     // the same answer.
     if (!manifestIsFresh) await refresh();
-    if (!ref.mounted) return;
+    if (!_isCurrent(result.code, generation)) return;
     final region = state.regions
         .where((r) => r.code == result.code)
         .firstOrNull;
@@ -589,7 +653,7 @@ class OfflineMapsController extends Notifier<OfflineMapsState> {
     talker.info(
       '[OfflineMaps] retrying ${result.code} (attempt ${attempts + 1})',
     );
-    await download(region, _titles[result.code] ?? result.code);
+    await _download(region, _titles[result.code] ?? result.code, generation);
   }
 
   /// Clears the one-shot error after the screen has shown it.

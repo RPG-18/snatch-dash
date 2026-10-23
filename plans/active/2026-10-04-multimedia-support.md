@@ -2,7 +2,7 @@
 
 **Дата создания:** 04.10.2026
 
-**Статус:** этапы 1–5 реализованы и проверены 23.10.2026; этап 6 не начат.
+**Статус:** этапы 1–6 реализованы и проверены 23.10.2026; этап 7 открыт, аппаратных подтверждений новых media paths нет.
 Исследование обновлено 22.10.2026 по `re_app_new` — Royal Enfield 10.1.23(45), versionCode 193.
 План сохраняет независимые автоматические и полевые гейты.
 
@@ -162,7 +162,7 @@ music=max/call=min(1) → `1A/11`, отсутствующий/throwing audio ser
 Проверки выполнены на Temurin 21.0.7. Следующий этап — 5; все `[ride]` открыты.
 Code review этапа 4 — без замечаний.
 
-Где план сейчас (23.10.2026, после этапа 5): Pigeon schema расширена
+Состояние после этапа 5 (23.10.2026): Pigeon schema расширена
 `required bool mediaActive` и `bool? mediaPlaying` в конце state и ровно четырьмя
 HostApi controls. Dart/Kotlin outputs перегенерированы штатным Pigeon 29.0.4,
 не редактировались руками. Controller публикует один input snapshot title/active/
@@ -188,6 +188,49 @@ Fixture запускал private media forwarding без Wi-Fi-соединен�
 несвязанное форматирование тестов убрано. Новые media/call тесты держат реальную
 Riverpod-подписку на state, а не только read ленивого provider.
 Следующий этап — 6; все `[ride]` остаются открыты.
+
+Где план сейчас (23.10.2026, после этапа 6): автоматическая часть закрыта,
+план остаётся active до оценки `[ride]` этапа 7. Literal art/volume/goldens
+этапов 1–4 уже покрывают требуемые boundaries, поэтому повторные тесты не добавлялись:
+`AlbumArtFramesTest` проверяет каждый payload byte, literal headers/indices и
+отсутствие хвоста; `VolumeLevelTest`, `K1GMediaGoldenTest`, `K1GGoldenTest`
+и session live-volume test фиксируют независимые fallback и неизменные 11 TLV.
+Provider/event-stream/reducer tests уже проверяют parity/dedup, unknown/replay,
+rebind/generation и live/teardown/idempotent stop.
+
+Усилены реальные session paths: ACK проверяется внутри button consumer;
+periodic порядок включает call notify → однократный clear → отсутствие повтора;
+metadata B принимается внутри уже начатой отправки art packet A (с/без JPEG B);
+partial-enqueue fallback проходит настоящий dispatcher/outbox и следующий tick.
+Caller-before-writer assertions запрещают немедленную отправку media мимо outbox.
+Сценарии с fake card/marker/art-строками и «dedup» без callback удалены; смысл
+сохранён в packet-level/provider tests. Это не исполненное mutation testing.
+Dart button test проверяет playing → stop и возврат обоих track codes к zoom.
+Package mock-echo/default-instance/positional-arguments/identity-only tests удалены
+вместе с неиспользуемым fake; две consumer-проверки доказывают multicast state,
+независимую отмену подписчика и доставку повторных button events оставшемуся.
+
+Проверки этапа 6: focused JVM suite и полный suite — успешно; полный **487**
+tests, 0 failures/errors/skipped (снижение 489→487 — удаление слабых сценариев,
+не снятие wire acceptance). Root **135** Flutter tests, включая **7** button
+tests; package **2** поведенческих tests вместо 5 шаблонных — успешно.
+Root/package `flutter analyze` — без замечаний; `lintDebug` — 0 ошибок,
+20 прежних предупреждений. JVM/Gradle — Temurin 21.0.7 вместо обновлённого JBR.
+Временный отдельный debug APK на API 36 повторно проверил public Dart façade →
+Pigeon → настоящий MediaSession: все четыре controls, mute без controller,
+active/empty-title, PLAYING→OTHER=null, PAUSED→null=null, stop=false/null;
+получено 15 typed state events. Notification access выдан smoke-пакету;
+media forwarding запущен без Wi-Fi дэша, provider/channel не подменялись.
+Временные sources/APK/пакет и emulator удалены/остановлены.
+
+`spec/multimedia.md` §1–7 синхронизированы с уже выполненной статической сверкой
+§1.2 (не новая RE-проверка); §8/9 отделяют действующий порт и неизвестное железо.
+Обе hardware checklist и command references согласованы, новых `[x]`/findings нет.
+Code review исправил неточное «непустой title»: текущий gate — `title != null`,
+поэтому `''` не выключает media routing. Production mapping/aliases не менялись.
+Чужая незакоммиченная правка `MediaMetadataDispatch.kt` оставлена вне этапа.
+Следующий этап — 7: firmware 11.63, отдельные fixture/build/pcap/screen evidence;
+весь план без этих результатов не закрывается.
 
 Отложенные решения и отклонённые посылки:
 
@@ -711,27 +754,27 @@ tests/lint и реальный façade→Pigeon→MediaSession smoke; резул
 
 Задачи:
 
-- [ ] `[auto]` Literal art tests: 0, 1, 1000, 1001, 2000, 2001, 3000, 65535,
+- ✅ 23.10.2026 `[auto]` Literal art tests: 0, 1, 1000, 1001, 2000, 2001, 3000, 65535,
   65536 bytes, headers/indexes/full final chunks/no extra terminal. Volume:
   invalid/null fallback, silence, nonzero min, exact boundaries, clamp, Int limits.
   **Что опровергнет посылку:** если тест проверяет только размер/не-throw, он
   не доказывает wire invariant и должен быть переписан на bytes.
-- [ ] `[auto]` Добавить literal media/heartbeat goldens и `DashSessionTest`
+- ✅ 23.10.2026 `[auto]` Добавить literal media/heartbeat goldens и `DashSessionTest`
   assertions, сохранив button-ack-before-forward assertion.
   **Что опровергнет посылку:** если тесты проходят при обходе outbox или frame
   loop, они не проверяют single-writer invariant и не принимаются.
-- [ ] `[auto]` Добавить native provider/reducer tests и Dart button tests для
+- ✅ 23.10.2026 `[auto]` Добавить native provider/reducer tests и Dart button tests для
   call precedence, active/paused/no-media и пустого title; direct API проверить
   throwaway smoke. Проверки не зависят от live `MediaSession` или source text.
   **Что опровергнет посылку:** mock echo/wiring-only tests не считаются покрытием
   поведения и удаляются.
-- [ ] `[auto]` Обновить `spec/multimedia.md`: источники и уточнения оригинала
+- ✅ 23.10.2026 `[auto]` Обновить `spec/multimedia.md`: источники и уточнения оригинала
   в §1–7 по сверке §1.2 этого плана; §8/§9 — только фактами текущей реализации.
   Не выдавать 10.1.23-статику за проверку порта; hardware-dependent claims
   явно оставить открытыми.
   **Что опровергнет посылку:** если факт известен только из codec/unit test,
   его нельзя записывать как hardware support.
-- [ ] `[auto]` Обновить русскую и английскую копии hardware checklist только
+- ✅ 23.10.2026 `[auto]` Обновить русскую и английскую копии hardware checklist только
   инструкциями/ожиданиями, не отмечая пункты как подтверждённые.
   После ride обновить findings/evidence в обеих копиях (этап 7); сверить
   `docs/k1g_commands_RU.md`/`docs/k1g_commands.md` со spec.
@@ -741,6 +784,9 @@ tests/lint и реальный façade→Pigeon→MediaSession smoke; резул
 **Готово:** focused tests, full native tests, Dart tests, analyze и lint
 проходят; spec/checklists различают автоматически доказанное и непроверенное на
 железе.
+Проверено 23.10.2026: существующее literal/provider покрытие дополнено реальными
+writer/fallback/button/stream transition checks; focused/full JVM, root/package
+Flutter tests и analyze, native lint и public-API emulator smoke прошли (§0.1).
 
 ### Этап 7 — Hardware gate на прошивке 11.63 [ride]
 

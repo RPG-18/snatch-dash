@@ -10,6 +10,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.launch
@@ -63,6 +64,7 @@ class DashSessionTest {
     private fun TestScope.rig(
         chrome: MutableStateFlow<DashChrome> = MutableStateFlow(DashChrome()),
         transport: FakeDashTransport = FakeDashTransport { testScheduler.currentTime },
+        onEvent: (SessionEvent) -> Unit = {},
     ): Rig {
         val parent = Job()
         val events = mutableListOf<SessionEvent>()
@@ -74,7 +76,12 @@ class DashSessionTest {
             parent = parent,
             context = StandardTestDispatcher(testScheduler),
         ) { transport }
-        backgroundScope.launch { session.events.toList(events) }
+        backgroundScope.launch {
+            session.events.collect {
+                onEvent(it)
+                events.add(it)
+            }
+        }
         return Rig(session, transport, chrome, parent, events)
     }
 
@@ -431,6 +438,7 @@ class DashSessionTest {
                 destinationName = "Home",
                 nav = NavFigures(0x14, 120, 0x30, 4200, 0x30),
                 nowPlaying = NowPlaying("Song"),
+                caller = "Caller",
             ),
         )
         val r = rig(chrome = chrome)
@@ -438,28 +446,26 @@ class DashSessionTest {
         r.session.startStreaming()
         advanceTimeBy(250)
         runCurrent()
-        r.wire.clearSent()
 
-        advanceTimeBy(1_000)
-        runCurrent()
+        for (call in listOf<DashCommand?>(DashCommand.CallNotify("Caller"), DashCommand.CallClear, null)) {
+            r.wire.clearSent()
+            advanceTimeBy(1_000)
+            runCurrent()
 
-        // The tick that carries the 1 Hz senders, in full. The dash renders whatever arrived
-        // last, so "card, then the figures drawn on it" is a property of the protocol and not
-        // of which coroutine happened to win.
-        val tick = r.wire.sent.map { it.bytes.toHex() }.let { all ->
-            val i = all.indexOfFirst { it == enc(DashCommand.Heartbeat()) }
-            all.subList((i - 4).coerceAtLeast(0), i + 1)
+            val expected = buildList {
+                add(DashCommand.ProjectionFrame)
+                add(DashCommand.RouteCard("Home", true, 0x14, 0x30, 4200, 0x30))
+                add(DashCommand.ActiveNav(0x14, 120, 0x30, 4200, 0x30))
+                if (call != null) add(call)
+                add(DashCommand.NowPlaying("Song", "", ""))
+                add(DashCommand.Heartbeat())
+            }.map(::enc)
+            val heartbeat = r.wire.sent.single { it.bytes.toHex() == enc(DashCommand.Heartbeat()) }
+            val tick = r.wire.sent.filter { it.atMs == heartbeat.atMs }.map { it.bytes.toHex() }
+            assertEquals(expected, tick, "projection, route/nav, call, media, heartbeat keep wire order")
+            assertEquals(1, r.wire.sent.count { it.bytes.toHex() == enc(DashCommand.NowPlaying("Song", "", "")) })
+            chrome.value = chrome.value.copy(caller = null)
         }
-        assertEquals(
-            listOf(
-                enc(DashCommand.ProjectionFrame),
-                enc(DashCommand.RouteCard("Home", true, 0x14, 0x30, 4200, 0x30)),
-                enc(DashCommand.ActiveNav(0x14, 120, 0x30, 4200, 0x30)),
-                enc(DashCommand.NowPlaying("Song", "", "")),
-                enc(DashCommand.Heartbeat()),
-            ),
-            tick,
-        )
         r.close()
     }
 
@@ -644,7 +650,19 @@ class DashSessionTest {
 
     @Test
     fun `a button is acknowledged before it is reported`() = runTest {
-        val r = rig()
+        var reported = false
+        lateinit var wire: FakeDashTransport
+        val r = rig(onEvent = { event ->
+            if (event is SessionEvent.Button) {
+                assertEquals(
+                    enc(DashCommand.ButtonAck(event.code)),
+                    wire.sent.last().bytes.toHex(),
+                    "the ACK must already be on the wire when the consumer receives the button",
+                )
+                reported = true
+            }
+        })
+        wire = r.wire
         reachReady(r)
         r.wire.clearSent()
 
@@ -659,6 +677,7 @@ class DashSessionTest {
             "the ack is the first thing out — invariant 7",
         )
         assertEquals(SessionEvent.Button(0x22), r.events.last())
+        assertTrue(reported, "the assertion must run in the actual event consumer")
         r.close()
     }
 

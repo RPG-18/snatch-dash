@@ -3,6 +3,8 @@ package com.opendash.opendash_dash_engine.dash
 import android.media.AudioManager
 import com.opendash.opendash_dash_engine.dash.protocol.DashCommand
 import com.opendash.opendash_dash_engine.dash.protocol.toHex
+import com.opendash.opendash_dash_engine.media.MediaMetadataSnapshot
+import com.opendash.opendash_dash_engine.media.dispatchMediaMetadata
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -170,6 +172,7 @@ class DashSessionMediaTest {
             val image = image(65_535, 17)
             val startedAt = testScheduler.currentTime
             r.metadata(NowPlaying("Maximum", artJpeg = image))
+            assertTrue(r.wire.delegate.sent.isEmpty(), "metadata must enqueue, not write on the caller")
             runCurrent()
             advanceTimeBy(115)
             runCurrent()
@@ -294,6 +297,7 @@ class DashSessionMediaTest {
             r.metadata(NowPlaying("A", artJpeg = image(3_000, 11)))
             val b = image(1_001, 73)
             r.metadata(NowPlaying("B", artJpeg = b))
+            assertTrue(r.wire.delegate.sent.isEmpty(), "both accepted events wait for the single writer")
             runCurrent()
             advanceTimeBy(20)
             runCurrent()
@@ -302,28 +306,6 @@ class DashSessionMediaTest {
             assertCard(packets[0], "A")
             assertCard(packets[2], "B")
             assertArt(b, packets.drop(4))
-        } finally {
-            r.close()
-        }
-    }
-
-    @Test
-    fun `dedup producing no event leaves the entire current art transfer intact`() = runTest {
-        val r = rig()
-        try {
-            streaming(r)
-            val a = image(4_001, 11)
-            r.metadata(NowPlaying("A", mediaId = "same-id", artJpeg = a))
-            runCurrent()
-            advanceTimeBy(5)
-            runCurrent()
-            // A suppressed callback has no sendMedia call, not an empty accepted event.
-            advanceTimeBy(60)
-            runCurrent()
-            val packets = r.media
-            assertEquals(1, packets.count { it.mediaTag == 0x0D })
-            assertEquals(1, packets.count { it.mediaTag == 0x58 })
-            assertArt(a, packets.filter { it.mediaTag == 0x40 })
         } finally {
             r.close()
         }
@@ -346,6 +328,82 @@ class DashSessionMediaTest {
             assertEquals(listOf(0x0D, 0x58, 0x40, 0x0D, 0x40, 0x40, 0x40), packets.map { it.mediaTag })
             assertCard(packets[3], "", "NowPlaying")
             assertArt(a, packets.filter { it.mediaTag == 0x40 })
+        } finally {
+            r.close()
+        }
+    }
+
+    @Test
+    fun `replacement during a claimed art packet finishes only that old packet before new metadata`() = runTest {
+        for (withArt in listOf(false, true)) {
+            val r = rig()
+            try {
+                streaming(r)
+                val a = image(3_000, 11)
+                val b = if (withArt) image(1_001, 73) else null
+                var replaced = false
+                r.wire.beforeSend = { bytes ->
+                    if (!replaced && packet(bytes).value(5, 0x40) != null) {
+                        replaced = true
+                        r.metadata(NowPlaying("B", artJpeg = b))
+                    }
+                }
+                r.metadata(NowPlaying("A", artJpeg = a))
+                runCurrent()
+                advanceTimeBy(50)
+                runCurrent()
+                assertTrue(replaced, "replacement must race a claimed A chunk")
+                val packets = r.media
+                assertEquals(
+                    listOf(0x0D, 0x58, 0x40, 0x0D, 0x58) +
+                        if (withArt) listOf(0x40, 0x40) else emptyList(),
+                    packets.map { it.mediaTag },
+                )
+                assertCard(packets[0], "A")
+                assertContentEquals(a.copyOfRange(0, 1_000), packets[2].mediaValue.copyOfRange(3, 1_003))
+                assertCard(packets[3], "B")
+                assertTrue(packets[4].has(5, 0x58, if (withArt) 0x55 else 0xAA))
+                if (b != null) {
+                    assertArt(b, packets.drop(5))
+                    assertTrue(packets[5].atMs - packets[2].atMs >= 10)
+                }
+            } finally {
+                r.close()
+            }
+        }
+    }
+
+    @Test
+    fun `partial metadata enqueue fallback appends only its card and preserves current art and tick state`() = runTest {
+        val r = rig()
+        try {
+            streaming(r)
+            val art = image(3_001, 11)
+            val metadata = MediaMetadataSnapshot("A", "Album", "Artist", artJpeg = art)
+            dispatchMediaMetadata(
+                metadata,
+                enqueueMetadata = {
+                    r.metadata(NowPlaying(it.title, it.album, it.artist, artJpeg = it.artJpeg))
+                    throw IllegalStateException("enqueue accepted before failure")
+                },
+                enqueueCardOnly = {
+                    r.session.sendMedia(listOf(DashCommand.NowPlaying(it.title, it.album, it.artist)))
+                },
+            )
+            assertTrue(r.wire.delegate.sent.isEmpty(), "fallback shares the actual outbox")
+            runCurrent()
+            advanceTimeBy(40)
+            runCurrent()
+            val packets = r.media
+            assertEquals(listOf(0x0D, 0x58, 0x0D, 0x40, 0x40, 0x40, 0x40), packets.map { it.mediaTag })
+            assertCard(packets[0], "A", "Album", "Artist")
+            assertCard(packets[2], "", "NowPlaying")
+            assertArt(art, packets.filter { it.mediaTag == 0x40 })
+            r.wire.delegate.clearSent()
+            advanceTimeBy(1_000)
+            runCurrent()
+            assertEquals(1, r.media.size, "the fallback must not turn into periodic metadata or repeat art")
+            assertCard(r.media.single(), "A", "Album", "Artist")
         } finally {
             r.close()
         }

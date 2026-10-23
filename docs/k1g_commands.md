@@ -19,6 +19,13 @@ itself: a hypothesis list, not a spec.
 | Tooling | `jadx` (already unpacked under `re_app/`) |
 | Extracted | 233 hex string constants → 77 distinct `type`/`sub` pairs |
 
+The inventory and obfuscated names below belong to **10.1.22**. Media facts
+were reconciled with 10.1.23(45), versionCode193, on 2026-10-22; source anchors
+and corrections are recorded in the [multimedia plan, §1.2](../plans/active/2026-10-04-multimedia-support.md#12-что-перепроверено-и-где-искать-в-новом-apk).
+This is static evidence about the original sender, **not hardware support**.
+Current port behavior (implemented stages1–5, 2026-10-23) is separate:
+[`spec/multimedia.md`, §8–9](../spec/multimedia.md#8-что-из-этого-есть-у-нас).
+
 The `bluconnect` package is obfuscated (`hbg`, `r2g`, `n6g`…), but not
 usefully so: Kotlin's `@SourceDebugExtension` SMAP annotations and reflection
 metadata survived into the APK, so original class names, file names and
@@ -79,19 +86,21 @@ The `0x0080` length on the auth TLV confirms the RSA ciphertext is 128 bytes
 
 ## Coverage
 
-**The port implements 25 of the 77 `type`/`sub` pairs seen here; 52 are
-unimplemented.** Per-pair detail is in the table (`in port` column).
+The original coverage snapshot counted **25 of 77** constant-derived pairs
+in the port. That is historical, not a current implementation total: media
+event paths now also send `05 19` and `05 58`; their rows are updated below.
+The `in port` column means an implemented sender/handler, not hardware validation.
 
-Two caveats on that number, both of which cut against reading it too literally:
+Two caveats prevent treating this inventory as a complete protocol count:
 
 1. **Absence here ≠ the app doesn't use it.** This table only covers commands
    stored as *string constants*. Anything the app builds dynamically is
    invisible to it — which is why several TLVs the port *does* send (`05 08`,
    `05 0D`, `05 22`, `06 0A`, `06 10`, `0A 02`) do not appear below. Some of
    those are route-card fields patched at runtime, exactly as our `routeCard()`
-   patches them. `05 40` (album art) is built the same way — a TLV the port does
-   not send at all, and whose existence this table alone cannot reveal. See
-   "Media".
+   patches them. `05 40` (album art) is also dynamic and now sent by the port's
+   paced writer; this constants-only table cannot reveal its existence.
+   See "Media".
 2. The pairs were recovered by slicing constants with the TLV walker described
    above. Constants that are header fragments rather than whole packets can
    mis-slice; the `0x03`/`0x04` families in particular are self-consistent but
@@ -135,9 +144,9 @@ back to the APK; at most six are shown.
 |---|---|---|---|---|---|
 | `0B` | +runtime | 1 |  | `S2` |  |
 | `17` | `55`, `AA` | 2 | yes | `l1, m1` | **Media active** (`55`) / inactive (`AA`). See "Media" |
-| `19` | `55`, `AA` | 2 |  | `i1, j1` | **Playing** (`55`) / **paused** (`AA`) |
+| `19` | `55`, `AA` | 2 | yes | `i1, j1` | **Playing** (`55`) / **paused** (`AA`); known state only in port |
 | `1A` | +runtime | 1 |  | `k1` | **Dead constant** — never used anywhere in the app |
-| `1B` | `10`, `11`, `12`, `13`, `14`, `15`, `16`, `17`, `18`, `19`… | 11 | yes | `A1, B1, C1, D1, E1, F1` |  |
+| `1B` | `10`, `11`, `12`, `13`, `14`, `15`, `16`, `17`, `18`, `19`… | 11 | yes | `A1, B1, C1, D1, E1, F1` | Live call volume; independent fallback `19` |
 | `21` | `0A`, `14`, `1E`, `32` | 4 | yes | `l2, m2, n2, o2` |  |
 | `23` | `55`, `AA`, `BB`, `CC` | 4 |  | `h2, i2, j2, k2` |  |
 | `2D` | +runtime | 1 | yes | `q2` |  |
@@ -147,12 +156,12 @@ back to the APK; at most six are shown.
 | `31` | `00` | 1 | yes | `r` |  |
 | `32` | `00` | 1 | yes | `r` |  |
 | `33` | `00` | 1 | yes | `r` |  |
-| `4C` | `10`, `11`, `12`, `13`, `14`, `15`, `16`, `17`, `18`, `19`… | 11 | yes | `n1, o1, p1, q1, r1, s1` |  |
+| `4C` | `10`, `11`, `12`, `13`, `14`, `15`, `16`, `17`, `18`, `19`… | 11 | yes | `n1, o1, p1, q1, r1, s1` | Live music volume; independent fallback `13` |
 | `4D` | `32` | 1 | yes | `f` | Used in `initialBurst` (value `32` = 50) |
 | `55` | +runtime | 1 |  | `T2` |  |
 | `56` | `55`, `AA` | 2 | yes | `g, h` |  |
 | `57` | `55` | 1 | yes | `P2` |  |
-| `58` | `55`, `AA` | 2 |  | `g1, h1` | **Album art follows** (`55`) / no art (`AA`) |
+| `58` | `55`, `AA` | 2 | yes | `g1, h1` | **Album art follows** (`55`) / no art (`AA`); hardware gate open |
 
 #### Type `0x06`
 
@@ -227,7 +236,9 @@ back to the APK; at most six are shown.
 
 ## Semantic decodes
 
-Confidence is stated per row because it varies a lot.
+Confidence describes the stated evidence: original media sender decodes are
+statically confirmed, **not** confirmed on firmware 11.63. Current port
+encoding, lifecycle and button policy differ as described below and in the spec.
 
 | TLV | Meaning | Basis | Confidence |
 |---|---|---|---|
@@ -284,10 +295,12 @@ carries a block that `Heartbeat` only partly patches:
 06 0F 0001 AA      ← captured, "off"
 ```
 
-`Heartbeat` only rewrites the byte after the `06 10` marker — and even that is
-a constant, +25 °C, because its one caller passes no argument. The other four
-retain whatever the original packet capture happened to contain, and they go
-out once a second for the entire session.
+Of these five fields, `Heartbeat` rewrites only the byte after `06 10` — still
+a constant +25 °C. Since 2026-10-23 the separate `05 4C` and `05 1B` fields
+are read live for music/call volume, with independent captured fallbacks
+`13`/`19`. The port retains **11 TLVs** and the captured initial burst;
+the original's conditional 9/10/11 count and volume omission are not copied.
+The other four phone/weather fields above remain captured at 1 Hz.
 
 **`06 08` is the worse of the two.** It is not media at all but the weather
 glyph, and the captured `05` means "clear" — so the dash has been showing sun
@@ -315,9 +328,10 @@ its media view. Worth a look either way.
 
 ### Media: five TLVs, and state between them
 
-The port sends `05 0D` once a second while `nowPlaying != null`, with no wire
-dedup. The original sends five media TLV types on events. The following
-describes its sender, not firmware 11.63 support.
+The original sends five media TLV types on events. The port now has those
+event paths **and** retains the compatible 1 Hz `05 0D` repeat. The next
+sections describe the original sender, not firmware 11.63 support; the current
+port is distinguished under "How the port differs".
 
 | TLV | Meaning |
 |---|---|
@@ -357,9 +371,11 @@ onPlaybackStateChanged
 ```
 
 With `METADATA_KEY_ADVERTISEMENT != 0`, the tuple is
-`("Advertisement", "", "")`; `IllegalStateException` inside sending falls
-back to `("NowPlaying", "", "")`. Both strings occupy **album**, not title.
-The ordinary empty-title fallback is `("", "Now Playing", "")`.
+`("Advertisement", "", "")`; the narrow `IllegalStateException` catch around
+assembly/enqueue/art handling appends only `05 0D ("NowPlaying", "", "")`,
+without active/marker/clear-art or undoing already queued effects. Getters,
+thumbnail and dedup/cache are outside this catch. Both strings occupy
+**album**, not title. The ordinary empty-title fallback is `("", "Now Playing", "")`.
 All three source fields null produce inactive before these branches; empty
 strings are different.
 
@@ -407,30 +423,41 @@ the rest — indistinguishable from a dump alone.
 
 #### How the port differs
 
-Our media layer is a literal descendant of NorthStar's: the same
-`MediaModels.kt`, `MediaInfoProvider.kt`, `*NotificationListener.kt`, the same
-fields, the same two TLVs (`05 0D` and `05 22`). Hence the shared divergences
-from the original:
+As of 2026-10-23, [`spec/multimedia.md`, §8](../spec/multimedia.md#8-что-из-этого-есть-у-нас)
+describes the implemented native/Dart boundary and single writer:
 
-- **No `05 17`, `05 19`, `05 58` or `05 40` event paths.** Pause and session
-  loss send no explicit playback/inactive command. While metadata remains,
-  the card repeats at 1 Hz; clearing `nowPlaying` stops repeats but does not
-  prove the card disappears from the screen. `05 17 AA` exists only as a
-  captured initial-burst step (`Scripts.kt`).
-- **`NowPlaying.art` is read and never used**, in both projects. The field is in
-  the model, the bitmap is in memory, and there is nothing to send it with.
-- **The `05 0D` field order disagrees.** The original writes `album, title,
-  artist`; NorthStar writes `title, album, artist` with the comment "matches the
-  dash's layout", and we inherited that verbatim. One of them is wrong, or the
-  dash does not care — see "Open questions".
-- **Field limit: 19 vs 20.** The original does `substring(0, 19)`; we and
-  NorthStar use `MEDIA_FIELD_MAX = 20`.
-- **Encoding.** The port uses UTF-8 after `take(20)`; the original uses the
-  one-byte substitution above after `substring(0, 19)`. An ASCII-only track
-  cannot expose this difference.
-- **Cadence.** The original sends on events and suppresses repeats; we send at
-  1 Hz while `nowPlaying != null`. Retention without repeats needs a separate
-  hardware experiment.
+- **Event paths exist:** active/inactive, known playback, art marker and paced
+  JPEG chunks, with snapshot replay on ordinary reconnect. Unknown OTHER/null
+  playback is active=true, playing=null: no new `05 19`, no old known indicator
+  on replay. Media stop clears state and explicitly orders inactive on a live
+  STREAMING writer; teardown does not guarantee a final packet.
+- **Compatibility is retained:** card order **title/album/artist**, Android
+  ICU→ASCII, **20 bytes after transliteration**, plus **1 Hz** card repeat.
+  The original is album/title/artist, 19 UTF-16 units, lossy char→byte and
+  event-only. Neither source order nor event-only cadence proves display
+  compatibility; order/width/retention remain independent hardware decisions.
+  The old charset comparison is withdrawn; ICU is the required baseline.
+- **Art is used:** 75×75 quality50 JPEG, valid length1…65535. Singleton has
+  an empty `FF`; multichunk final `FF` carries data, including the full final
+  1000 bytes for exact multiples. Empty/oversize/failed art becomes absent.
+  The writer spaces art sends ≥10 ms outside the frame loop. Accepted metadata
+  B cancels unsent A before card B; B with art restarts, B without art sends
+  absent. Dedup-suppressed callbacks do not cancel A. No old art survives stop
+  or transport teardown; none of this proves firmware rendering.
+- **Lifecycle intentionally repairs original defects:** rebind/stop unregister
+  old callbacks, generations reject late callbacks, null metadata clears
+  state, and reconnect without stop preserves the current snapshot.
+- **Volumes are live:** music/call levels sampled independently at 1 Hz;
+  normalized integer buckets, silence=`10`, invalid/unavailable stream fallback
+  `13`/`19`. Fixed 11-TLV heartbeat, no `INFOTAINMENT` mode gate.
+- **Controls are available directly:** play/pause, volume± and mute through
+  public Dart API. This does not change physical-button mapping, its current
+  title gate, call precedence or ACK-before-forward.
+
+Firmware11.63 experiments and predeclared fallback branches are in
+[`hardware checklist`, §6](ON_HARDWARE_VERIFICATION.md#6-media--call-bridge-native-new-plugin-code)
+and [plan stage7](../plans/active/2026-10-04-multimedia-support.md#этап-7--hardware-gate-на-прошивке-1163-ride).
+Codec/unit/emulator evidence is not screen/phone evidence.
 
 ### Buttons `09 00`: the full code map and what goes back
 
@@ -456,7 +483,7 @@ original prints "Testing - … command from joystick" throughout.
 | `14` | `A0()` | zoom out | `14` | `06 0C` |
 | `15` | `h1()` | recenter, zoom set to `16.0` | `15` | `06 0C 30` |
 | `16` | `L()` | establish call | **none** | |
-| `18` | `W()` | start music | **none** | |
+| `18` | `W()` | log says "start music"; sends missed-call count `06 0A`, not playback | **none** | `06 0A` |
 | `19` | `l2()` | navigation notification | `19` | |
 | `20` | `F()` | remove waypoint | `20` | |
 | `21` | `y()` | RSA call | `21` | |
@@ -469,8 +496,8 @@ Several things only the whole table shows.
 volume through `MediaControllerCompat`. They are not interchangeable.
 
 **Two codes get no echo.** The constants `hbg.E2` (`…16`) and `hbg.F2` (`…18`)
-exist in the APK but are never used: "establish call" and "start music" run
-silently. That reads as an oversight in the original, not a protocol rule.
+exist but are unused. `18`'s log label "start music" is misleading: its action
+is missed-call count, not play. Do not add it as a media-control alias.
 
 **Music commands are gated by the listener, not the media controller.** `c0`,
 `D`, `E`, `F(str)` and `d0` check `t9k.y().V()`: no listener means no action
@@ -664,11 +691,10 @@ whether `0F05` matches the dash's own BSSID.
   NorthStar, and we after it, send `title, album, artist`. Reading cannot settle
   this: look at the cluster with music playing whose track name differs
   obviously from its album name.
-- **Media field length: 19 or 20.** The original truncates at 19 characters, we
-  and NorthStar at 20. A difference of exactly one looks suspiciously like
-  "19 characters + a terminating NUL", i.e. the two may be counting different
-  things and both be right. But if the dash takes exactly 19, our twentieth
-  character eats the field separator.
+- **Media field width: 19 or 20 ASCII bytes after ICU transliteration.**
+  The original's 19 UTF-16 units do not establish a firmware buffer size or
+  prove that byte20 consumes NUL. Compare distinct 18/19/20/21-byte fields at
+  fixed order/encoding/repeat; keep20 unless width19 independently wins.
 - Stream parameters (see above).
 
 ## Note on stale comments in the port

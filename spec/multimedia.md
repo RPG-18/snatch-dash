@@ -1,21 +1,37 @@
-# Мультимедиа на приборке — автомат оригинального приложения
+# Мультимедиа на приборке — оригинальный автомат и текущий порт
 
-Что официальное приложение Royal Enfield отправляет для мультимедиа.
-Восстановлено из `Royal Enfield App 10.1.22`; статическая сверка Java и smali —
-04.10.2026. Это **чужое** поведение, а не требования к переносу его дефектов.
+§1–7 описывают статически установленное поведение Royal Enfield App,
+§8 — реализованный порт, §9 — ещё не закрытые аппаратные вопросы.
+Исследование 10.1.22 от 04.10.2026 сохранено; источники и уточнения
+сверки 22.10.2026 для **10.1.23(45), versionCode 193** перенесены из
+[§1.1–1.2 плана](../plans/active/2026-10-04-multimedia-support.md#12-что-перепроверено-и-где-искать-в-новом-apk).
+Новой декомпиляции или аппаратной проверки при обновлении этой спеки не было.
+APK: `re_app_new/base.apk`, пакет `com.royalenfield.reprime`;
+SHA-256: `889b9c42f21ef426c114cadac788c9c6220a29dc686e8a5b0e3fbd07a0e4f404`.
+Это **чужое** поведение, а не требования к переносу его дефектов.
 
-**Источники:** `re_app/jadx_out/sources/com/royalenfield/reprime/ui/home/navigation/service/REForeGroundService.java`
-и одноимённый smali в `re_app/apktool_out/smali_classes12/`; вспомогательные
-`nbg` (`MetaDataUtils`), `pbh.n`, `aaq.S`, `SsidScanActivity.onNetworkConnected`,
-`NavigationRootFragment.y9`. Методы ниже позволяют повторить статическую сверку.
-`x9k.A1` — другой, старый путь метаданных с отличающимися условиями и полями;
-регистрация его callback не найдена. Его поведение нельзя смешивать с сервисом.
+**Источники 10.1.23:** корни Java — `re_app_new/jadx_out/sources/`,
+smali — `re_app_new/apktool_out/`; локальные выгрузки не входят в git.
+
+| Узел | Текущий anchor (старое имя 10.1.22) |
+|---|---|
+| Service | `com/royalenfield/reprime/ui/home/navigation/service/REForeGroundService.java`: `x/J/y/S/A`, callback `b`, timer `d.run`; smali и `$b/$d` в `smali_classes8/com/royalenfield/reprime/ui/home/navigation/service/` |
+| Metadata bytes | `bluconnect/l3d.java:n` (`pbh.n`), service `A` |
+| Art / очередь | `bluconnect/c3c.java:a/c/d/e/f` (`nbg`, MetaDataUtils); `y2c.o` → `sw2.d/run` (sender `zx4`) |
+| Bitmap / другой metadata path | `bluconnect/djf.java:e1/h1/z1/A1` (`x9k`) |
+| Кнопки / constants / listener | `bluconnect/clk.smali:S,c0/D/E/F/d0` (`aaq.S`; Java `S` повреждён декомпилятором); `w2c` (`hbg`), `fpd` (`igi`) |
+| Android actions / тип | `NavigationRootFragment.B,S1/q0,Y/i9,t9`; `bluconnect/zif.b` (`t9k.b`) |
+
+Имена без полного пути ниже относятся к этим Java/smali.
+Соответствие старых и новых имён семантическое, не побайтная идентичность.
+`djf.A1` (раньше `x9k.A1`) — другой metadata path, не service `A`;
+его условия нельзя смешивать с сервисом.
 
 **На железе эти выводы не проверены.** Прошивка оригинала неизвестна;
 наша проверенная версия — 11.63, но это не подтверждение её медиа-поведения.
 Статически доказаны действия приложения, а не отображение, удержание карточки
 или допустимые форматы конкретной приборки. Текущий порт отдельно описан в §8;
-решения будущего переноса — в [плане поддержки мультимедиа](../plans/active/2026-10-04-multimedia-support.md).
+аппаратные решения — в [плане поддержки мультимедиа](../plans/active/2026-10-04-multimedia-support.md).
 
 Формат пакетов, таблица TLV и полная карта кодов джойстика —
 [`docs/k1g_commands_RU.md`](../docs/k1g_commands_RU.md). Здесь только медиа и
@@ -48,10 +64,10 @@
 | Роль | Оригинал | Наш аналог |
 |---|---|---|
 | Держатель гранта на уведомления | `NotificationService` — **пустой** `NotificationListenerService` | `OpenDashNotificationListener` |
-| Владелец сессии и отправитель | `REForeGroundService` | `MediaInfoProvider` + `DashSession` |
-| Интерфейс команд плеера | `igi` (`I`, `M`, `N`, `n`, `s`) | методы `MediaInfoProvider` |
-| Нарезка обложки | `MetaDataUtils` (`nbg`) | нет |
-| Диспетчер кнопок | `aaq.S()` → `s05` | `DashButtonController` (Dart) |
+| Владелец сессии и отправитель | `REForeGroundService` | `MediaInfoProvider` → `MediaForwarding` → single writer `DashSession` |
+| Интерфейс команд плеера | `fpd` (`H`, volume, next/previous) | методы `MediaInfoProvider`, public Dart API |
+| Нарезка обложки | `c3c` (раньше `nbg`) | `AlbumArtEncoder` + `AlbumArtFrames` |
+| Диспетчер кнопок | `clk.S()` → helpers | ACK в `DashSession`, действия `DashButtonController` (Dart) |
 
 `NotificationService` не содержит ни одного метода. Он существует ровно затем,
 чтобы у приложения был компонент, которому пользователь выдаёт доступ к
@@ -63,11 +79,13 @@
 ### 3.1 Привязка и жизненный цикл
 
 `REForeGroundService.x()` требует тип подключения `INFOTAINMENT` (§7),
-регистрирует слушатель команд **до** проверки доступа к уведомлениям `wkh.u`
+регистрирует слушатель команд **до** проверки доступа к уведомлениям
 и получения **первой** сессии из `getActiveSessions(NotificationService)`.
-Без доступа `x()` возвращается без media-пакета; пустой список даёт `05 17 AA`.
-`J()` регистрирует callback, отправляет `05 17 55`, затем непосредственно
-вызывает `A(currentMetadata)`. Этот начальный снимок обходит счётчик callback.
+Без доступа `x()` возвращается без media-пакета. Пустой список не очищает
+старый token/controller; на холодном старте получается два `05 17 AA`.
+`J()` работает только при null-controller: регистрирует callback, отправляет
+`05 17 55`, затем непосредственно вызывает `A(currentMetadata)`.
+Этот начальный снимок обходит counter, но не dedup; `A(null)` даёт inactive.
 Явного воспроизведения текущего `PlaybackState` при привязке здесь нет.
 
 `y()` снимает callback, очищает контроллер, токен, `AudioManager` и слушатель
@@ -75,12 +93,14 @@
 («Music event received from REbaseActivity»). Это не доказательство автоматического
 обнаружения смены сессии: у оригинала нет `OnActiveSessionsChangedListener`
 и обработчика `onSessionDestroyed`, аналогичных нашему провайдеру.
-`x()` также вызывается при каждом `onStartCommand`.
+`x()` также вызывается при каждом `onStartCommand`, но новый token при
+ненулевом controller не гарантирует rebind из-за условия `J()`.
 
 Фаза счётчика callback и кэш дедупликации переживают перепривязку.
-Оригинальные stop/destroy не обеспечивают снятие callback и очистку слушателя;
-повторный start может завести дублирующие таймеры. Это дефекты жизненного цикла
-оригинала, не требуемый контракт порта.
+`S()` не снимает callback/command listener; `onDestroy()` вызывает только super.
+Повторный start может завести дублирующие таймеры. Это дефекты жизненного цикла
+оригинала, не требуемый контракт порта; наш provider отписывает старый controller,
+сбрасывает per-token cache/counter и отвергает callbacks старого generation (§8).
 
 ### 3.2 Метаданные
 
@@ -96,12 +116,18 @@ Callback увеличивает счётчик на **каждом** `onMetadata
   Проверка выполняется до получения обложки: поздняя обложка, новый исполнитель,
   альбом или признак рекламы при той же паре могут остаться незамеченными.
   Кэш не сбрасывается при stop/rebind оригинала.
-- Обычный tuple: `(album, title, artist)`. Без заголовка нормальный fallback —
-  `('', 'Now Playing', '')`. Ненулевой `METADATA_KEY_ADVERTISEMENT` со значением
-  не 0 даёт `('Advertisement', '', '')`.
-- `IllegalStateException` приводит к `('NowPlaying', '', '')`: текст стоит
-  **в поле альбома**, без пробела. Catch не гарантирует очистку ранее выбранной
-  обложки.
+- Обычный tuple: `(album, title, artist)`. При null/empty title fallback —
+  `('', 'Now Playing', '')`; whitespace остаётся текстом.
+  Ненулевой `METADATA_KEY_ADVERTISEMENT` со значением не 0 даёт
+  `('Advertisement', '', '')`; all-null проверяется раньше advertisement.
+- Raw title/id cache обновляется после thumbnail, но **до** отправки;
+  ошибка отправки не откатывает cache.
+- `IllegalStateException` fallback **узкий**: service smali `A`:598–729 —
+  assembly/enqueue карточки, marker, art conversion/send и recycle.
+  Getters, thumbnail, dedup/cache и выбор tuple находятся вне catch.
+  Ветка 733–800 добавляет только карточку `('NowPlaying', '', '')`:
+  текст **в поле альбома**, без пробела; без active/marker/clear-art и без
+  отмены уже поставленных в очередь карточки и обложки.
 
 Успешная обработка отправляет карточку `05 0D`, затем маркер `05 58 AA`
 без обложки либо `05 58 55` и чанки `05 40` с обложкой. Она **не**
@@ -110,7 +136,7 @@ Callback увеличивает счётчик на **каждом** `onMetadata
 
 Wire-карточка: `album \0 title \0 artist`, **без завершающего NUL**.
 Каждое поле обрезается до **19 UTF-16 code units**, а не 19 UTF-8 байт.
-`pbh.n` (259–279) кодирует каждый Java `char`: `<=255` — один байт,
+`l3d.n` (раньше `pbh.n`) кодирует каждый Java `char`: `<=255` — один байт,
 иначе `FF`. Это не UTF-8: `Я` превращается в `FF`, emoji из surrogate pair —
 в `FF FF`; граница обрезки может разделить пару.
 
@@ -133,7 +159,7 @@ Wire-карточка: `album \0 title \0 artist`, **без завершающе
 | `05 4C` | `STREAM_MUSIC` (3) | блок статуса, 1 Гц |
 | `05 1B` | `STREAM_VOICE_CALL` (0) | блок статуса, 1 Гц |
 
-Точная шкала в `REForeGroundService$d` (smali, 238–706):
+Точная шкала в `REForeGroundService$d.run`:
 `D = (max - min) / 10f`; **min не вычитается из current**.
 При `current <= 0` получается `10`. Затем проверяются по порядку включительные
 интервалы `[0D,1D] → 11`, `[1D,2D] → 12`, …, `[8D,9D] → 19`,
@@ -142,17 +168,24 @@ Wire-карточка: `album \0 title \0 artist`, **без завершающе
 (в том числе при `D=0`) оставляет соответствующий TLV **отсутствующим**.
 Ненулевой min и верхняя граница `11D` — особенности оригинала, не нормализованная
 формула порта и не требование воспроизводить его ошибки.
+Header count оригинала условный: timer `d.run` выбирает 9/10/11 по наличию
+cell signal и температуре-сентинелу 200. Этот выбор не учитывает возможную
+потерю volume TLV. Порт сохраняет фиксированные 11 TLV и fallback (§8).
 
-`05 0D`, `05 40`, `05 22` собираются побайтово вне таблицы констант `hbg`.
+`05 0D`, `05 40`, `05 22` собираются побайтово вне таблицы констант `w2c`.
 Полный инвентарь команд принадлежит [`docs/k1g_commands_RU.md`](../docs/k1g_commands_RU.md).
 
 ## 5. Обложка альбома
 
-`nbg.c` (76–96) режет данные, `a` строит первый чанк, `e` — продолжения;
-`d` (99–100) упаковывает BE16, `f` (140–144) ставит пакет в очередь и спит.
-Подготовка изображения у вызывающего кода:
+`c3c.c` режет данные, `a` строит первый чанк, `e` — продолжения;
+`d` упаковывает BE16, `f` ставит пакет в очередь и спит.
+Service читает только `ALBUM_ART`, затем использует
 `ThumbnailUtils.extractThumbnail(art, 75, 75)`,
 `Bitmap.createScaledBitmap(…, 75, 75)`, JPEG quality 50.
+Вспомогательный `djf.h1` recycle-ит вход до компрессии scaled Bitmap;
+`e1` игнорирует boolean `compress`, затем есть повторные recycle.
+Alias входа/scaled — статический риск, не наблюдавшийся crash APK.
+Безопасное владение Bitmap порта описано отдельно (§8).
 
 Значение первого `05 40`: `00 | total_hi total_lo | до 1000 байт JPEG`.
 Размер всего JPEG — BE16 только в первом значении. Продолжения:
@@ -163,14 +196,13 @@ Wire-карточка: `album \0 title \0 artist`, **без завершающе
 
 Ошибки оригинального slicer: пустой массив приводит к выходу за границы;
 при размерах ≥2000, кратных 1000, теряются последние 1000 байт;
-размер >65535 обрезается в BE16. Это не допустимые требования к будущему
-encoder-у. Нормальные кадры и исправления дефектов также требуют физического
-подтверждения (§9).
+размер >65535 обрезается в BE16. Порт исправляет эти дефекты (§8);
+приемлемость исправленного framing для физической приборки ещё не доказана (§9).
 
-Отправитель делает `Thread.sleep(10)` после **каждого** enqueue, включая последний.
-Отдельный отправитель очереди `zx4` работает независимо: это не доказательство
-10 мс между пакетами **на проводе** и не измерение длительности передачи.
-Кадровый цикл порта здесь не участвует.
+`c3c.f` делает `Thread.sleep(10)` после **каждого** enqueue, включая последний.
+Отдельный отправитель очереди `y2c.o` → `sw2.d/run` работает независимо:
+это не доказательство 10 мс между пакетами **на проводе** и не измерение
+длительности передачи. Кадровый цикл порта здесь не участвует.
 
 В NorthStar `DashCommands.albumArtFrames` помечен как неподтверждённый и
 не вызывается: его комментарий о двухбайтовом префиксе не описывает разобранный
@@ -178,15 +210,15 @@ encoder-у. Нормальные кадры и исправления дефек
 
 ## 6. Управление с джойстика
 
-Статическая карта `aaq.S()`; физическая карта 11.63 — отдельный вопрос.
+Статическая карта `clk.S()` (раньше `aaq.S()`); физическая карта 11.63 — отдельный вопрос.
 
 | код | действие оригинала |
 |---|---|
 | `03` / `04` | `AudioManager`: громкость voice call ±1, `FLAG_PLAY_SOUND` |
-| `05` | `igi.I()`: playing → pause, любое другое non-null playback state → play |
-| `06` / `07` | `igi.N()` / `M()`: controller.adjustVolume(±1, `FLAG_SHOW_UI=1`) |
+| `05` | `fpd.H()` / service `H`: playing → pause, любое другое non-null playback state → play |
+| `06` / `07` | controller.adjustVolume(±1, `FLAG_SHOW_UI=1`) |
 | `08` | mute/unmute `STREAM_MUSIC` через `AudioManager`, flags 0 |
-| `09` / `0A` | `igi.s()` / `n()`: skipToNext / skipToPrevious |
+| `09` / `0A` | transport controls: skipToNext / skipToPrevious |
 
 В ветках `05/06/07/09/0A` диспетчер проверяет **слушатель команд**, не
 MediaController. При наличии слушателя сначала вызывается действие, затем
@@ -201,7 +233,7 @@ notification access или сессии: он регистрируется ра�
 Mute независим от контроллера: `isStreamMute(STREAM_MUSIC)` выбирает
 `ADJUST_UNMUTE=100` либо `ADJUST_MUTE=-100`, flags 0.
 Ветка `08` отправляет ACK после действия. Код `18` («start music» в логе)
-вызывает `m9()` — отправку счётчика пропущенных звонков `06 0A`, без ACK;
+вызывает `NavigationRootFragment.Y/i9` — отправку счётчика пропущенных звонков `06 0A`, без ACK;
 эта надпись не доказывает запуск плеера.
 
 Обработчики громкости не отправляют значение `05 4C`/`05 1B`, лишь ACK.
@@ -219,10 +251,10 @@ Mute независим от контроллера: `isStreamMute(STREAM_MUSIC)
 | Active/playback | событие | §3.1–3.3 |
 | Обложка | событие | вместе с обработанной карточкой |
 
-`INFOTAINMENT` (`t9k.b`) — **тип подключённого устройства в приложении**
+`INFOTAINMENT` (`zif.b`, раньше `t9k.b`) — **тип подключённого устройства в приложении**
 из семейства `NONE/TRIPPER/INFOTAINMENT`, а не входящий режим UI прошивки.
-`SsidScanActivity.onNetworkConnected` → `D0` (342) устанавливает этот тип;
-его распространяют `NavigationRootFragment` (3655–3657) и setter `y9` (7588).
+`SsidScanActivity.onNetworkConnected` устанавливает этот тип;
+его распространяет `NavigationRootFragment.t9` (раньше setter `y9`).
 Этим типом ограничены инициализация оригинала и запуск heartbeat. Искать отдельную входящую
 firmware-команду для объяснения этого условия не требуется.
 Второй 1 Гц таймер `P()` → задача `e` не имеет найденных вызовов и не считается
@@ -242,6 +274,9 @@ firmware-команду для объяснения этого условия н
 [`DashSession`](../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/DashSession.kt),
 [`LiveHeartbeat`](../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/LiveHeartbeat.kt),
 `DashEngineController`, `K1GCodec.displayText`.
+Граница Dart: [`Pigeon schema`](../packages/opendash_dash_engine/pigeons/dash_engine.dart),
+[`DashEngine`](../packages/opendash_dash_engine/lib/opendash_dash_engine.dart);
+потребитель кнопок — [`DashButtonController`](../lib/state/dash_button_controller.dart).
 С 23.10.2026 нативная модель media и событийный single-writer wire-путь реализованы;
 физическое отображение остаётся отдельным аппаратным гейтом.
 Таблица ниже описывает фактическую отправку из сессии, не весь доступный codec API.
@@ -388,8 +423,14 @@ method-channel implementation и сгенерированный HostApi в nativ
 Они доступны независимо от button mapping. Новых aliases нет: существующие
 коды, title-based compatibility gate и call precedence пока не заменены
 на official mapping/stateful gate без аппаратного подтверждения.
+Compatibility gate — именно `nowPlayingTitle != null`, не `mediaActive` и
+не `mediaPlaying`: titleless active не включает media routing, пустая ненулевая
+строка включает. Приоритет остаётся call answer `06` / hangup `07`, затем
+next `06/09/22` или previous `05/07/0A` при title; иначе эти aliases зумируют
+карту вместе с `13/14`. Direct API не переводит `05` в play/pause автоматически.
 
-23.10.2026 на API 36 проверена вся граница из публичного Dart façade:
+По зафиксированным результатам этапа 5 в плане, 23.10.2026 на API 36 проверена
+граница из публичного Dart façade:
 реальный MediaSession, play/pause, remote volume ±1, mute без controller,
 active с пустым title, PLAYING→OTHER=null, PAUSED→null=null и stop=false/null.
 Smoke включал только media forwarding без подключения к Wi-Fi дэша;
@@ -397,7 +438,8 @@ fixture активировал обычный notification-listener access на 
 Это не подтверждение wire-кнопок или отображения на физической приборке:
 отправка inactive/marker сама по себе не доказывает очистку или рендер карточки.
 
-23.10.2026 на Android-эмуляторе API 36 проверены реальные Bitmap/JPEG и
+По результатам этапа 2 в плане, 23.10.2026 на Android-эмуляторе API 36
+проверены реальные Bitmap/JPEG и
 привилегированный smoke с настоящим MediaSession: ART fallback, начальный snapshot,
 pause/OTHER/play, skip/volume, metadata parity, stop/late metadata и mute без
 controller. Это не проверка notification-access UI и не подтверждение приборки.
@@ -408,7 +450,9 @@ contract описаны в [протоколе](k1g_protocol.md#кодирова
 Четыре однобайтных charset пользователь отклонил; рабочая кириллица в прошивке
 не установлена. Это не разрешение менять media order/FSM/retention по декомпиляции.
 ACK-before-forward в порте — существующий намеренный контракт, отличающийся
-от action-before-ACK оригинала.
+от action-before-ACK оригинала: `DashSession` заказывает `ButtonAck` single writer
+до публикации `SessionEvent.Button`. Это порядок enqueue/forward, а не гарантия,
+что UDP ACK уже физически принят приборкой к моменту выполнения Dart action.
 
 ## 9. Открытые вопросы для железа
 
@@ -426,6 +470,9 @@ ACK-before-forward в порте — существующий намеренны
   при смене/потере сессии; взаимодействие медиа с видеопотоком и картой.
 - Поддержка JPEG/маркера обложки, пустого терминатора для singleton и финального
   чанка с данными, включая полные 1000 байт; предел размера и нужный pacing.
+  Отдельно — прерывание multichunk A принятыми metadata B с JPEG и без JPEG:
+  отсутствие chunks A после card B на wire не доказывает отсутствие зависания
+  или возврата A на экране; нужны pcap и наблюдение приборки.
 - Физическая карта кнопок `03`…`0A`, включая mute, и эффект `18`.
 
 Источник `INFOTAINMENT` установлен статически (§7); это не открытый вопрос

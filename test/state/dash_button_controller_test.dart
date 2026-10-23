@@ -87,6 +87,29 @@ void main() {
     },
   );
 
+  test('media stop restores zoom for both track buttons', () async {
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+    container.read(dashButtonControllerProvider);
+    final stateSub = container.listen(dashEngineStateProvider, (_, _) {});
+    addTearDown(stateSub.close);
+    await pumpEventQueue();
+
+    platform.publish(title: 'Song', mediaActive: true, mediaPlaying: true);
+    await pumpEventQueue();
+    platform.press(0x09);
+    platform.press(0x0A);
+    await pumpEventQueue();
+
+    platform.publish(mediaActive: false);
+    await pumpEventQueue();
+    platform.press(0x09);
+    platform.press(0x0A);
+    await pumpEventQueue();
+
+    expect(platform.calls, ['skipNext', 'skipPrevious', 'zoomIn', 'zoomOut']);
+  });
+
   test(
     'new media flags do not switch the compatibility title gate before ride',
     () async {

@@ -86,10 +86,11 @@ button are equal values, and that is where a repeat gets swallowed.
       `[joystick] code=0x13`). An earlier version of this item named
       `0x09`/`0x0A`, which is incomplete: see `_btnMapZoomIn`/`_btnMapZoomOut`
       in `lib/state/dash_button_controller.dart`.
-- [ ] `0x09`/`0x0A` (RIGHT/LEFT) are media next/previous, and they fall through
-      to zoom **only while nothing is playing** (`_isLooseNextButton` /
-      `_isLoosePreviousButton`). Test both ways — with media active and without —
-      or a swapped branch stays invisible.
+- [ ] `0x09`/`0x0A` (RIGHT/LEFT) use media next/previous when
+      **`nowPlayingTitle != null`, including `''`**; null falls back to zoom.
+      This compatibility gate does not use `mediaPlaying` or `mediaActive`
+      (`_isLooseNextButton` / `_isLoosePreviousButton`). Test playing, paused,
+      absent media and active media with an empty title.
 - [ ] `0x15` and `0x0B` hit **no branch at all**. The 2026-09-05 ride sent them
       nine and six times; `0x15` shows up in the 2026-09-09 logs too. From the
       saddle that is indistinguishable from a broken control. Dart logs
@@ -129,70 +130,119 @@ button are equal values, and that is where a repeat gets swallowed.
 
 ## 6. Media / call bridge (native, new plugin code)
 
-Requires notification-listener access granted to OpenDash
-(Settings → Apps → Special access → Notification access, or wherever the
-OEM buries it — no in-app shortcut was built for this yet).
+Requires notification-listener access granted to snatch-dash (Android special
+access → Notification access). Keep call permissions/API restrictions separate
+from notification access.
 
-- [ ] With access granted, a playing media session's title shows on the dash
-      (`session.updateNowPlaying`) and as a banner on the in-app Dash screen.
-- [ ] Skip next/previous from the Dash-screen banner actually changes the
-      track (`MediaInfoProvider.skipNext/skipPrevious`).
-- [ ] An incoming call shows the caller name on the dash and as a banner
-      in-app; Answer/Hangup buttons work where the OS allows it (API-gated:
-      answer needs 26+, hangup needs 28+, both need `ANSWER_PHONE_CALLS`
-      granted at runtime).
-- [ ] Without notification access granted, media/call forwarding no-ops
-      silently — no crash, no stuck "loading" state.
+- [ ] With access granted, a playing session's title appears on the dash and
+      in the in-app Dash banner; banner next/previous changes the phone track.
+- [ ] An incoming call shows the caller on the dash and in-app; Answer/Hangup
+      works where permitted (answer API 26+, hangup API 28+, runtime
+      `ANSWER_PHONE_CALLS`). Call actions take precedence over media.
+- [ ] Without notification access, media forwarding is a safe no-op, without
+      crashes or a stuck loading state; check call permissions independently.
 
-Below are branches unverified on firmware 11.63. Original source was checked
-against smali; that proves its sender, not support by our cluster
-([`spec/multimedia.md`](../spec/multimedia.md)). New-path checks require the
-corresponding implementation stage of the
-[`multimedia plan`](../plans/active/2026-10-04-multimedia-support.md).
-For each experiment record build SHA/variant, phone, firmware, notification
-access, a separate pcap and observed screen/phone action. Change only one
-compatibility parameter at a time; pcap without the visible result is insufficient.
+### Media hardware gate — still open
 
-- [ ] **`05 0D` field order.** Use three distinct fields, such as
-      `TITLE-A / ALBUM-B / ARTIST-C`; compare both orders with identical length,
-      encoding and cadence. The original sends `album,title,artist`; the port
-      sends `title,album,artist`.
-- [ ] **Field length, 19 or 20.** With fixed order and encoding compare
-      19/20/21 ASCII characters with distinguishable final characters and
-      adjacent fields. Do not assume the twentieth character consumes the NUL.
-- [ ] **Encoding.** Separately check ASCII, Latin-1, Cyrillic and emoji.
-      The original replaces Java chars >255 with `FF`; the port uses UTF-8.
-      Record bytes and rendering; do not degrade Unicode on decompilation alone.
-- [ ] **Card retention without repeats.** In a clearly labelled test variant,
-      disable only periodic `05 0D`, send a card once and observe retention,
-      pause/resume and reconnect. The ordinary 1 Hz build cannot prove this;
-      restore the compatible mode afterwards.
-- [ ] **`05 17 AA`** ends media display. Send inactive without subsequent
-      periodic cards; separately check resume and session replacement. The
-      current port has no explicit inactive event path.
-- [ ] **`05 19`** changes the dash play/pause indicator; null/OTHER must not be
-      disguised as pause. Also test calls and active navigation.
-- [ ] **Art present: `05 58 55` followed by `05 40` chunks.** Once
-      implemented, check 75×75 JPEG quality 50: singleton with empty FF,
-      multiple chunks with data in the final FF, a full final block for exact
-      multiples of 1000, track changes and cancellation of old transfers on
-      disconnect. The original exact-multiple bug drops 1000 bytes; reproducing
-      it is not success.
-- [ ] **No art: `05 58 AA`.** Check both an initially artless item and a
-      transition from an item with art; no `05 40` chunks may follow `AA`.
-- [ ] **Live volume `05 4C` / `05 1B`.** Independently change music/call volume,
-      check zero, minimum, maximum and mute, and match bytes to the screen scale.
-      `INFOTAINMENT` is the app's Wi-Fi connection type, not an incoming mode packet.
-- [ ] **Official `05..0A` mapping.** Test only in a labelled candidate variant
-      with that mapping enabled, separately from current aliases: play/pause,
-      volume ±, mute, next/previous; active/paused/no-media and ringing-call
-      precedence, every press twice. The current dispatcher cannot prove
-      behavior of branches it does not implement.
-- [ ] **Stream compatibility.** During a large artwork transfer check
-      4 Hz projection timestamps, button ACK latency and heartbeat, plus
-      absence of old art chunks after reconnect. Packet counts alone do not
-      prove absence of delays. Do not use debug for performance conclusions;
-      choose the build according to `ride-verification`.
+The native event/art/live-volume paths and direct media API are implemented;
+unit tests and emulator smoke are **not** firmware 11.63 evidence. Static
+original-app facts (10.1.22, reconciled with 10.1.23) and current port behavior:
+[`spec/multimedia.md`](../spec/multimedia.md), §8–9. Detailed experiments and
+independent compatibility decisions:
+[`multimedia plan`, stage 7](../plans/active/2026-10-04-multimedia-support.md#этап-7--hardware-gate-на-прошивке-1163-ride).
+These are instructions, not new confirmations.
+
+For every experiment record APK/build SHA, release/profile variant and fixture
+flags, phone, firmware **11.63**, notification access and the phone's
+[`device baseline`](devices/). Use controlled A/B tracks with distinct
+`TITLE_A / ALBUM_A / ARTIST_A` and B fields, known JPEG bytes and playback state.
+Capture a separate pcap using [`PACKET_CAPTURE`](../hack/PACKET_CAPTURE.md),
+timestamped dash video/observations and phone actions, plus the matching ride
+`diag/`. Correlate action times with packets; pcap alone is insufficient.
+Use release/profile for cadence, with profile caveats from
+[`ride-verification`](../.claude/skills/ride-verification/SKILL.md); debug does
+not prove performance. Preserve the baseline **title/album/artist, ICU→ASCII,
+20 bytes after transliteration, 1 Hz card repeat, 11-TLV heartbeat**. Label
+candidate builds and change only one variable, restoring the baseline after each.
+
+- [ ] **Order.** Compare title/album/artist with album/title/artist at fixed
+      width20, ICU encoding and repeat. Record which labels the dash shows
+      for A and B, not just the packet order.
+- [ ] **Width.** At fixed order/encoding/repeat compare width19/20 with
+      18/19/20/21 ASCII-byte fields after transliteration, distinct last
+      characters and adjacent fields. Do not assume the twentieth byte eats NUL.
+- [ ] **ICU baseline.** Observe transliterated Russian names, expanding
+      combinations, Latin-1, unsupported characters and truncation; match bytes
+      to readability. The old UTF-8 versus original lossy-char experiment is
+      withdrawn; no charset change or Cyrillic-glyph claim follows from this.
+- [ ] **Retention.** In a labelled variant disable only periodic `05 0D`;
+      send A once, wait **30 s without metadata callbacks**, then B,
+      pause/resume and reconnect. Compare with the 1 Hz baseline; an ordinary
+      periodic APK cannot prove retention without repeats.
+- [ ] **Indicators / reconnect.** Observe PLAYING (`05 19 55`), PAUSED
+      (`05 19 AA`), PLAYING→OTHER and PAUSED→null playback. Unknown is
+      active=true, playing=null, with active but **no new `05 19`**; reconnect
+      must not replay the old known indicator. Record the actual display,
+      including with calls/navigation, rather than assuming unknown clears it.
+- [ ] **Inactive / stop.** Stop media while STREAMING: state becomes
+      false/null with metadata cleared, explicit `05 17 AA` through the writer,
+      no old cards/art afterwards. Repeat stop and trigger a late callback:
+      no second inactive transition or resurrection. Separately stop after
+      transport teardown and reconnect: no stale state/packets, but no final
+      inactive delivery is promised on a closed socket. Ordinary reconnect
+      without stop must replay the current snapshot. Record whether the dash
+      actually clears/resumes its display and handles session replacement.
+- [ ] **Art framing / absence.** Run no-art→art→no-art with known 75×75
+      quality50 JPEGs: singleton (1…1000 bytes, empty `FF` terminator), multichunk
+      (data-bearing final `FF`) and **exact2000** (full final 1000 bytes, no extra
+      terminator). Match reassembled bytes and visible art. `05 58 AA` must
+      have no art frames for that item; never reproduce the original dropped
+      final-block bug as a success. After disconnect no old transfer may leak.
+- [ ] **Art supersession.** After A's first chunk but before A finishes,
+      accept distinct metadata B: separately B with art and B without art.
+      After card B there must be **no chunk A**, including delayed chunks;
+      expect card B→present→new B from its first chunk, or card B→absent.
+      The dash must show B without hanging/reverting to A. A dedup-suppressed
+      callback is not accepted B and must not cancel A.
+- [ ] **Live volume.** Independently vary music `05 4C` and call `05 1B`:
+      silence `10`, min/max, each step boundary and mute, including mute without
+      a controller. Record Android current/min/max, packet level and visible
+      scale; allow for the next 1 Hz heartbeat, not an immediate volume event.
+      Invalid/unavailable stream readings independently retain fallback
+      music=`13`, call=`19`; do not treat a silent stream as fallback.
+- [ ] **Independent button probes.** Only in an explicitly gated official-map
+      fixture probe `03/04` call volume, `05` play/pause, `06/07` music volume,
+      `08` mute, `09/0A` next/previous, each twice. Test active/paused/no-media,
+      empty title and ringing-call precedence. Separate code→phone-action
+      evidence from port ACK-before-forward and candidate mediaActive gating
+      for `05/06/07/09/0A` (not the original listener gate). Mute/call volume
+      do not require a title/controller. Probe existing aliases separately:
+      they do not confirm official codes. `18` is not a play alias (original
+      sends missed-call count). The current mapping/title gate stays unchanged
+      until this independent gate is resolved; direct APIs remain available.
+- [ ] **Media + video / cadence.** Compare max65535 art against no-art baseline
+      with projection and button presses. Measure timestamp cadence **250 ms**,
+      receipt→ACK **≤250 ms + measured baseline jitter**, heartbeat gap
+      **≤1 s + the same jitter**, and art spacing **≥10 ms**. Compare diag
+      `[stream] wakeLate=`, `poolLate=`, `overrun=`, `drainMiss=` and
+      `[map] interval=`, `encode=`, `late=` with the device baseline; these
+      explain stalls but do not replace pcap latency measurements. Record
+      incoming `09 04/06`, continued media packets and
+      actual map/media display during transitions. `INFOTAINMENT` is the
+      original app's connection enum, not a firmware-mode boundary.
+
+**Independent outcomes (stage 7):** change only order if it improves rendering;
+otherwise keep current order. Accept width19 only with evidence, otherwise20;
+keep ICU→ASCII unless a new requirement and separate evidence authorize change.
+Remove only periodic repeat if retention succeeds, otherwise keep1 Hz. Accept
+or reject each marker/playback/art path separately by screen+pcap; broken map,
+ignored art or intolerance of interruption rejects that path, **not** a switch
+to finishing old art A. Wrong volume or excess gaps rejects that specific
+branch, retaining captured fallback; live-volume scale and cadence are separate
+decisions. Official mapping/stateful gate requires its own evidence; any
+disagreement keeps the current mapping, call precedence and ACK-first contract.
+No firmware-mode branch is introduced. Keep every unresolved item open; only
+a human with the above evidence updates both checklists and Findings.
 
 ## 7. Power / thermals (screen-off ride)
 

@@ -1,5 +1,6 @@
 package com.opendash.opendash_dash_engine.dash.protocol
 
+import android.icu.text.Transliterator
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
@@ -86,6 +87,11 @@ internal class MalformedCounter {
 /** Typed view over [K1GPacket] — same bytes, named contents. */
 internal object K1GCodec {
 
+    // Android ICU documents transliterators as stateless and safe to share between callers.
+    private val displayTransliterator: Transliterator by lazy {
+        Transliterator.getInstance("NFC; Russian-Latin/BGN; Any-Latin; Latin-ASCII")
+    }
+
     /**
      * Every message in one datagram, in wire order.
      *
@@ -171,9 +177,7 @@ internal object K1GCodec {
         )
 
         is DashCommand.RouteCard -> {
-            val title = cmd.title.toByteArray(Charsets.UTF_8).let {
-                if (it.size > MAX_TITLE_BYTES) it.copyOf(MAX_TITLE_BYTES) else it
-            } + 0x00.toByte()
+            val title = displayText(cmd.title, MAX_TITLE_BYTES) + 0x00.toByte()
             // Four BYTES, not four Chars: the field is a fixed-width ASCII HH:MM and the
             // dash reads it positionally, so a string that encodes to any other length is
             // refused rather than shipped short. etaHHMM crosses the MethodChannel, so
@@ -222,11 +226,13 @@ internal object K1GCodec {
         is DashCommand.NowPlaying -> K1GPacket.build(
             K1GPacket.tlv(
                 0x05, 0x0D,
-                mediaField(cmd.title) + 0x00 + mediaField(cmd.album) + 0x00 + mediaField(cmd.artist),
+                displayText(cmd.title, MEDIA_FIELD_MAX) + 0x00 +
+                    displayText(cmd.album, MEDIA_FIELD_MAX) + 0x00 +
+                    displayText(cmd.artist, MEDIA_FIELD_MAX),
             ),
         )
         is DashCommand.CallNotify ->
-            K1GPacket.build(K1GPacket.tlv(0x05, 0x22, mediaField(cmd.callerName) + 0x00))
+            K1GPacket.build(K1GPacket.tlv(0x05, 0x22, displayText(cmd.callerName, MEDIA_FIELD_MAX) + 0x00))
         DashCommand.CallClear -> K1GPacket.build(K1GPacket.tlv(0x05, 0x22, 0x00))
 
         is DashCommand.CapturedBurstStep ->
@@ -236,9 +242,38 @@ internal object K1GCodec {
     /** Big-endian u16 as a two-byte value. */
     private fun u16(v: Int) = byteArrayOf(((v shr 8) and 0xFF).toByte(), (v and 0xFF).toByte())
 
-    private fun mediaField(value: String): ByteArray =
-        value.take(MEDIA_FIELD_MAX).toByteArray(Charsets.UTF_8)
+    private fun displayText(value: String, maxBytes: Int): ByteArray {
+        val asciiLength = minOf(value.length, maxBytes)
+        var asciiEnd = 0
+        while (asciiEnd < asciiLength && value[asciiEnd].code <= 0x7F) asciiEnd++
+        if (asciiEnd == asciiLength) {
+            return ByteArray(asciiLength) { value[it].code.toByte() }
+        }
 
+        // ICU needs the right context too (e.g. Ё before a lowercase letter).
+        // Transliterating a field-sized source prefix can change even its first
+        // output bytes. Bound the source work, then truncate only the result.
+        var sourceLimit = minOf(value.length, MAX_DISPLAY_INPUT_CHARS)
+        if (sourceLimit < value.length && Character.isHighSurrogate(value[sourceLimit - 1]) &&
+            Character.isLowSurrogate(value[sourceLimit])
+        ) {
+            sourceLimit--
+        }
+        val latin = displayTransliterator.transliterate(value.substring(0, sourceLimit))
+        // At most two UTF-16 units per output code point; do not scan an unused tail.
+        val size = minOf(maxBytes, latin.codePointCount(0, minOf(latin.length, maxBytes * 2)))
+        val bytes = ByteArray(size)
+        var offset = 0
+        for (i in bytes.indices) {
+            val codePoint = Character.codePointAt(latin, offset)
+            bytes[i] = (if (codePoint <= 0x7F) codePoint else '?'.code).toByte()
+            offset += Character.charCount(codePoint)
+        }
+        return bytes
+    }
+
+
+    private const val MAX_DISPLAY_INPUT_CHARS = 4096
     private const val MEDIA_FIELD_MAX = 20
     private const val MAX_HOSTNAME_BYTES = 200
     private const val MAX_TITLE_BYTES = 60

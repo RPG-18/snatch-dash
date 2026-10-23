@@ -1,9 +1,14 @@
 package com.opendash.opendash_dash_engine.dash
 
+import kotlinx.coroutines.CancellationException
+
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
+import kotlin.test.assertNull
+import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
 /**
@@ -114,6 +119,70 @@ class ConnectionFsmTest {
             ),
             effects,
         )
+    }
+
+    @Test
+    fun `a rejected WiFi request builder reports ERROR and tears down without killing reconnect`() {
+        // Android builders cannot run on the JVM. Inject both the observed passphrase
+        // rejection and another builder failure through the production construction guard.
+        for (failure in listOf(
+            IllegalArgumentException("passphrase is not ASCII"),
+            IllegalStateException("invalid network specifier"),
+        )) {
+            val (waiting, startEffects) =
+                ConnectionFsm.reduce(ConnState.Idle, ConnEvent.UserConnect(ssid))
+            val wifiStates = mutableListOf<WifiState>()
+            for (effect in startEffects) {
+                if (effect is Effect.RequestWifi) {
+                    val request = buildWifiRequestOrReportFailure<Any>(
+                        ssid = effect.ssid,
+                        reportFailure = { wifiStates += it },
+                    ) { throw failure }
+                    assertNull(request)
+                }
+            }
+            val wifi = wifiStates.single()
+            assertEquals(WifiConnStatus.ERROR, wifi.status)
+            assertEquals(ssid, wifi.ssid)
+            val reason = checkNotNull(wifi.error)
+
+            // Same ERROR -> WifiGaveUp mapping as the controller's Wi-Fi collector.
+            val (gaveUp, cleanup) =
+                ConnectionFsm.reduce(waiting, ConnEvent.WifiGaveUp(wifi.error!!))
+            assertEquals(ConnState.GaveUp(reason), gaveUp)
+            assertEquals(
+                listOf(
+                    Effect.StopSession(farewell = false),
+                    Effect.ReleaseWifi(linger = false),
+                    Effect.CancelGiveUp,
+                    Effect.CancelAuthRetry,
+                    Effect.CancelSettle,
+                    Effect.Report(reason),
+                    Effect.StandDown,
+                ),
+                cleanup,
+            )
+            // A corrected config can connect on the same reducer, not only after restart.
+            val (recovered, _) = run(
+                gaveUp,
+                ConnEvent.UserConnect(ssid),
+                ConnEvent.WifiUp(ssid),
+                ConnEvent.SessionReady,
+            )
+            assertEquals(ConnState.Streaming(ssid), recovered)
+        }
+    }
+
+    @Test
+    fun `WiFi request construction does not turn coroutine cancellation into ERROR`() {
+        val cancelled = CancellationException("stopping")
+        val thrown = assertFailsWith<CancellationException> {
+            buildWifiRequestOrReportFailure<Any>(
+                ssid = ssid,
+                reportFailure = { error("Cancellation must not be reported: $it") },
+            ) { throw cancelled }
+        }
+        assertSame(cancelled, thrown)
     }
 
     @Test

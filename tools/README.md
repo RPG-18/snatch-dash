@@ -1,11 +1,75 @@
 # tools/
 
-Вспомогательные скрипты, не входящие в сборку приложения. Сейчас здесь одно —
-[`planetiler/`](planetiler): конвейер «выгрузка OSM → офлайн-тайлы PMTiles».
+Вспомогательные скрипты, не входящие в сборку приложения:
+[`planetiler/`](planetiler) — конвейер «OSM → PMTiles»;
+[`k1g.lua`](k1g.lua) — Wireshark-диссектор K1G;
+[`k1g_test.lua`](k1g_test.lua) — его Lua-проверки и экспорт packet fixtures.
 
 - **Что это и как запускать** — [`planetiler/README.md`](planetiler/README.md).
 - **Что вообще лежит в `tools/`** — [`CLAUDE.md`](CLAUDE.md).
 - **Как ставить окружение** — этот файл, ниже.
+
+## Диссектор K1G
+
+Из корня репозитория:
+
+```bash
+tshark -X lua_script:tools/k1g.lua -r ride.pcapng
+lua tools/k1g_test.lua
+lua tools/k1g_test.lua --emit /tmp/k1g-fixtures.pcapng
+tshark -X lua_script:tools/k1g.lua -r /tmp/k1g-fixtures.pcapng
+```
+
+Проверки покрывают packet boundaries, direction и raw media/art/volume fields;
+stub не доказывает корректность API Wireshark, поэтому fixtures также
+прогоняются через реальный `tshark`. `05 0D` сохраняет три позиционных byte
+fields, не угадывая порядок и кодировку. `05 40` отделяет index/BE16 total от
+JPEG; `FF` может быть финальным блоком с данными, а не пустым терминатором.
+`05 4C`/`05 1B` отображают silence/корзины, не проценты.
+
+В Lua harness `TvbRange:string()` обрезает данные на NUL, как настоящий
+tshark; binary fields helper читает через `bytes():raw()`. Отдельный art
+fixture проверяет сохранение встроенных NUL и `0xFF`, включая полную длину
+фрагмента: текстовое чтение не должно незаметно обрезать binary payload.
+
+Fields, фильтры и методика —
+[`hack/PACKET_CAPTURE.md`, §3](../hack/PACKET_CAPTURE.md#3-wireshark-диссектор-k1g).
+Старый `hack/k1g_dissector.lua` остаётся standalone-вариантом; **не загружать
+оба одновременно**, потому что они регистрируют один протокол `k1g`.
+
+### Воспроизводимый анализ PCAPNG
+
+`k1g_analyze.py` — Python 3.9+ stdlib CLI поверх настоящего tshark и этого
+Lua-диссектора; собственного декодера K1G нет. `tshark` берётся из PATH или
+явного `--tshark`; дополнительных pip-зависимостей нет:
+
+```bash
+python3 tools/k1g_analyze.py /absolute/ride.pcapng --timezone Europe/Moscow --json
+python3 -m unittest discover -s tools -p 'test_k1g_analyze.py' -v
+```
+
+Без `--json` — полный текстовый отчёт с локальным временем. Диссектор ищется
+рядом со скриптом, cwd не важен. Defaults: UTC, RX/tick gap >2000 мс,
+ProjectionHeartbeat gap >1000 мс, burst adjacency ≤100 мс. Все thresholds
+переопределяются положительными целыми `--rx-gap-ms`, `--heartbeat-gap-ms`,
+`--burst-gap-ms`. Gap — наблюдение, не диагноз; open tail right-censored и
+не входит в closed max. Порядок файловый, section/interface и регрессия
+timestamp разделяют последовательности.
+
+JSON `schema_version: 1` сохраняет hashes capture/dissector, tshark version,
+thresholds, coverage, refs и все события без усечения. В segment
+`heartbeat_packets` считает уникальные TX datagrams с `05 56 == 55`,
+`tick_messages` — целые RX tick TLV; interval `count` — число интервалов,
+percentiles — nearest rank. `k1g.tick.counter` — полный BE16-суффикс, не
+uptime и не установленный аппаратный модуль. В реальных данных встречается
+`00FF→0000`. Repeated/unknown/empty TLV сохраняют принадлежность к дереву.
+
+Exit 0 — валидный отчёт, включая пустой capture/аномалии; 1 — ошибка
+входа/tshark/Lua/контейнера; 2 — аргументы/timezone. При ошибке success stdout
+пуст. Suite создаёт собственные временные PCAPNG и требует настоящий tshark;
+без него tshark-backed проверки пропускаются, что не является полным гейтом.
+Методика и пределы причинных выводов —
+[навык `k1g-pcap-analysis`](../.claude/skills/k1g-pcap-analysis/SKILL.md).
 
 ## Окружение
 

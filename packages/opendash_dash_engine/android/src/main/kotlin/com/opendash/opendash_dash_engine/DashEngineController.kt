@@ -1124,6 +1124,7 @@ class DashEngineController(
         isOffRoute: Boolean,
         points: List<GeoPoint>,
         jamSegments: List<Int> = emptyList(),
+        roadName: String? = null,
     ) {
         inputs.update { cur ->
             cur.copy(
@@ -1143,12 +1144,16 @@ class DashEngineController(
                 },
             )
         }
-        if (remainingMeters != null && nextTurnMeters != null) {
-            val (pv, pu) = toDashDistance(nextTurnMeters)
-            val (tv, tu) = toDashDistance(remainingMeters)
-            chrome.update {
-                it.copy(nav = NavFigures(maneuver, pv, pu, tv, tu, etaHHMM))
+        chrome.update {
+            val nav = if (remainingMeters != null && nextTurnMeters != null) {
+                val (pv, pu) = toDashDistance(nextTurnMeters)
+                val (tv, tu) = toDashDistance(remainingMeters)
+                NavFigures(maneuver, pv, pu, tv, tu, etaHHMM, roadName)
+            } else {
+                // A missing street is a replacement too, never the last maneuver's name.
+                it.nav?.copy(roadName = roadName)
             }
+            it.copy(nav = nav)
         }
     }
 

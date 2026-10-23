@@ -57,6 +57,7 @@ class MethodChannelOpendashDashEngine extends OpendashDashEnginePlatform {
     bool offRoute = false,
     List<NavPoint> points = const [],
     List<int> jamSegments = const [],
+    String? roadName,
   }) => _api.setNavState(
     remainingMeters,
     nextTurnMeters,
@@ -65,6 +66,7 @@ class MethodChannelOpendashDashEngine extends OpendashDashEnginePlatform {
     offRoute,
     points,
     jamSegments,
+    roadName,
   );
 
   @override
@@ -92,7 +94,8 @@ class MethodChannelOpendashDashEngine extends OpendashDashEnginePlatform {
   Future<void> setSsid(String ssid) => _api.setSsid(ssid);
 
   @override
-  Future<void> setWifiPassword(String password) => _api.setWifiPassword(password);
+  Future<void> setWifiPassword(String password) =>
+      _api.setWifiPassword(password);
 
   @override
   Future<DashConfigView> getConfig() => _api.getConfig();
@@ -134,7 +137,8 @@ class MethodChannelOpendashDashEngine extends OpendashDashEnginePlatform {
   Future<bool> skipPrevious() => _api.skipPrevious();
 
   @override
-  Future<bool> isNotificationAccessGranted() => _api.isNotificationAccessGranted();
+  Future<bool> isNotificationAccessGranted() =>
+      _api.isNotificationAccessGranted();
 
   @override
   Future<void> openNotificationAccessSettings() =>

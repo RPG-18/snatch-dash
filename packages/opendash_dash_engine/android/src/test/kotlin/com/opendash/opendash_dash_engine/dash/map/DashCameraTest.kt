@@ -2,6 +2,7 @@ package com.opendash.opendash_dash_engine.dash.map
 
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
+import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
@@ -25,10 +26,11 @@ class DashCameraTest {
     }
 
     @Test
-    fun `heading-up pushes the target into the lower third`() {
+    fun `heading-up pushes the target near the bottom`() {
         val padding = DashCamera.padding(w, h, headingUp = true, panX = 0f, panY = 0f)
 
-        // Only the top is inset, and by twice the distance the target moves down.
+        // Only the top is inset, and by twice the distance the target moves down
+        // — 15% above the bottom edge at NAV_PIVOT_Y = 0.85.
         val expectedShift = h * DashCamera.NAV_PIVOT_Y - h / 2f
         assertContentEquals(intArrayOf(0, (2 * expectedShift).toInt(), 0, 0), padding)
         // Sanity on the direction: padding at the TOP moves the target DOWN,
@@ -59,6 +61,7 @@ class DashCameraTest {
     fun `pan and pivot combine instead of cancelling`() {
         // Panning up in nav view pushes the target further down still — the two
         // effects are on the same axis and must not quietly overwrite each other.
+        // (At the FULL pan bound the clamp takes over instead — separate test.)
         val pivotOnly = DashCamera.padding(w, h, headingUp = true, panX = 0f, panY = 0f)
         val both = DashCamera.padding(w, h, headingUp = true, panX = 0f, panY = -30f)
 
@@ -67,11 +70,24 @@ class DashCameraTest {
     }
 
     @Test
-    fun `at the pan limit there is still a frame to render into`() {
-        // MapLibre renders into what padding leaves over, and the pivot's inset
-        // and the pan's stack on the same axis. This is the pair — the bound on
-        // pan and the pivot fraction — that has to stay compatible; changing
-        // either without the other silently squeezes the map into a strip.
+    fun `at the pan limit the target stays on the frame`() {
+        // The pivot's inset and the pan's stack on the same axis: the core
+        // moves the perspective center by half the inset, so padding at or
+        // beyond the frame dimension would push the camera target (the rider)
+        // off the frame entirely. Two pair contracts hold here. The first:
+        // padding stays below the frame dimension — the width half is bounded
+        // by MAX_PAN_FRACTION = 0.12w alone (there is no horizontal pivot), so
+        // it is a tripwire for a future horizontal bias rather than a live
+        // constraint. The second: the pivot sits at or below the clamp — a
+        // pivot above MAX_TARGET_Y_FRACTION is silently overridden by it, a
+        // tuning bug no sweep of pan values can see. (The historical "third of
+        // the frame left to render" margin was built on a false viewport model
+        // — padding does not crop the render, it only moves the target; see
+        // the dedicated clamp test below.)
+        assertTrue(
+            DashCamera.NAV_PIVOT_Y <= DashCamera.MAX_TARGET_Y_FRACTION,
+            "pivot ${DashCamera.NAV_PIVOT_Y} above the clamp ${DashCamera.MAX_TARGET_Y_FRACTION} — the pivot is silently overridden",
+        )
         val maxPanX = w * DashCamera.MAX_PAN_FRACTION
         val maxPanY = h * DashCamera.MAX_PAN_FRACTION
         for (headingUp in listOf(false, true)) {
@@ -79,10 +95,40 @@ class DashCameraTest {
                 for (py in listOf(-maxPanY, 0f, maxPanY)) {
                     val padding = DashCamera.padding(w, h, headingUp, px, py)
                     assertTrue(padding.all { it >= 0 }, "negative padding at $px/$py")
-                    assertTrue(padding[0] + padding[2] < w * 2 / 3, "too little width at $px/$py")
-                    assertTrue(padding[1] + padding[3] < h * 2 / 3, "too little height at $px/$py")
+                    assertTrue(padding[0] + padding[2] < w, "target off-frame in width at $px/$py")
+                    assertTrue(padding[1] + padding[3] < h, "target off-frame in height at $px/$py")
                 }
             }
         }
+    }
+
+    @Test
+    fun `full pan-up in nav is clamped to keep the marker on the frame`() {
+        // Pivot 0.85 + full pan-up would put the target at 0.97h; the clamp
+        // caps it at MAX_TARGET_Y_FRACTION, insetting 2·(0.90h − h/2) = 0.80h
+        // on top so the rider's 17 px halo stays on the 300 px frame.
+        val maxPanY = h * DashCamera.MAX_PAN_FRACTION
+        val padding = DashCamera.padding(w, h, headingUp = true, panX = 0f, panY = -maxPanY)
+
+        val expectedTop = (2 * (h * DashCamera.MAX_TARGET_Y_FRACTION - h / 2f)).toInt()
+        assertContentEquals(intArrayOf(0, expectedTop, 0, 0), padding)
+    }
+
+    @Test
+    fun `top padding limits a requested 60 degree tilt before the arrow and snapshot diverge`() {
+        val padding = DashCamera.padding(w, h, headingUp = true, panX = 0f, panY = 0f)
+        val actual = DashCamera.effectiveTilt(60.0, 36.86989764584402, h, padding)
+        assertEquals(48.896167, actual, 0.000001)
+        assertEquals(0.657426, riderArrowForwardScale(actual).toDouble(), 0.000001)
+        assertEquals(45.0, DashCamera.effectiveTilt(45.0, 36.86989764584402, h, padding))
+    }
+
+    @Test
+    fun `no top bias preserves the Android tilt limit and north-up stays flat`() {
+        val centered = intArrayOf(0, 0, 0, 0)
+        val bottomBias = intArrayOf(0, 0, 0, 210)
+        assertEquals(60.0, DashCamera.effectiveTilt(60.0, 36.86989764584402, h, centered))
+        assertEquals(60.0, DashCamera.effectiveTilt(60.0, 36.86989764584402, h, bottomBias))
+        assertEquals(0.0, DashCamera.effectiveTilt(0.0, 36.86989764584402, h, centered))
     }
 }

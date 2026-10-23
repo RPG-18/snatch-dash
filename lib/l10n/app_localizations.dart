@@ -1562,6 +1562,18 @@ abstract class AppLocalizations {
   /// **'continue straight'**
   String get voiceTurnContinue;
 
+  /// No description provided for @voiceTurnSlightLeft.
+  ///
+  /// In en, this message translates to:
+  /// **'bear left'**
+  String get voiceTurnSlightLeft;
+
+  /// No description provided for @voiceTurnSlightRight.
+  ///
+  /// In en, this message translates to:
+  /// **'bear right'**
+  String get voiceTurnSlightRight;
+
   /// No description provided for @voiceTurnLeft.
   ///
   /// In en, this message translates to:
@@ -1573,6 +1585,30 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'turn right'**
   String get voiceTurnRight;
+
+  /// No description provided for @voiceTurnHardLeft.
+  ///
+  /// In en, this message translates to:
+  /// **'turn sharply left'**
+  String get voiceTurnHardLeft;
+
+  /// No description provided for @voiceTurnHardRight.
+  ///
+  /// In en, this message translates to:
+  /// **'turn sharply right'**
+  String get voiceTurnHardRight;
+
+  /// No description provided for @voiceTurnForkLeft.
+  ///
+  /// In en, this message translates to:
+  /// **'keep left at the fork'**
+  String get voiceTurnForkLeft;
+
+  /// No description provided for @voiceTurnForkRight.
+  ///
+  /// In en, this message translates to:
+  /// **'keep right at the fork'**
+  String get voiceTurnForkRight;
 
   /// No description provided for @voiceTurnUturnLeft.
   ///
@@ -1586,23 +1622,53 @@ abstract class AppLocalizations {
   /// **'make a U-turn to the right'**
   String get voiceTurnUturnRight;
 
-  /// No description provided for @voiceDistanceKm.
+  /// No description provided for @voiceTurnEnterRoundabout.
   ///
   /// In en, this message translates to:
-  /// **'{km} kilometers'**
-  String voiceDistanceKm(String km);
+  /// **'enter the roundabout'**
+  String get voiceTurnEnterRoundabout;
 
-  /// No description provided for @voiceDistance500m.
+  /// No description provided for @voiceTurnLeaveRoundabout.
   ///
   /// In en, this message translates to:
-  /// **'500 meters'**
-  String get voiceDistance500m;
+  /// **'leave the roundabout'**
+  String get voiceTurnLeaveRoundabout;
 
-  /// No description provided for @voiceDistance200m.
+  /// No description provided for @voiceTurnLeaveRoundaboutNumber.
   ///
   /// In en, this message translates to:
-  /// **'200 meters'**
-  String get voiceDistance200m;
+  /// **'take exit number {exitNumber} off the roundabout'**
+  String voiceTurnLeaveRoundaboutNumber(int exitNumber);
+
+  /// No description provided for @voiceTurnBoardFerry.
+  ///
+  /// In en, this message translates to:
+  /// **'board the ferry'**
+  String get voiceTurnBoardFerry;
+
+  /// No description provided for @voiceTurnLeaveFerry.
+  ///
+  /// In en, this message translates to:
+  /// **'leave the ferry'**
+  String get voiceTurnLeaveFerry;
+
+  /// No description provided for @voiceTurnExitLeft.
+  ///
+  /// In en, this message translates to:
+  /// **'take the exit on the left'**
+  String get voiceTurnExitLeft;
+
+  /// No description provided for @voiceTurnExitRight.
+  ///
+  /// In en, this message translates to:
+  /// **'take the exit on the right'**
+  String get voiceTurnExitRight;
+
+  /// No description provided for @voiceTurnWaypoint.
+  ///
+  /// In en, this message translates to:
+  /// **'you reach a waypoint'**
+  String get voiceTurnWaypoint;
 
   /// No description provided for @voiceDistanceM.
   ///

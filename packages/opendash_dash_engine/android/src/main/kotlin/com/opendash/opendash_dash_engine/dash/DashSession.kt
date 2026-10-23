@@ -37,7 +37,6 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
-import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.coroutines.CoroutineContext
 
@@ -266,8 +265,16 @@ internal class DashSession private constructor(
     @Volatile private var transport: DashTransport? = null
     private var sendJob: Job? = null
 
-    /** Guards [close] and [fail] against running twice — whichever gets here first wins. */
-    private val finished = AtomicBoolean(false)
+    /**
+     * Owns both the end-of-session claim and every state write. Checking an atomic flag
+     * before a separate state write still lets Main overwrite an IO teardown with STREAMING.
+     *
+     * Only state and non-suspending event publication belong here: no logging, socket IO,
+     * cancellation or joins. [closeMutex] may enter this lock, never the other way around,
+     * so a controller holding its session lock can still wait for [close] safely.
+     */
+    private val lifecycleLock = Any()
+    private var finished = false
 
     /** So two concurrent [close] calls cannot cancel the first one's farewell mid-flight. */
     private val closeMutex = Mutex()
@@ -321,20 +328,7 @@ internal class DashSession private constructor(
      * projection frame before that is a packet it has no state for.
      */
     fun startStreaming() {
-        if (_state.value != DashState.READY) return
-        // [finished] and not just the state, because this is the one state write that comes
-        // from another thread: the controller calls it from its Main collector while
-        // [linkLost] or [fail] may be running on IO. Losing that race used to write
-        // STREAMING over a session that was already cancelled — and nothing could undo it,
-        // since `_state` is only written from in here and in here is gone. The wreck then
-        // read as live for ever: `openSession` refused to replace it, `scheduleAuthRetry`
-        // bailed, and the collector had already answered STREAMING by cancelling the
-        // give-up timer. A frozen dash for the rest of the ride, with no error anywhere.
-        if (finished.get()) {
-            DebugLog.w(TAG) { "startStreaming() on a session that has already ended" }
-            return
-        }
-        setState(DashState.STREAMING)
+        advanceState(DashState.READY, DashState.STREAMING)
     }
 
     /**
@@ -379,7 +373,7 @@ internal class DashSession private constructor(
      */
     suspend fun close(farewell: Boolean) = withContext(NonCancellable) {
         closeMutex.withLock {
-            if (finished.compareAndSet(false, true) && farewell) {
+            if (finish() && farewell) {
                 outbox.trySend(DashCommand.ProjectionStop)
                 outbox.trySend(DashCommand.ProjectionOff)
                 outbox.close()
@@ -412,7 +406,10 @@ internal class DashSession private constructor(
                         "transport was closed — ports may still be bound",
                 )
             }
-            setState(DashState.IDLE)
+            val prev = synchronized(lifecycleLock) {
+                _state.value.also { _state.value = DashState.IDLE }
+            }
+            logState(prev, DashState.IDLE)
             DebugLog.i(TAG) { "Session closed" }
         }
     }
@@ -463,7 +460,7 @@ internal class DashSession private constructor(
             scope.launch { watchdog() }
             scope.launch { ackCounterLog() }
 
-            setState(DashState.AUTHENTICATING)
+            if (!advanceState(DashState.CONNECTING, DashState.AUTHENTICATING)) return
             DebugLog.i(TAG) { "Sending initial burst…" }
             RideDiagnostics.log("auth", "initial burst sent — waiting up to ${AUTH_TIMEOUT}ms for 07 01 01")
             sendScript(Scripts.initialBurst(HOSTNAME, timeSyncNow()))
@@ -503,17 +500,14 @@ internal class DashSession private constructor(
 
             // Always nav-mode entry, idle or not: the dash opens its video decoder only as
             // part of nav mode, so there is no separate idle mode (see spec/fsm.md).
-            sendScript(Scripts.enterNavMode(chrome.value.destinationName))
+            sendScript(Scripts.enterNavMode(chrome.value.routeTitle))
             DebugLog.i(TAG) { "Nav mode kick sent" }
 
-            // Cancellation is cooperative and the script's last step has no pause after it,
-            // so without this a close() landing between the final packet and the line below
-            // still publishes READY — and the controller answers READY by building an
-            // encoder, a snapshotter and two threads for a session that is already going
-            // away. The guard predates stage 4 and was dropped in the rewrite by accident.
+            // Cancellation is cooperative; the last script step has no pause. The state
+            // transition must also share ownership with close/fail/linkLost: ensureActive
+            // alone leaves a check-then-write race on the very next instruction.
             currentCoroutineContext().ensureActive()
-            setState(DashState.READY)
-            eventChannel.trySend(SessionEvent.Ready)
+            advanceState(DashState.AUTHENTICATING, DashState.READY, SessionEvent.Ready)
         } catch (e: TimeoutCancellationException) {
             // Before the CancellationException clause below, and that order is load-bearing:
             // withTimeout signals by throwing a CancellationException subclass, so the
@@ -542,29 +536,54 @@ internal class DashSession private constructor(
      * callback that could fire twice.
      */
     private fun fail(reason: String, handshakeRefused: Boolean = false) {
-        if (!finished.compareAndSet(false, true)) return
+        if (!finish(DashState.ERROR, SessionEvent.Failed(reason, handshakeRefused))) return
         DebugLog.e(TAG, { "ERROR — $reason" })
         RideDiagnostics.log("error", "session fail: $reason")
-        setState(DashState.ERROR)
-        eventChannel.trySend(SessionEvent.Failed(reason, handshakeRefused))
         outbox.close()
         job.cancel()
     }
 
     /** The dash stopped talking, or the socket died under us. Recoverable; ERROR is not. */
     private fun linkLost(event: SessionEvent) {
-        if (!finished.compareAndSet(false, true)) return
-        setState(DashState.IDLE)
-        eventChannel.trySend(event)
+        if (!finish(DashState.IDLE, event)) return
         outbox.close()
         job.cancel()
     }
 
-    private fun setState(next: DashState) {
-        val prev = _state.value
-        if (prev == next) return
-        DebugLog.i(TAG) { "state $prev -> $next" }
-        _state.value = next
+    /** Commit an active transition and its event before any terminal transition can win. */
+    private fun advanceState(
+        expected: DashState,
+        next: DashState,
+        event: SessionEvent? = null,
+    ): Boolean {
+        synchronized(lifecycleLock) {
+            if (finished || !job.isActive || _state.value != expected) return false
+            _state.value = next
+            if (event != null) eventChannel.trySend(event)
+        }
+        logState(expected, next)
+        return true
+    }
+
+    /**
+     * Claim teardown once. A deliberate close keeps its state until farewell and cleanup
+     * finish, but the claim immediately bars every active transition, including READY.
+     */
+    private fun finish(next: DashState? = null, event: SessionEvent? = null): Boolean {
+        val prev = synchronized(lifecycleLock) {
+            if (finished) return false
+            finished = true
+            _state.value.also {
+                if (next != null) _state.value = next
+                if (event != null) eventChannel.trySend(event)
+            }
+        }
+        if (next != null) logState(prev, next)
+        return true
+    }
+
+    private fun logState(prev: DashState, next: DashState) {
+        if (prev != next) DebugLog.i(TAG) { "state $prev -> $next" }
     }
 
     // ── The one writer ────────────────────────────────────────────────────
@@ -662,7 +681,7 @@ internal class DashSession private constructor(
         // reach the dash once real guidance is running: this card repeats at 1 Hz and would
         // stomp the live numbers every second.
         return DashCommand.RouteCard(
-            title = c.destinationName,
+            title = c.routeTitle,
             projectionOn = projectionOn,
             maneuver = nav.maneuver,
             primaryUnit = nav.primaryUnit,

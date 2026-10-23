@@ -843,10 +843,28 @@ class AppLocalizationsEn extends AppLocalizations {
   String get voiceTurnContinue => 'continue straight';
 
   @override
+  String get voiceTurnSlightLeft => 'bear left';
+
+  @override
+  String get voiceTurnSlightRight => 'bear right';
+
+  @override
   String get voiceTurnLeft => 'turn left';
 
   @override
   String get voiceTurnRight => 'turn right';
+
+  @override
+  String get voiceTurnHardLeft => 'turn sharply left';
+
+  @override
+  String get voiceTurnHardRight => 'turn sharply right';
+
+  @override
+  String get voiceTurnForkLeft => 'keep left at the fork';
+
+  @override
+  String get voiceTurnForkRight => 'keep right at the fork';
 
   @override
   String get voiceTurnUturnLeft => 'make a U-turn to the left';
@@ -855,15 +873,30 @@ class AppLocalizationsEn extends AppLocalizations {
   String get voiceTurnUturnRight => 'make a U-turn to the right';
 
   @override
-  String voiceDistanceKm(String km) {
-    return '$km kilometers';
+  String get voiceTurnEnterRoundabout => 'enter the roundabout';
+
+  @override
+  String get voiceTurnLeaveRoundabout => 'leave the roundabout';
+
+  @override
+  String voiceTurnLeaveRoundaboutNumber(int exitNumber) {
+    return 'take exit number $exitNumber off the roundabout';
   }
 
   @override
-  String get voiceDistance500m => '500 meters';
+  String get voiceTurnBoardFerry => 'board the ferry';
 
   @override
-  String get voiceDistance200m => '200 meters';
+  String get voiceTurnLeaveFerry => 'leave the ferry';
+
+  @override
+  String get voiceTurnExitLeft => 'take the exit on the left';
+
+  @override
+  String get voiceTurnExitRight => 'take the exit on the right';
+
+  @override
+  String get voiceTurnWaypoint => 'you reach a waypoint';
 
   @override
   String voiceDistanceM(int m) {

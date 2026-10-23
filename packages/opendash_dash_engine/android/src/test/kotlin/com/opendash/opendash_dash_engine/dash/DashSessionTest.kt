@@ -10,6 +10,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.StandardTestDispatcher
@@ -20,8 +21,13 @@ import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.withTimeout
 import java.security.KeyPairGenerator
 import java.security.interfaces.RSAPublicKey
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.FutureTask
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -105,7 +111,7 @@ class DashSessionTest {
 
     @Test
     fun `the full handshake reaches READY through nav entry, byte for byte`() = runTest {
-        val r = rig(chrome = MutableStateFlow(DashChrome(destinationName = "Мурманск")))
+        val r = rig(chrome = MutableStateFlow(DashChrome(destinationName = "Murmansk")))
         advanceTimeBy(200)
         runCurrent()
         r.wire.clearSent()
@@ -128,7 +134,7 @@ class DashSessionTest {
 
         val heartbeat = enc(DashCommand.Heartbeat())
         val navEntry = r.wire.sent.filterNot { it.bytes.toHex() == heartbeat }
-        val script = Scripts.enterNavMode("Мурманск")
+        val script = Scripts.enterNavMode("Murmansk")
         assertEquals(
             script.map { K1GCodec.encode(it.cmd).toHex() },
             navEntry.map { it.bytes.toHex() },
@@ -147,12 +153,63 @@ class DashSessionTest {
 
     @Test
     fun `the destination the card carries is the one set before the session opened`() = runTest {
-        val r = rig(chrome = MutableStateFlow(DashChrome(destinationName = "Дом")))
+        val r = rig(chrome = MutableStateFlow(DashChrome(destinationName = "Home")))
         reachReady(r)
 
         val cards = r.wire.sent.map { it.bytes.toHex() }
-            .filter { it.contains(K1GCodec.encode(DashCommand.RouteCard("Дом")).toHex().drop(20)) }
+            .filter { it.contains(K1GCodec.encode(DashCommand.RouteCard("Home")).toHex().drop(20)) }
         assertTrue(cards.isNotEmpty(), "the chrome set before open() is what nav entry announces")
+        r.close()
+    }
+
+    @Test
+    fun `nav entry and reconnect announce the known next street without a destination flash`() = runTest {
+        val chrome = MutableStateFlow(
+            DashChrome(
+                destinationName = "Home",
+                nav = NavFigures(0x14, 120, 0x30, 4200, 0x30, roadName = "First Street"),
+            ),
+        )
+        val first = rig(chrome = chrome)
+        reachReady(first)
+        assertEquals(List(5) { "First Street" }, routeTitles(first))
+        first.close()
+
+        chrome.value = chrome.value.copy(nav = chrome.value.nav!!.copy(roadName = "Second Street"))
+        val second = rig(chrome = chrome)
+        reachReady(second)
+        assertEquals(List(5) { "Second Street" }, routeTitles(second))
+        second.close()
+    }
+
+    @Test
+    fun `periodic titles follow street changes and fall back on null blank and cleared guidance`() = runTest {
+        val chrome = MutableStateFlow(
+            DashChrome(
+                destinationName = "Home",
+                nav = NavFigures(0x14, 120, 0x30, 4200, 0x30, roadName = "First Street"),
+            ),
+        )
+        val r = rig(chrome = chrome)
+        reachReady(r)
+        r.session.startStreaming()
+        for ((street, expected) in listOf(
+            "First Street" to "First Street",
+            "Second Street" to "Second Street",
+            null to "Home",
+            "  " to "Home",
+        )) {
+            chrome.value = chrome.value.copy(nav = chrome.value.nav!!.copy(roadName = street))
+            r.wire.clearSent()
+            advanceTimeBy(1_000)
+            runCurrent()
+            assertEquals(listOf(expected), routeTitles(r), "street=$street")
+        }
+        chrome.value = chrome.value.copy(destinationName = "Snatch", nav = null)
+        r.wire.clearSent()
+        advanceTimeBy(1_000)
+        runCurrent()
+        assertEquals(listOf("Snatch"), routeTitles(r), "cleared guidance has no stale street")
         r.close()
     }
 
@@ -337,7 +394,7 @@ class DashSessionTest {
     @Test
     fun `one second of streaming is four projection frames, one card and one heartbeat`() = runTest {
         val chrome = MutableStateFlow(
-            DashChrome(destinationName = "Дом", nav = NavFigures(0x14, 120, 0x30, 4200, 0x30)),
+            DashChrome(destinationName = "Home", nav = NavFigures(0x14, 120, 0x30, 4200, 0x30)),
         )
         val r = rig(chrome = chrome)
         reachReady(r)
@@ -355,7 +412,7 @@ class DashSessionTest {
         assertEquals(1, hexes.count { it == enc(DashCommand.Heartbeat()) }, "1 Hz heartbeat")
         assertEquals(
             1,
-            hexes.count { it == enc(DashCommand.RouteCard("Дом", true, 0x14, 0x30, 4200, 0x30)) },
+            hexes.count { it == enc(DashCommand.RouteCard("Home", true, 0x14, 0x30, 4200, 0x30)) },
             "1 Hz route card, carrying the live figures",
         )
         assertEquals(
@@ -370,7 +427,7 @@ class DashSessionTest {
     fun `the order inside a one-second tick is fixed`() = runTest {
         val chrome = MutableStateFlow(
             DashChrome(
-                destinationName = "Дом",
+                destinationName = "Home",
                 nav = NavFigures(0x14, 120, 0x30, 4200, 0x30),
                 nowPlaying = NowPlaying("Song"),
             ),
@@ -395,7 +452,7 @@ class DashSessionTest {
         assertEquals(
             listOf(
                 enc(DashCommand.ProjectionFrame),
-                enc(DashCommand.RouteCard("Дом", true, 0x14, 0x30, 4200, 0x30)),
+                enc(DashCommand.RouteCard("Home", true, 0x14, 0x30, 4200, 0x30)),
                 enc(DashCommand.ActiveNav(0x14, 120, 0x30, 4200, 0x30)),
                 enc(DashCommand.NowPlaying("Song", "", "")),
                 enc(DashCommand.Heartbeat()),
@@ -607,6 +664,90 @@ class DashSessionTest {
     // ── One session at a time ─────────────────────────────────────────────
 
     @Test
+    fun `streaming already past its guard cannot overwrite a concurrent link loss`() = runTest {
+        assertStreamingCannotRevive(DashState.IDLE) { r ->
+            r.wire.close()
+            runCurrent()
+            assertIs<SessionEvent.Failed>(r.events.last())
+        }
+    }
+
+    @Test
+    fun `streaming already past its guard cannot overwrite a concurrent failure`() = runTest {
+        assertStreamingCannotRevive(DashState.ERROR) { r ->
+            // Exercise fail() through the real writer, not reflection or a test-only API.
+            r.session.send(DashCommand.AuthSendKey(ByteArray(1)))
+            runCurrent()
+            assertIs<SessionEvent.Failed>(r.events.last())
+        }
+    }
+
+    @Test
+    fun `streaming already past its guard cannot overwrite a concurrent farewell close`() = runTest {
+        assertStreamingCannotRevive(DashState.IDLE) { r ->
+            r.wire.clearSent()
+            r.session.close(farewell = true)
+            assertEquals(
+                listOf(enc(DashCommand.ProjectionStop), enc(DashCommand.ProjectionOff)),
+                r.wire.sent.map { it.bytes.toHex() },
+            )
+        }
+    }
+
+    @Test
+    fun `handshake state publication cannot overwrite a concurrent link loss`() = runBlocking {
+        // These writes originate inside run(), not from an external startStreaming caller.
+        // Use real worker threads so RX can terminate while the handshake is paused.
+        for ((before, after) in listOf(
+            DashState.CONNECTING to DashState.AUTHENTICATING,
+            DashState.AUTHENTICATING to DashState.READY,
+        )) {
+            val parent = Job()
+            val wire = FakeDashTransport { System.nanoTime() / 1_000_000 }
+            val key = rsaKey()
+            wire.deliver(incoming(0x07, 0x00, key.modulus.toByteArray()))
+            wire.deliver(incoming(0x07, 0x03, key.publicExponent.toByteArray()))
+            wire.deliver(incoming(0x07, 0x01, byteArrayOf(0x01, 0x02)))
+            StateLogPause(before, after).use { pause ->
+                val session = DashSession.open(
+                    ssid = ssid,
+                    chrome = MutableStateFlow(DashChrome()),
+                    clock = { System.nanoTime() / 1_000_000 },
+                    parent = parent,
+                    context = Dispatchers.Default,
+                ) { wire }
+                try {
+                    pause.awaitPaused()
+                    wire.close()
+                    withTimeout(5_000) { session.state.first { it == DashState.IDLE } }
+                    pause.resume()
+                    parent.complete()
+                    withTimeout(5_000) { parent.join() }
+                    assertEquals(DashState.IDLE, session.state.value, "late $after publication")
+                    session.startStreaming()
+                    assertEquals(DashState.IDLE, session.state.value)
+                    val events = mutableListOf<SessionEvent>()
+                    withTimeout(5_000) {
+                        session.events.first {
+                            events += it
+                            it is SessionEvent.Failed
+                        }
+                    }
+                    assertEquals(
+                        if (after == DashState.READY) listOf(SessionEvent.Ready) else emptyList(),
+                        events.dropLast(1),
+                        "Ready, if committed, precedes the terminal event",
+                    )
+                } finally {
+                    pause.resume()
+                    session.close(farewell = false)
+                    parent.cancel()
+                }
+            }
+        }
+    }
+
+    @Test
     fun `a closed session cannot write to a later one's transport`() = runTest {
         val first = rig()
         reachReady(first)
@@ -648,12 +789,12 @@ class DashSessionTest {
         }
 
     /**
-     * The one test on the real clock, and the one that would have caught the 2026-09-19
-     * deadlock in review instead of after it.
+     * Runs on the real clock, and would have caught the 2026-09-19 deadlock in review
+     * instead of after it.
      *
-     * Everything else here runs on virtual time, where "close() never returns" shows up as a
-     * build that hangs — which is not a red test, it is a stuck CI job nobody can read. This
-     * one runs the session on a real dispatcher and puts a wall-clock bound on the close, so
+     * On virtual time, "close() never returns" shows up as a build that hangs — not a red
+     * test, but a stuck CI job nobody can read. This test runs the session on a real
+     * dispatcher and puts a wall-clock bound on the close, so
      * the failure has a name.
      *
      * What it guards: [DashSession.close] cancels the scope and joins it, and the receive
@@ -745,7 +886,90 @@ class DashSessionTest {
 
     // ── Rig helpers ───────────────────────────────────────────────────────
 
+    /**
+     * Pause an actual transition at the existing logger seam. Before lifecycle ownership
+     * was atomic, this line followed the finished check but preceded the state write.
+     * The fixed implementation commits first and logs outside its lifecycle lock.
+     *
+     * Latches establish the interleaving; the wall-clock bound only prevents a broken
+     * implementation from hanging CI. DebugLog swallows sink exceptions, hence the explicit
+     * timedOut flag rather than an assertion inside the sink.
+     */
+    private class StateLogPause(before: DashState, after: DashState) : AutoCloseable {
+        private val previousSink = DebugLog.sink
+        private val reached = CountDownLatch(1)
+        private val released = CountDownLatch(1)
+        private val timedOut = AtomicBoolean(false)
+
+        init {
+            DebugLog.sink = { _, _, _ -> }
+            DebugLog.sink = { tag, _, message ->
+                if (tag == "DashSession" && message == "state $before -> $after") {
+                    reached.countDown()
+                    if (!released.await(10, TimeUnit.SECONDS)) timedOut.set(true)
+                }
+            }
+        }
+
+        fun awaitPaused() {
+            assertTrue(reached.await(5, TimeUnit.SECONDS), "state writer reached the pause")
+        }
+
+        fun resume() {
+            released.countDown()
+        }
+
+        override fun close() {
+            released.countDown()
+            DebugLog.sink = previousSink
+            assertFalse(timedOut.get(), "termination must finish without the paused logger")
+        }
+    }
+
+    private suspend fun TestScope.assertStreamingCannotRevive(
+        terminal: DashState,
+        terminate: suspend (Rig) -> Unit,
+    ) {
+        val r = rig()
+        try {
+            reachReady(r)
+            StateLogPause(DashState.READY, DashState.STREAMING).use { pause ->
+                val startTask = FutureTask<Unit> { r.session.startStreaming() }
+                val thread = Thread(startTask, "session-start-race").apply {
+                    isDaemon = true
+                    start()
+                }
+                try {
+                    pause.awaitPaused()
+                    terminate(r)
+                    assertEquals(terminal, r.session.state.value)
+                    assertTrue(r.wire.closed)
+                    pause.resume()
+                    startTask.get(5, TimeUnit.SECONDS)
+                    assertEquals(terminal, r.session.state.value, "the late writer cannot revive it")
+                    r.session.startStreaming()
+                    assertEquals(terminal, r.session.state.value)
+                } finally {
+                    pause.resume()
+                    thread.join(5_000)
+                    assertFalse(thread.isAlive, "the streaming caller must return")
+                }
+            }
+        } finally {
+            r.close()
+        }
+    }
+
     private fun enc(cmd: DashCommand) = K1GCodec.encode(cmd).toHex()
+
+    private fun routeTitles(r: Rig): List<String> = r.wire.sent
+        .map { it.bytes }
+        .filter { it.size >= 21 && it[17].toInt() == 0x05 && it[18].toInt() == 0x01 }
+        .map {
+            val size = ((it[19].toInt() and 0xFF) shl 8) or (it[20].toInt() and 0xFF)
+            assertEquals(0, it[20 + size].toInt(), "route title is NUL-terminated")
+            String(it, 21, size - 1, Charsets.US_ASCII)
+        }
 
     private fun rsaKey(): RSAPublicKey = KeyPairGenerator.getInstance("RSA")
         .apply { initialize(1024) }.generateKeyPair().public as RSAPublicKey

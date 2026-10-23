@@ -53,6 +53,7 @@ app.*.map.json
 
 # Decompiled reference app (not part of this project's source)
 /re_app/
+/re_app_new/
 
 # Local notes: checked-but-not-done ideas, kept next to the code rather than in
 # the repo — they are a working surface, not documentation.

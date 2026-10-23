@@ -93,6 +93,9 @@ android {
         getByName("test") {
             java.srcDirs("src/test/kotlin")
         }
+        getByName("androidTest") {
+            java.srcDirs("src/androidTest/kotlin")
+        }
     }
 
     defaultConfig {
@@ -100,6 +103,7 @@ android {
         // floor its code carries (WifiNetworkSpecifier, NetworkCapabilities
         // .transportInfo) belongs here first — see android/app/build.gradle.kts.
         minSdk = 29
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         buildConfigField("String", "GIT_SHA", "\"$gitLabel\"")
     }
 
@@ -171,12 +175,17 @@ dependencies {
     // and the frame loop runs in a background service on whatever phone the
     // rider owns — the wrong place to be an early adopter of a new backend.
     //
-    // Not the floor version either: `pmtiles://` needs 11.8.0, but
-    // MapSnapshotter's padding — which carries the rider's offset into the
-    // lower third — only arrived in 12.0.1.
+    // Not the floor version either: `pmtiles://` needs 11.8.0, and the
+    // camera-carried padding this engine uses (`CameraPosition.Builder.padding`,
+    // see MapSnapshotProvider.capture) predates it. `MapSnapshotter.setPadding`
+    // — the API the rider offset used to ride in, and a silent no-op without a
+    // region — only arrived in 12.1.0 (changelog #3882) and is not used.
     implementation("org.maplibre.gl:android-sdk-opengl:13.6.0")
 
     testImplementation("org.jetbrains.kotlin:kotlin-test")
+    // Platform ICU is stubbed in JVM android.jar; text regressions run on Android.
+    androidTestImplementation("androidx.test:runner:1.7.0")
+    androidTestImplementation("androidx.test.ext:junit:1.3.0")
     // `org.json` ships with Android but is stubbed in JVM unit tests; the real
     // implementation lets the style assembler be tested without a device.
     testImplementation("org.json:json:20240303")

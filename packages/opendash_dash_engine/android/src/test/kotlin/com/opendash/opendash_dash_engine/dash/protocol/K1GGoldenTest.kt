@@ -472,6 +472,18 @@ class K1GGoldenTest {
     }
 
     @Test
+    fun `route title boundaries ignore text beyond the sixty byte ASCII prefix`() {
+        for (length in listOf(59, 60, 61)) {
+            val size = minOf(length, 60)
+            val card = routeCard("R".repeat(length) + if (length >= 60) "Ж" else "")
+            assertEquals(size + 1, u16At(card, 19))
+            assertContentEquals(ByteArray(size) { 0x52 }, card.copyOfRange(21, 21 + size))
+            assertEquals(0, card[21 + size].toInt())
+            assertEquals(107 + size, card.size)
+        }
+    }
+
+    @Test
     fun `a shorter title shortens the packet, template length is not baked in`() {
         val card = routeCard("Go")
 
@@ -589,15 +601,19 @@ class K1GGoldenTest {
     }
 
     @Test
-    fun `media fields are cut at 20 CHARACTERS, not 20 bytes`() {
-        // String.take(20) runs before UTF-8 encoding, so a Cyrillic title yields a 40-byte
-        // field. Pinned because the dash's own field width is unknown: "obviously" changing
-        // this to a byte limit is a protocol change, not a cleanup.
-        val pkt = nowPlaying("Ю".repeat(30), "", "")
-
-        assertEquals(63, pkt.size)
-        assertEquals("050d002a", pkt.copyOfRange(17, 21).toHex(), "0x2A = 40 bytes + 2 separators")
-        assertContentEquals("Ю".repeat(20).toByteArray(Charsets.UTF_8), pkt.copyOfRange(21, 61))
+    fun `ASCII media and caller boundaries count each field independently`() {
+        for (length in listOf(19, 20, 21)) {
+            val size = minOf(length, 20)
+            val media = nowPlaying("T".repeat(length), "L".repeat(length), "R".repeat(length))
+            assertEquals(3 * size + 2, u16At(media, 19))
+            assertEquals(
+                "T".repeat(size) + "\u0000" + "L".repeat(size) + "\u0000" + "R".repeat(size),
+                String(media, 21, media.size - 21, Charsets.US_ASCII),
+            )
+            val caller = callNotify("N".repeat(length))
+            assertEquals(size + 1, u16At(caller, 19))
+            assertEquals("N".repeat(size) + "\u0000", String(caller, 21, caller.size - 21, Charsets.US_ASCII))
+        }
     }
 
     @Test
@@ -609,7 +625,7 @@ class K1GGoldenTest {
     }
 
     @Test
-    fun `call notify truncates to twenty characters and keeps its terminator`() {
+    fun `call notify truncates to twenty bytes and keeps its terminator`() {
         val pkt = callNotify("N".repeat(50))
 
         assertEquals(42, pkt.size)

@@ -280,6 +280,12 @@ class MapSnapshotProvider(private val context: Context) {
             counters.abandon()
             DebugLog.w(TAG) { "snapshot wedged for ${now - inFlightSince}ms — cancelling, its bitmap is lost" }
             snapshotter?.let { runCatching { it.cancel() } }
+            // The torn-off request's callbacks stay ours (cancel() clears none), and
+            // the issue check below is their only identity. Bump it here too: without
+            // it a LATE success from this request passes the check, resets
+            // rebuildsSinceSuccess and unwinds the give-up backoff — the 60s cooldown
+            // never sticks while wedges keep producing late callbacks.
+            snapshotterIssue++
             inFlight = false
             // And do not trust that cancel() gave the snapshotter back: in the
             // field it did not, and every later start() failed. Replace it.
@@ -310,8 +316,24 @@ class MapSnapshotProvider(private val context: Context) {
         }
         val snapshotter = snapshotter ?: return@withContext null
         var failed = false
-        snapshotter.setCameraPosition(camera)
-        snapshotter.setPadding(padding[0], padding[1], padding[2], padding[3])
+        // Padding rides INSIDE the camera, not in `setPadding`. Verified against
+        // the android-v13.6.0 sources: core MapSnapshotter stores setPadding's
+        // insets in regionInsets and applies them only when a region is set
+        // (Impl::setPadding re-jumps on !region.isEmpty()), while the JNI's
+        // getCameraOptions always engages CameraOptions.padding — so the
+        // regionInsets fallback in setCameraOptions is unreachable from Android
+        // and the rider has been rendering CENTERED in heading-up all along.
+        // CameraPosition.Builder.padding() is carried through the JNI into
+        // CameraOptions and applied by jumpTo. Note the JNI multiplies the
+        // insets by pixelRatio, so frame-pixel values are exact only while
+        // PIXEL_RATIO is 1.0 — re-derive if it ever drops below again.
+        val camWithPadding = CameraPosition.Builder(camera)
+            .padding(
+                padding[0].toDouble(), padding[1].toDouble(),
+                padding[2].toDouble(), padding[3].toDouble(),
+            )
+            .build()
+        snapshotter.setCameraPosition(camWithPadding)
         inFlight = true
         inFlightSince = now
         // Which snapshotter this request belongs to. A callback carries no

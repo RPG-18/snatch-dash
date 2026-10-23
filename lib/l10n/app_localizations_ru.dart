@@ -852,10 +852,28 @@ class AppLocalizationsRu extends AppLocalizations {
   String get voiceTurnContinue => 'продолжайте движение прямо';
 
   @override
+  String get voiceTurnSlightLeft => 'плавный поворот налево';
+
+  @override
+  String get voiceTurnSlightRight => 'плавный поворот направо';
+
+  @override
   String get voiceTurnLeft => 'поворот налево';
 
   @override
   String get voiceTurnRight => 'поворот направо';
+
+  @override
+  String get voiceTurnHardLeft => 'резкий поворот налево';
+
+  @override
+  String get voiceTurnHardRight => 'резкий поворот направо';
+
+  @override
+  String get voiceTurnForkLeft => 'на развилке держитесь левее';
+
+  @override
+  String get voiceTurnForkRight => 'на развилке держитесь правее';
 
   @override
   String get voiceTurnUturnLeft => 'левый разворот';
@@ -864,15 +882,30 @@ class AppLocalizationsRu extends AppLocalizations {
   String get voiceTurnUturnRight => 'правый разворот';
 
   @override
-  String voiceDistanceKm(String km) {
-    return '$km километра';
+  String get voiceTurnEnterRoundabout => 'въезд на круговое движение';
+
+  @override
+  String get voiceTurnLeaveRoundabout => 'съезд с кругового движения';
+
+  @override
+  String voiceTurnLeaveRoundaboutNumber(int exitNumber) {
+    return 'съезжайте с круга на съезде номер $exitNumber';
   }
 
   @override
-  String get voiceDistance500m => '500 метров';
+  String get voiceTurnBoardFerry => 'въезд на паром';
 
   @override
-  String get voiceDistance200m => '200 метров';
+  String get voiceTurnLeaveFerry => 'съезд с парома';
+
+  @override
+  String get voiceTurnExitLeft => 'съезд налево';
+
+  @override
+  String get voiceTurnExitRight => 'съезд направо';
+
+  @override
+  String get voiceTurnWaypoint => 'вы достигнете промежуточной точки маршрута';
 
   @override
   String voiceDistanceM(int m) {

@@ -37,15 +37,39 @@ local f_tlv_sub    = ProtoField.uint8 ("k1g.tlv.sub", "TLV Sub", base.HEX)
 local f_tlv_len    = ProtoField.uint16("k1g.tlv.len", "TLV Length", base.DEC)
 local f_tlv_value  = ProtoField.bytes ("k1g.tlv.value", "TLV Value")
 local f_tlv_name   = ProtoField.string("k1g.tlv.name", "TLV Meaning")
+local f_media_detail = ProtoField.string("k1g.media.detail", "Media Detail")
+local media_fields = {
+    ProtoField.bytes("k1g.media.field1", "Media Field 1 (raw)"),
+    ProtoField.bytes("k1g.media.field2", "Media Field 2 (raw)"),
+    ProtoField.bytes("k1g.media.field3", "Media Field 3 (raw)"),
+}
+local f_media_active = ProtoField.uint8("k1g.media.active", "Media Active", base.HEX,
+    { [0x55] = "active", [0xAA] = "inactive" })
+local f_media_playing = ProtoField.uint8("k1g.media.playing", "Media Playback", base.HEX,
+    { [0x55] = "playing", [0xAA] = "paused" })
+local f_art_present = ProtoField.uint8("k1g.art.present", "Album Art Present", base.HEX,
+    { [0x55] = "present", [0xAA] = "absent" })
+local volume_values = { [0x10] = "silence" }
+for bucket = 1, 10 do volume_values[0x10 + bucket] = "bucket " .. bucket .. "/10" end
+local f_volume_music = ProtoField.uint8("k1g.volume.music", "Music Volume", base.HEX, volume_values)
+local f_volume_call = ProtoField.uint8("k1g.volume.call", "Call Volume", base.HEX, volume_values)
+local f_art_index = ProtoField.uint8("k1g.art.index", "Art Chunk Index", base.HEX,
+    { [0x00] = "first", [0xFF] = "final" })
+local f_art_size = ProtoField.uint16("k1g.art.size", "Declared JPEG Size", base.DEC)
+local f_art_data = ProtoField.bytes("k1g.art.data", "JPEG Fragment")
+local f_art_data_len = ProtoField.uint16("k1g.art.data_len", "JPEG Fragment Length", base.DEC)
 
 k1g.fields = {
     f_outer_len, f_seg_count, f_reserved, f_flags, f_const, f_magic, f_seq,
     f_direction, f_tlv_type, f_tlv_sub, f_tlv_len, f_tlv_value, f_tlv_name,
+    f_media_detail, media_fields[1], media_fields[2], media_fields[3],
+    f_media_active, f_media_playing, f_art_present, f_volume_music, f_volume_call,
+    f_art_index, f_art_size, f_art_data, f_art_data_len,
 }
 
--- Known (type,sub) pairs, harvested from opendash_dash_engine's
--- DashCommands.kt / DashAuth.kt. Anything not listed here is genuinely
--- unknown and worth diffing against a baseline capture.
+-- Wire meanings from our encoder and the original app's Java/smali.
+-- Original media semantics do not prove firmware 11.63 support. See
+-- spec/multimedia.md; preserve raw values rather than infer the sender.
 local KNOWN = {
     -- outgoing auth (app -> dash)
     ["08.04"] = "auth: request RSA pubkey",
@@ -64,9 +88,15 @@ local KNOWN = {
     ["05.08"] = "ETA HH:MM (4 ASCII digits)",
     ["05.09"] = "total distance remaining (u16)",
     ["05.0a"] = "decimal separator",
-    ["05.0d"] = "media now-playing (title\\0album\\0artist)",
+    ["05.0d"] = "media card (3 raw fields; sender-dependent order/encoding)",
     ["05.22"] = "call caller name / clear (00=clear)",
     ["05.46"] = "total distance unit",
+    ["05.17"] = "media active (55=active, AA=inactive; original app)",
+    ["05.19"] = "media playback (55=playing, AA=paused; original app)",
+    ["05.58"] = "album art marker (55=present, AA=absent; original app)",
+    ["05.40"] = "JPEG album art chunk (original app framing)",
+    ["05.4c"] = "music volume (10=silence, 11..1A=buckets; not percent)",
+    ["05.1b"] = "voice-call volume (10=silence, 11..1A=buckets; not percent)",
 
     -- projection / frame ack
     ["06.05"] = "projection flag (55=on, AA=off)",
@@ -125,10 +155,8 @@ local KNOWN = {
     ["0c.25"] = "dash telemetry, plaintext, 1B -- meaning UNKNOWN",
 
     -- seen in the init burst / heartbeat template, meaning not yet confirmed
-    ["05.1b"] = "unknown (init burst capability flag)",
     ["05.21"] = "unknown (init burst capability flag)",
     ["05.2d"] = "unknown (init burst, 2-byte value)",
-    ["05.4c"] = "unknown (init burst capability flag)",
     ["05.4d"] = "unknown (init burst capability flag)",
     ["05.56"] = "unknown (init burst)",
     ["05.57"] = "unknown (init burst)",
@@ -154,6 +182,69 @@ local function tlv_name(t, s)
     local key = string.format("%02x.%02x", t, s)
     return KNOWN[key] or FAMILY[t] or "unknown -- new/unmapped, worth investigating"
 end
+
+-- The original writes album/title/artist as lossy char bytes; the port writes
+-- title/album/artist in UTF-8. Neither order nor encoding is tagged on the wire.
+-- Keep all three fields raw and bounded by this TLV, with no fixed-width guess.
+local flag_fields = {
+    [0x17] = { f_media_active, { [0x55] = "active", [0xAA] = "inactive" } },
+    [0x19] = { f_media_playing, { [0x55] = "playing", [0xAA] = "paused" } },
+    [0x58] = { f_art_present, { [0x55] = "present", [0xAA] = "absent" } },
+}
+
+local function media_detail(ty, sub, value, tree)
+    if ty ~= 0x05 then return nil end
+    local len = value:len()
+    if sub == 0x0D then
+        -- tshark string() stops at NUL and converts invalid UTF-8 to U+FFFD;
+        -- bytes():raw() preserves both separators and the original's FF bytes.
+        local raw, at, lengths = value:bytes():raw(), 0, {}
+        for i, field in ipairs(media_fields) do
+            local z = i < 3 and raw:find("\0", at + 1, true) or nil
+            local stop = z and z - 1 or len
+            tree:add(field, value(at, stop - at))
+            lengths[i] = stop - at
+            if i < 3 and not z then
+                return string.format("raw fields; missing NUL separator %d/2", i)
+            end
+            at = stop + 1
+        end
+        return string.format("raw fields: %dB / %dB / %dB; sender-dependent order/encoding",
+            lengths[1], lengths[2], lengths[3])
+    elseif sub == 0x40 then
+        if len == 0 then return "missing chunk index" end
+        local index = value(0, 1):uint()
+        tree:add(f_art_index, value(0, 1))
+        local prefix = index == 0 and 3 or 1
+        if len < prefix then return "first chunk: truncated BE16 JPEG size" end
+        if index == 0 then tree:add(f_art_size, value(1, 2)) end
+        local data_len = len - prefix
+        tree:add(f_art_data_len, value(prefix, 0), data_len):set_generated()
+        if data_len > 0 then tree:add(f_art_data, value(prefix, data_len)) end
+        if index == 0 then
+            return string.format("first: total=%dB, image=%dB", value(1, 2):uint(), data_len)
+        elseif index == 0xFF then
+            return string.format("final (FF): image=%dB", data_len)
+        end
+        return string.format("index=0x%02X: image=%dB", index, data_len)
+    elseif sub == 0x4C or sub == 0x1B then
+        if len ~= 1 then return string.format("volume: expected 1B, got %dB", len) end
+        local v = value(0, 1):uint()
+        tree:add(sub == 0x4C and f_volume_music or f_volume_call, value(0, 1))
+        return string.format("%s (0x%02X)", volume_values[v] or "unknown level", v)
+    elseif flag_fields[sub] then
+        if len ~= 1 then return string.format("flag: expected 1B, got %dB", len) end
+        local entry, v = flag_fields[sub], value(0, 1):uint()
+        tree:add(entry[1], value(0, 1))
+        return string.format("%s (0x%02X)", entry[2][v] or "unknown flag", v)
+    end
+    return nil
+end
+
+-- FF is the final chunk index, not a universal extra empty terminator.
+-- Singleton JPEGs have empty FF; multichunk FF can carry data, including 1000B.
+-- Decode what was captured, without reassembly or copying the original's
+-- exact-multiple dropped-tail bug. Enqueue sleep(10) does not prove wire pacing.
 
 local MAGIC = "K1G "
 
@@ -215,6 +306,11 @@ function k1g.dissector(buffer, pinfo, tree)
             tlv_tree:add(f_tlv_value, buffer(offset + 4, vlen))
         end
         tlv_tree:add(f_tlv_name, name):set_generated()
+        local detail = media_detail(t, s, buffer(offset + 4, vlen), tlv_tree)
+        if detail then
+            tlv_tree:add(f_media_detail, buffer(offset + 4, 0), detail):set_generated()
+            tlv_tree:append_text(" = " .. detail)
+        end
 
         table.insert(summary, string.format("%02x/%02x", t, s))
         offset = offset + 4 + vlen

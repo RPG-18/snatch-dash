@@ -290,6 +290,7 @@ class OpendashDashEnginePlugin :
         offRoute: Boolean,
         points: List<NavPoint>,
         jamSegments: List<Long>,
+        roadName: String?,
     ) = engine().setNavState(
         remainingMeters = remainingMeters,
         nextTurnMeters = nextTurnMeters,
@@ -299,6 +300,7 @@ class OpendashDashEnginePlugin :
         isOffRoute = offRoute,
         points = points.map { GeoPoint(it.lat, it.lng) },
         jamSegments = jamSegments.map { it.toInt() },
+        roadName = roadName,
     )
 
     override fun setFollowMode(enabled: Boolean) = engine().setFollowMode(enabled)

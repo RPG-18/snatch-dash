@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:snatch_dash/nav/geo_point.dart';
+import 'package:snatch_dash/nav/maneuver_cue_scheduler.dart';
 import 'package:snatch_dash/nav/nav_engine.dart';
 import 'package:snatch_dash/nav/polyline_codec.dart';
 import 'package:snatch_dash/nav/route.dart';
@@ -77,7 +78,6 @@ void main() {
           maneuvers: [
             Maneuver(
               type: ManeuverType.arrive,
-              instruction: 'Arrive',
               location: geometry.last,
               cumulativeMeters: cumulative.last,
             ),
@@ -101,6 +101,53 @@ void main() {
       },
     );
 
+    test('arrival clears a next street even when its turn is still ahead', () {
+      const start = GeoPoint(0, 0);
+      const finish = GeoPoint(0, 0.01);
+      final length = GeoPoint.distMeters(start, finish);
+      final route = Route(
+        geometry: const [start, finish],
+        maneuvers: [
+          Maneuver(
+            type: ManeuverType.left,
+            location: const GeoPoint(0, 0.00985),
+            cumulativeMeters: length * 0.985,
+            roadName: 'Final Lane',
+          ),
+          Maneuver(
+            type: ManeuverType.arrive,
+            location: finish,
+            cumulativeMeters: length,
+          ),
+        ],
+        totalMeters: length,
+        totalSeconds: 100,
+        cumulative: [0, length],
+      );
+
+      final approaching = NavEngine.progress(
+        route,
+        const GeoPoint(0, 0.0097),
+        10,
+      );
+      expect(approaching.arrived, isFalse);
+      expect(approaching.roadName, 'Final Lane');
+
+      final arrived = NavEngine.progress(route, const GeoPoint(0, 0.0098), 10);
+      expect(arrived.remainingMeters, closeTo(22.24, 0.01));
+      expect(arrived.arrived, isTrue);
+      expect(arrived.nextManeuver?.roadName, 'Final Lane');
+      expect(arrived.roadName, isNull);
+
+      final movedAway = NavEngine.progress(
+        route,
+        const GeoPoint(0, 0.0097),
+        10,
+      );
+      expect(movedAway.arrived, isFalse);
+      expect(movedAway.roadName, 'Final Lane');
+    });
+
     test('progress detects off-route when far from the line', () {
       final geometry = [const GeoPoint(0.0, 0.0), const GeoPoint(0.0, 0.02)];
       final route = Route(
@@ -119,6 +166,76 @@ void main() {
       );
 
       expect(progress.offRoute, isTrue);
+      expect(progress.arrived, isFalse);
+      expect(
+        progress.remainingMeters,
+        closeTo(GeoPoint.distMeters(const GeoPoint(0, 1), geometry.last), 0.01),
+      );
+    });
+
+    test('arrival and voice require reaching the actual destination', () {
+      const start = GeoPoint(55.75, 37.60);
+      const finish = GeoPoint(55.75, 37.61);
+      final length = GeoPoint.distMeters(start, finish);
+      final route = Route(
+        geometry: const [start, finish],
+        maneuvers: [
+          Maneuver(
+            type: ManeuverType.arrive,
+            location: finish,
+            cumulativeMeters: length,
+          ),
+        ],
+        totalMeters: length,
+        totalSeconds: 60,
+        cumulative: [0, length],
+      );
+      final voice = ManeuverCueScheduler();
+
+      ManeuverCue? cue(NavProgress progress) => voice.next(
+        maneuver: progress.nextManeuver,
+        distanceM: progress.distanceToManeuverM,
+        remainingM: progress.remainingMeters,
+      );
+
+      // Project just before the finish: the synthetic arrival maneuver is still
+      // ahead, but its "now" cue must not announce a destination 556 m away.
+      final besideFinalLeg = NavEngine.progress(
+        route,
+        const GeoPoint(55.755, 37.6099),
+        10,
+      );
+      expect(besideFinalLeg.nextManeuver?.type, ManeuverType.arrive);
+      expect(besideFinalLeg.arrived, isFalse);
+      expect(besideFinalLeg.distanceToManeuverM, greaterThan(550));
+      expect(cue(besideFinalLeg), isNull);
+
+      final missedTurn = NavEngine.progress(
+        route,
+        const GeoPoint(55.755, 37.61),
+        10,
+      );
+      expect(missedTurn.snapped, finish);
+      expect(missedTurn.offRoute, isTrue);
+      expect(missedTurn.arrived, isFalse);
+      expect(cue(missedTurn), isNull);
+
+      final atDestination = NavEngine.progress(route, finish, 0);
+      expect(atDestination.arrived, isTrue);
+      expect(cue(atDestination), ManeuverCue.arrived);
+      expect(cue(atDestination), isNull);
+
+      // Outside both arrival radii but still inside the 60 m off-route band:
+      // checking only offRoute would leave arrival latched here.
+      final movedAway = NavEngine.progress(
+        route,
+        const GeoPoint(55.75045, 37.61),
+        10,
+      );
+      expect(movedAway.offRoute, isFalse);
+      expect(movedAway.arrived, isFalse);
+      expect(cue(movedAway), isNull);
+      expect(cue(atDestination), ManeuverCue.arrived);
     });
   });
 }

@@ -18,9 +18,27 @@ import kotlin.math.cos
  * only until the first disagreement about a camera parameter, and then the route
  * slides off the roads.
  */
-fun interface MapProjection {
+interface MapProjection {
     fun project(lat: Double, lng: Double): PointF
+    fun unproject(x: Float, y: Float): GeoPoint
 }
+
+/**
+ * Scale of the rider arrow silhouette, excluding its 17 px halo.
+ *
+ * The halo is a separate safety zone that keeps the marker readable and inside the
+ * round bezel; changing it would also change DashCamera's frame-boundary contract.
+ */
+internal const val RIDER_ARROW_SCALE = 1.5f
+
+/**
+ * Perspective compression of the arrow's forward axis for a camera tilt.
+ *
+ * [tiltDeg] includes MapLibre's padding-dependent pitch limit, not just the
+ * Android CameraPosition.Builder limit of 0..60 degrees.
+ */
+internal fun riderArrowForwardScale(tiltDeg: Double): Float =
+    cos(Math.toRadians(tiltDeg)).toFloat()
 
 /**
  * Draws everything the dash frame (526 × 300) carries **on top of** the map:
@@ -29,16 +47,16 @@ fun interface MapProjection {
  *
  * The map itself is a MapLibre snapshot already drawn into the frame before this
  * runs (spec/drawing_from_local_tiles.md, «Конвейер кадра»). That is why nothing
- * here decides *where* anything goes any more: no tile loop, no Mercator, no
- * `canvas.rotate`, no perspective warp. Heading-up rotation and tilt are the
+ * here decides *where* anything goes any more: no tile loop or screen-projection
+ * arithmetic, and no perspective warp over the finished map. Heading-up rotation and tilt are the
  * camera's job — rotating a finished raster would rotate the labels with it,
- * which MapLibre keeps upright itself.
+ * which MapLibre keeps upright itself; only the screen-space rider arrow gets a
+ * local orientation/foreshortening transform.
  *
  * Paint/Path objects are reused across frames to avoid per-frame allocation
  * churn; the projected route shares one growable FloatArray for the same reason.
  */
 class OverlayRenderer {
-
     data class Frame(
         /**
          * Whether the map turns with the rider. Kept even though the rotation
@@ -48,6 +66,11 @@ class OverlayRenderer {
          */
         val headingUp: Boolean = false,
         val heading: Float = 0f,           // travel bearing, degrees
+        /**
+         * Tilt after the padding-dependent native camera limit, in degrees.
+         * The same value is sent to the snapshotter and used for arrow compression.
+         */
+        val tiltDeg: Double = 0.0,
         val riderLat: Double? = null,
         val riderLng: Double? = null,
         val destLat: Double? = null,
@@ -111,9 +134,10 @@ class OverlayRenderer {
     private val riderPath = Path()
     private val pillRect = RectF()
     private val textBounds = Rect()
-    // Projected route, x/y interleaved. Grown, never shrunk: a route is a few
-    // hundred points and this is the one hot-loop buffer worth keeping.
+    // Four floats per source segment, preserving its traffic index after clipping.
+    // NaN at the first coordinate marks a rejected segment. Grown, never shrunk.
     private var projected = FloatArray(1024)
+    private val routeClipper = RouteClipper()
 
     /**
      * Nearest point on the route polyline to (lat, lng), as (segment index,
@@ -150,19 +174,57 @@ class OverlayRenderer {
     }
 
     /**
-     * Projects the whole polyline once into [projected].
-     *
-     * Once, not per use: `pixelForLatLng` is an `external` call returning a
-     * fresh `PointF`, so every point is a JNI crossing plus an object. Drawing
-     * the casing and then each traffic-coloured segment used to re-derive the
-     * same coordinates four times over.
+     * Clip on the map plane before projecting. Joining raw screen coordinates
+     * across the camera plane draws a false line through the frame, even when
+     * both endpoints are finite and off-screen. The inverse snapshot projection
+     * supplies the visible ground quadrilateral, including a stroke-sized margin.
      */
-    private fun projectRoute(route: List<GeoPoint>, projection: MapProjection) {
-        if (projected.size < route.size * 2) projected = FloatArray(route.size * 2)
-        for (i in route.indices) {
-            val p = projection.project(route[i].lat, route[i].lng)
-            projected[i * 2] = p.x
-            projected[i * 2 + 1] = p.y
+    private fun projectRoute(route: List<GeoPoint>, projection: MapProjection, width: Int, height: Int) {
+        val coordinateCount = (route.size - 1) * 4
+        if (projected.size < coordinateCount) projected = FloatArray(coordinateCount)
+        val margin = routeCasing.strokeWidth / 2f + 1f
+        routeClipper.setViewport(
+            projection.unproject(-margin, -margin),
+            projection.unproject(width + margin, -margin),
+            projection.unproject(width + margin, height + margin),
+            projection.unproject(-margin, height + margin),
+        )
+        var ax = routeClipper.x(route[0].lng, 0.0)
+        var ay = routeClipper.y(route[0].lat)
+        var reuseEnd = false
+        for (i in 0 until route.size - 1) {
+            val a = route[i]
+            val b = route[i + 1]
+            val bx = routeClipper.x(b.lng, ax)
+            val by = routeClipper.y(b.lat)
+            val offset = i * 4
+            if (routeClipper.clip(ax, ay, bx, by)) {
+                val start = routeClipper.startFraction
+                val end = routeClipper.endFraction
+                if (start == 0.0 && reuseEnd) {
+                    projected[offset] = projected[offset - 2]
+                    projected[offset + 1] = projected[offset - 1]
+                } else {
+                    val p = if (start == 0.0) projection.project(a.lat, a.lng) else projection.project(
+                        routeClipper.latitude(ay + (by - ay) * start),
+                        routeClipper.longitude(ax + (bx - ax) * start),
+                    )
+                    projected[offset] = p.x
+                    projected[offset + 1] = p.y
+                }
+                val p = if (end == 1.0) projection.project(b.lat, b.lng) else projection.project(
+                    routeClipper.latitude(ay + (by - ay) * end),
+                    routeClipper.longitude(ax + (bx - ax) * end),
+                )
+                projected[offset + 2] = p.x
+                projected[offset + 3] = p.y
+                reuseEnd = end == 1.0
+            } else {
+                projected[offset] = Float.NaN
+                reuseEnd = false
+            }
+            ax = bx
+            ay = by
         }
     }
 
@@ -193,21 +255,36 @@ class OverlayRenderer {
             trimmed to trimmedJam
         }
         if (drawRoute.size >= 2) {
-            projectRoute(drawRoute, projection)
+            projectRoute(drawRoute, projection, w, h)
+            val segCount = drawRoute.size - 1
             routePath.reset()
-            routePath.moveTo(projected[0], projected[1])
-            for (i in 1 until drawRoute.size) routePath.lineTo(projected[i * 2], projected[i * 2 + 1])
+            var connected = false
+            for (i in 0 until segCount) {
+                val offset = i * 4
+                if (projected[offset].isNaN()) {
+                    connected = false
+                    continue
+                }
+                if (!connected || projected[offset] != projected[offset - 2] ||
+                    projected[offset + 1] != projected[offset - 1]
+                ) {
+                    routePath.moveTo(projected[offset], projected[offset + 1])
+                }
+                routePath.lineTo(projected[offset + 2], projected[offset + 3])
+                connected = true
+            }
             canvas.drawPath(routePath, routeCasing)
 
-            val segCount = drawRoute.size - 1
             if (drawJam.size == segCount) {
                 // Traffic data available for every segment — colour each one, same
                 // per-segment approach as the in-app map's `applyJamColors`.
                 for (i in 0 until segCount) {
+                    val offset = i * 4
+                    if (projected[offset].isNaN()) continue
                     routePaint.color = jamColors.getOrElse(drawJam[i]) { routeBlue }
                     canvas.drawLine(
-                        projected[i * 2], projected[i * 2 + 1],
-                        projected[i * 2 + 2], projected[i * 2 + 3],
+                        projected[offset], projected[offset + 1],
+                        projected[offset + 2], projected[offset + 3],
                         routePaint,
                     )
                 }
@@ -234,6 +311,8 @@ class OverlayRenderer {
         // and the arrow has to show the true compass bearing itself. In heading-up
         // mode the camera has already turned the map, so the arrow stays pointing
         // at the top of the frame — "forward" — with no rotation of its own.
+        // Its path is 1.5× larger than before and its forward axis is foreshortened
+        // by the same tilt the snapshot camera received. The halo stays 17 px.
         if (f.riderLat != null && f.riderLng != null) {
             val p = projection.project(f.riderLat, f.riderLng)
             val rx = p.x; val ry = p.y
@@ -250,7 +329,14 @@ class OverlayRenderer {
             )
             canvas.drawCircle(rx, ry, 17f, dotPaint)
 
-            canvas.save(); canvas.rotate(if (f.headingUp) 0f else f.heading, rx, ry)
+            canvas.save()
+            canvas.rotate(if (f.headingUp) 0f else f.heading, rx, ry)
+            canvas.scale(
+                RIDER_ARROW_SCALE,
+                RIDER_ARROW_SCALE * riderArrowForwardScale(f.tiltDeg),
+                rx,
+                ry,
+            )
             riderPath.reset()
             riderPath.moveTo(rx, ry - 13f)      // tip (front)
             riderPath.lineTo(rx + 9f, ry + 9f)  // right wing

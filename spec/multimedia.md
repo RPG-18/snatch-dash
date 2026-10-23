@@ -240,6 +240,7 @@ firmware-команду для объяснения этого условия н
 [`AlbumArtEncoder`](../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/media/AlbumArtEncoder.kt),
 [`MediaForwarding`](../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/MediaForwarding.kt),
 [`DashSession`](../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/DashSession.kt),
+[`LiveHeartbeat`](../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/LiveHeartbeat.kt),
 `DashEngineController`, `K1GCodec.displayText`.
 С 23.10.2026 нативная модель media и событийный single-writer wire-путь реализованы;
 физическое отображение остаётся отдельным аппаратным гейтом.
@@ -253,7 +254,7 @@ firmware-команду для объяснения этого условия н
 | `05 17` | событийно | bind/playback/inactive, snapshot replay и явный media stop |
 | `05 19` | playing/paused | known playback event/replay; unknown не отправляет indicator |
 | `05 58` / `05 40` | маркер и JPEG | metadata event/replay, paced single writer; hardware support не подтверждён |
-| `05 4C` / `05 1B` | опрос AudioManager | захваченные `13` / `19` в heartbeat |
+| `05 4C` / `05 1B` | опрос AudioManager | live STREAM_MUSIC / STREAM_VOICE_CALL; независимые fallback `13` / `19` |
 | play/pause, volume, mute | карта §6 | методы native provider; Dart API и mapping кнопок ещё не подключены |
 | next/previous | transport controls | реализованы |
 
@@ -267,7 +268,15 @@ defaults heartbeat и захваченный стартовый бёрст не 
 Логический `AlbumArt` scalar codec отвергает: отправка требует paced writer,
 а не пачки packets из одного вызова `encode`.
 `VolumeLevel` использует нормализованную целочисленную шкалу с widened arithmetic,
-не Float-формулу оригинала; AudioManager ещё не подключён к heartbeat.
+не Float-формулу оригинала. С 23.10.2026 controller `currentHeartbeat` через
+`LiveHeartbeat` читает AudioManager current/min/max отдельно для music и call.
+Некорректный диапазон/null и exception дают captured fallback только своего
+stream: `13` для music, `19` для call; отсутствие audio service даёт оба fallback.
+Следующий tick снова читает live levels, не сохраняя ошибку или старое значение.
+Silence кодируется `10`, а не fallback. Чтение выполняется в 1 Гц supplier,
+не в frame/encoder loop; codec получает только готовые байты уровней.
+Нормализованные значения и fallback проверены 23.10.2026 на AudioManager
+эмулятора API 36; отображение громкости на приборке этим не подтверждено.
 JVM-тесты и smoke JPEG→packets→JPEG проверяют serialization и сохранность данных,
 но не отображение на приборке и не cadence передачи.
 
@@ -362,8 +371,11 @@ Teardown отбрасывает pending art/media; после закрытия t
 inactive не гарантируется и не повторяется. Обычный reconnect активной поездки
 provider не останавливает и replay-ит сохранённый snapshot.
 
-`DashSession.open` требует heartbeat supplier: controller пока передаёт прежние
-`Heartbeat(25,0x13,0x19)`, не AudioManager. Pigeon media-флаги и direct controls
+`DashSession.open` требует heartbeat supplier: controller передаёт
+`::currentHeartbeat`, вызываемый на каждом 1 Гц tick, в том числе до STREAMING.
+Меняются только `05 4C` и `05 1B`: температура остаётся 25 °C, порядок/состав
+11 TLV и captured initial burst неизменны. Нет `INFOTAINMENT` gate.
+Pigeon media-флаги и direct controls
 через Dart ещё не подключены. Отправка inactive/marker не доказывает, что приборка
 очищает или правильно показывает карточку/обложку.
 
@@ -372,7 +384,7 @@ provider не останавливает и replay-ит сохранённый s
 pause/OTHER/play, skip/volume, metadata parity, stop/late metadata и mute без
 controller. Это не проверка notification-access UI и не подтверждение приборки.
 
-Порядок, 1 Гц и захваченный heartbeat сохранены. С 20.10.2026 по требованию
+Порядок, 1 Гц и статическая часть heartbeat сохранены. С 20.10.2026 по требованию
 пользователя текст транслитерируется системным Android ICU; границы и error
 contract описаны в [протоколе](k1g_protocol.md#кодирование-текста-на-приборке).
 Четыре однобайтных charset пользователь отклонил; рабочая кириллица в прошивке

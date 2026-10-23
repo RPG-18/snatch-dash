@@ -2,7 +2,7 @@
 
 **Дата создания:** 04.10.2026
 
-**Статус:** этапы 1–3 реализованы и проверены 23.10.2026; этап 4 не начат.
+**Статус:** этапы 1–4 реализованы и проверены 23.10.2026; этап 5 не начат.
 Исследование обновлено 22.10.2026 по `re_app_new` — Royal Enfield 10.1.23(45), versionCode 193.
 План сохраняет независимые автоматические и полевые гейты.
 
@@ -111,7 +111,7 @@ skip/volume, metadata parity, stop/late metadata и mute без controller.
 Проверки, как и на этапе 1, выполнены на Temurin 21.0.7 без изменения конфигурации.
 Следующий этап — 3; Pigeon, live heartbeat и все `[ride]` ещё открыты.
 
-Где план сейчас (23.10.2026, после этапа 3): media events и initial replay
+Состояние после этапа 3 (23.10.2026): media events и initial replay
 подключены к single writer. `MediaForwarding` сериализует chrome + enqueue
 и STREAMING capture, включая вложенные синхронные callbacks; `Active` различает
 bind reset и playback active. Session хранит art transfer/deadline отдельно
@@ -142,6 +142,25 @@ packet regression отправлял card/marker вместо единствен
 Исправлено учётом media, заказанного после последнего inactive; повторный stop
 идемпотентен. Регрессия проходит, повторное ревью исправления — без замечаний.
 Pigeon/Dart media-флаги и direct controls остаются этапу 5; все `[ride]` открыты.
+
+Где план сейчас (23.10.2026, после этапа 4): controller `currentHeartbeat`
+подключён к `LiveHeartbeat`, читающему current/min/max системного AudioManager.
+Music/call нормализуются через `VolumeLevel` независимо; invalid/null/exception
+переходит в captured fallback только своего stream (`13`/`19`).
+Supplier вызывается на каждом 1 Гц heartbeat, в том числе до STREAMING,
+без `INFOTAINMENT` gate; температура 25, 11 TLV и initial burst сохранены.
+
+Проверки этапа 4: полный JVM suite — 489 тестов, без failures/errors/skipped.
+Новый packet-level сценарий проверяет независимые live levels, ошибку music,
+null/ошибку call, оба fallback и восстановление на следующем tick, сравнивая
+полный heartbeat packet. Android API 36 — 16 успешных сценариев (15 прежних
+Bitmap/text и временный real-AudioManager smoke): music=0/call=max → `10/1A`,
+music=max/call=min(1) → `1A/11`, отсутствующий/throwing audio service → `13/19`;
+во всех случаях 73 байта и неизменные 11 TLV. Уровни громкости после smoke
+восстановлены; временный smoke удалён. Это не проверка отображения volume на дэше.
+`lintDebug`: 0 ошибок, 20 прежних предупреждений вне изменений.
+Проверки выполнены на Temurin 21.0.7. Следующий этап — 5; все `[ride]` открыты.
+Code review этапа 4 — без замечаний.
 
 Отложенные решения и отклонённые посылки:
 
@@ -597,7 +616,7 @@ pending art/state очищены, новая сессия не получает 
 
 Задачи:
 
-- [ ] `[auto]` Controller `currentHeartbeat(): DashCommand.Heartbeat` с
+- ✅ 23.10.2026 `[auto]` Controller `currentHeartbeat(): DashCommand.Heartbeat` с
   AudioManager: STREAM_MUSIC→05 4C, STREAM_VOICE_CALL→05 1B, temp25;
   nullable VolumeLevel/exception каждого stream независимо fallback13/19.
   Подключить live supplier вместо captured этапа3.
@@ -605,13 +624,15 @@ pending art/state очищены, новая сессия не получает 
   фиксированный состав heartbeat проверять также при ошибке одного stream.
   **Что опровергнет посылку:** если `AudioManager` отсутствует или getter
   бросает exception, tick loop не должен падать и должен отправить fallback.
-- [ ] `[auto]` Live supplier работает на каждом streaming heartbeat; не вводить
+- ✅ 23.10.2026 `[auto]` Live supplier работает на каждом streaming heartbeat; не вводить
   firmware INFOTAINMENT gate (снятая посылка §0.1).
   **Что опровергнет посылку:** доказанное ограничение протокола по реальному типу
   подключения требует отдельного решения, не guessed incoming mode.
 
 **Готово:** focused heartbeat/session tests видят независимые live levels,
 статические TLV не изменились, invalid AudioManager path не роняет tick loop.
+Проверено 23.10.2026: `DashSessionMediaTest`, старые heartbeat/burst goldens,
+полный JVM suite, Android AudioManager smoke и `lintDebug`; результаты — §0.1.
 
 ### Этап 5 — Pigeon boundary и Dart/native façade [auto]
 

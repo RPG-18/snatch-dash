@@ -10,6 +10,7 @@ import com.opendash.opendash_dash_engine.dash.StreamThreads
 import com.opendash.opendash_dash_engine.dash.DashKeepAliveService
 import com.opendash.opendash_dash_engine.dash.DashSession
 import com.opendash.opendash_dash_engine.dash.DashState
+import com.opendash.opendash_dash_engine.dash.LiveHeartbeat
 import com.opendash.opendash_dash_engine.dash.DashWifiManager
 import com.opendash.opendash_dash_engine.dash.WifiConnStatus
 import com.opendash.opendash_dash_engine.dash.map.DashCameraState
@@ -211,6 +212,7 @@ class DashEngineController(
     private val overlays = OverlayRenderer()
     private var toneGenerator: ToneGenerator? = null
     private val mediaInfo = MediaInfoProvider(context, scope)
+    private val liveHeartbeat = LiveHeartbeat(context)
     private val callController = CallController(context)
     private val powerManager = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
 
@@ -767,6 +769,8 @@ class DashEngineController(
         }
     }
 
+    private fun currentHeartbeat(): DashCommand.Heartbeat = liveHeartbeat.currentHeartbeat()
+
     /**
      * Start a connection, replacing whatever was running.
      *
@@ -815,7 +819,7 @@ class DashEngineController(
             current.value = DashSession.open(
                 ssid = ssid,
                 chrome = chrome,
-                heartbeat = { DashCommand.Heartbeat(25, 0x13, 0x19) },
+                heartbeat = ::currentHeartbeat,
                 clock = ::monotonicMs,
                 parent = scope.coroutineContext.job,
                 // The plugin's handler, carried over deliberately: the session's

@@ -1,6 +1,8 @@
 package com.opendash.opendash_dash_engine.dash
 
+import android.media.AudioManager
 import com.opendash.opendash_dash_engine.dash.protocol.DashCommand
+import com.opendash.opendash_dash_engine.dash.protocol.toHex
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -112,6 +114,47 @@ class DashSessionMediaTest {
         r.session.startStreaming()
         runCurrent()
         r.wire.delegate.clearSent()
+    }
+
+    @Test
+    fun `live volume failures are isolated and recover on the next heartbeat tick`() = runTest {
+        var mode = 0
+        val live = LiveHeartbeat { stream ->
+            val music = when (stream) {
+                AudioManager.STREAM_MUSIC -> true
+                AudioManager.STREAM_VOICE_CALL -> false
+                else -> error("Unexpected audio stream: $stream")
+            }
+            when (mode) {
+                0 -> if (music) 0x10 else 0x1A
+                1 -> if (music) throw SecurityException("music unavailable") else 0x10
+                2 -> if (music) 0x1A else null
+                else -> if (music) null else throw IllegalStateException("call unavailable")
+            }
+        }
+        val r = rig(heartbeat = live::currentHeartbeat)
+        try {
+            streaming(r)
+            for ((nextMode, levels) in listOf(0 to "10/1a", 1 to "13/10", 2 to "1a/19", 3 to "13/19", 0 to "10/1a")) {
+                mode = nextMode
+                r.wire.delegate.clearSent()
+                advanceTimeBy(1_000)
+                runCurrent()
+                val heartbeat = r.wire.delegate.sent.single {
+                    it.bytes.size == 73 && it.bytes[17] == 6.toByte() && it.bytes[18] == 8.toByte()
+                }.bytes
+                val (music, call) = levels.split('/')
+                assertEquals(
+                    "0049000b00000000020100054b314720" +
+                        "0006080001050610000141060300015506040001a2060f0001aa" +
+                        "0601000101054c0001${music}052d00020000051b0001${call}0521000132054d000132",
+                    heartbeat.toHex(),
+                )
+                assertEquals(DashState.STREAMING, r.session.state.value)
+            }
+        } finally {
+            r.close()
+        }
     }
 
     @Test

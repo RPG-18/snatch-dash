@@ -118,6 +118,18 @@ class MockOpendashDashEnginePlatform
   Future<bool> skipPrevious() async => false;
 
   @override
+  Future<void> mediaPlayPause() async {}
+
+  @override
+  Future<void> mediaVolumeUp() async {}
+
+  @override
+  Future<void> mediaVolumeDown() async {}
+
+  @override
+  Future<void> mediaMute() async {}
+
+  @override
   Future<bool> isNotificationAccessGranted() async => false;
 
   @override

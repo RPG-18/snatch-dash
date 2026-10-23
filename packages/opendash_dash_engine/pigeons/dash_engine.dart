@@ -78,6 +78,8 @@ class DashEngineState {
     this.nowPlayingTitle,
     this.incomingCaller,
     required this.hasActiveCall,
+    required this.mediaActive,
+    this.mediaPlaying,
   });
 
   final DashStage stage;
@@ -123,6 +125,12 @@ class DashEngineState {
   /// Any call at all — ringing, answered or outgoing — so the dash's reject
   /// button can end one that has already been answered.
   final bool hasActiveCall;
+
+  /// Whether a media session is active, independently of its title or playback.
+  final bool mediaActive;
+
+  /// Whether playback is playing or paused, or `null` when unknown or inactive.
+  final bool? mediaPlaying;
 }
 
 /// A press on the dash's own joystick.
@@ -244,6 +252,10 @@ abstract class DashEngineApi {
   bool hangupCall();
   bool skipNext();
   bool skipPrevious();
+  void mediaPlayPause();
+  void mediaVolumeUp();
+  void mediaVolumeDown();
+  void mediaMute();
   bool isNotificationAccessGranted();
   void openNotificationAccessSettings();
 }

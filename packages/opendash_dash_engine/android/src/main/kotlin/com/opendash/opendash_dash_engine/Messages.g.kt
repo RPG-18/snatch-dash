@@ -346,7 +346,11 @@ data class DashEngineState (
    * Any call at all — ringing, answered or outgoing — so the dash's reject
    * button can end one that has already been answered.
    */
-  val hasActiveCall: Boolean
+  val hasActiveCall: Boolean,
+  /** Whether a media session is active, independently of its title or playback. */
+  val mediaActive: Boolean,
+  /** Whether playback is playing or paused, or `null` when unknown or inactive. */
+  val mediaPlaying: Boolean? = null
 )
  {
   companion object {
@@ -373,7 +377,9 @@ data class DashEngineState (
       val nowPlayingTitle = pigeonVar_list[19] as String?
       val incomingCaller = pigeonVar_list[20] as String?
       val hasActiveCall = pigeonVar_list[21] as Boolean
-      return DashEngineState(stage, explicitDisconnect, wifiStatus, wifiSsid, wifiError, navigating, hasGps, riderLat, riderLng, riderBearing, riderSpeed, remainingKm, offRoute, gpsLost, gpsWeak, errorMessage, followMode, headingUp, zoom, nowPlayingTitle, incomingCaller, hasActiveCall)
+      val mediaActive = pigeonVar_list[22] as Boolean
+      val mediaPlaying = pigeonVar_list[23] as Boolean?
+      return DashEngineState(stage, explicitDisconnect, wifiStatus, wifiSsid, wifiError, navigating, hasGps, riderLat, riderLng, riderBearing, riderSpeed, remainingKm, offRoute, gpsLost, gpsWeak, errorMessage, followMode, headingUp, zoom, nowPlayingTitle, incomingCaller, hasActiveCall, mediaActive, mediaPlaying)
     }
   }
   fun toList(): List<Any?> {
@@ -400,6 +406,8 @@ data class DashEngineState (
       nowPlayingTitle,
       incomingCaller,
       hasActiveCall,
+      mediaActive,
+      mediaPlaying,
     )
   }
   override fun equals(other: Any?): Boolean {
@@ -410,7 +418,7 @@ data class DashEngineState (
       return true
     }
     val other = other as DashEngineState
-    return MessagesPigeonUtils.deepEquals(this.stage, other.stage) && MessagesPigeonUtils.deepEquals(this.explicitDisconnect, other.explicitDisconnect) && MessagesPigeonUtils.deepEquals(this.wifiStatus, other.wifiStatus) && MessagesPigeonUtils.deepEquals(this.wifiSsid, other.wifiSsid) && MessagesPigeonUtils.deepEquals(this.wifiError, other.wifiError) && MessagesPigeonUtils.deepEquals(this.navigating, other.navigating) && MessagesPigeonUtils.deepEquals(this.hasGps, other.hasGps) && MessagesPigeonUtils.deepEquals(this.riderLat, other.riderLat) && MessagesPigeonUtils.deepEquals(this.riderLng, other.riderLng) && MessagesPigeonUtils.deepEquals(this.riderBearing, other.riderBearing) && MessagesPigeonUtils.deepEquals(this.riderSpeed, other.riderSpeed) && MessagesPigeonUtils.deepEquals(this.remainingKm, other.remainingKm) && MessagesPigeonUtils.deepEquals(this.offRoute, other.offRoute) && MessagesPigeonUtils.deepEquals(this.gpsLost, other.gpsLost) && MessagesPigeonUtils.deepEquals(this.gpsWeak, other.gpsWeak) && MessagesPigeonUtils.deepEquals(this.errorMessage, other.errorMessage) && MessagesPigeonUtils.deepEquals(this.followMode, other.followMode) && MessagesPigeonUtils.deepEquals(this.headingUp, other.headingUp) && MessagesPigeonUtils.deepEquals(this.zoom, other.zoom) && MessagesPigeonUtils.deepEquals(this.nowPlayingTitle, other.nowPlayingTitle) && MessagesPigeonUtils.deepEquals(this.incomingCaller, other.incomingCaller) && MessagesPigeonUtils.deepEquals(this.hasActiveCall, other.hasActiveCall)
+    return MessagesPigeonUtils.deepEquals(this.stage, other.stage) && MessagesPigeonUtils.deepEquals(this.explicitDisconnect, other.explicitDisconnect) && MessagesPigeonUtils.deepEquals(this.wifiStatus, other.wifiStatus) && MessagesPigeonUtils.deepEquals(this.wifiSsid, other.wifiSsid) && MessagesPigeonUtils.deepEquals(this.wifiError, other.wifiError) && MessagesPigeonUtils.deepEquals(this.navigating, other.navigating) && MessagesPigeonUtils.deepEquals(this.hasGps, other.hasGps) && MessagesPigeonUtils.deepEquals(this.riderLat, other.riderLat) && MessagesPigeonUtils.deepEquals(this.riderLng, other.riderLng) && MessagesPigeonUtils.deepEquals(this.riderBearing, other.riderBearing) && MessagesPigeonUtils.deepEquals(this.riderSpeed, other.riderSpeed) && MessagesPigeonUtils.deepEquals(this.remainingKm, other.remainingKm) && MessagesPigeonUtils.deepEquals(this.offRoute, other.offRoute) && MessagesPigeonUtils.deepEquals(this.gpsLost, other.gpsLost) && MessagesPigeonUtils.deepEquals(this.gpsWeak, other.gpsWeak) && MessagesPigeonUtils.deepEquals(this.errorMessage, other.errorMessage) && MessagesPigeonUtils.deepEquals(this.followMode, other.followMode) && MessagesPigeonUtils.deepEquals(this.headingUp, other.headingUp) && MessagesPigeonUtils.deepEquals(this.zoom, other.zoom) && MessagesPigeonUtils.deepEquals(this.nowPlayingTitle, other.nowPlayingTitle) && MessagesPigeonUtils.deepEquals(this.incomingCaller, other.incomingCaller) && MessagesPigeonUtils.deepEquals(this.hasActiveCall, other.hasActiveCall) && MessagesPigeonUtils.deepEquals(this.mediaActive, other.mediaActive) && MessagesPigeonUtils.deepEquals(this.mediaPlaying, other.mediaPlaying)
   }
 
   override fun hashCode(): Int {
@@ -437,10 +445,12 @@ data class DashEngineState (
     result = 31 * result + MessagesPigeonUtils.deepHash(this.nowPlayingTitle)
     result = 31 * result + MessagesPigeonUtils.deepHash(this.incomingCaller)
     result = 31 * result + MessagesPigeonUtils.deepHash(this.hasActiveCall)
+    result = 31 * result + MessagesPigeonUtils.deepHash(this.mediaActive)
+    result = 31 * result + MessagesPigeonUtils.deepHash(this.mediaPlaying)
     return result
   }
   override fun toString(): String {
-    return "DashEngineState(stage=$stage, explicitDisconnect=$explicitDisconnect, wifiStatus=$wifiStatus, wifiSsid=$wifiSsid, wifiError=$wifiError, navigating=$navigating, hasGps=$hasGps, riderLat=$riderLat, riderLng=$riderLng, riderBearing=$riderBearing, riderSpeed=$riderSpeed, remainingKm=$remainingKm, offRoute=$offRoute, gpsLost=$gpsLost, gpsWeak=$gpsWeak, errorMessage=$errorMessage, followMode=$followMode, headingUp=$headingUp, zoom=$zoom, nowPlayingTitle=$nowPlayingTitle, incomingCaller=$incomingCaller, hasActiveCall=$hasActiveCall)"
+    return "DashEngineState(stage=$stage, explicitDisconnect=$explicitDisconnect, wifiStatus=$wifiStatus, wifiSsid=$wifiSsid, wifiError=$wifiError, navigating=$navigating, hasGps=$hasGps, riderLat=$riderLat, riderLng=$riderLng, riderBearing=$riderBearing, riderSpeed=$riderSpeed, remainingKm=$remainingKm, offRoute=$offRoute, gpsLost=$gpsLost, gpsWeak=$gpsWeak, errorMessage=$errorMessage, followMode=$followMode, headingUp=$headingUp, zoom=$zoom, nowPlayingTitle=$nowPlayingTitle, incomingCaller=$incomingCaller, hasActiveCall=$hasActiveCall, mediaActive=$mediaActive, mediaPlaying=$mediaPlaying)"
   }
 }
 
@@ -793,6 +803,10 @@ interface DashEngineApi {
   fun hangupCall(): Boolean
   fun skipNext(): Boolean
   fun skipPrevious(): Boolean
+  fun mediaPlayPause()
+  fun mediaVolumeUp()
+  fun mediaVolumeDown()
+  fun mediaMute()
   fun isNotificationAccessGranted(): Boolean
   fun openNotificationAccessSettings()
 
@@ -1236,6 +1250,70 @@ interface DashEngineApi {
           channel.setMessageHandler { _, reply ->
             val wrapped: List<Any?> = try {
               listOf(api.skipPrevious())
+            } catch (exception: Throwable) {
+              MessagesPigeonUtils.wrapError(exception)
+            }
+            reply.reply(wrapped)
+          }
+        } else {
+          channel.setMessageHandler(null)
+        }
+      }
+      run {
+        val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.opendash_dash_engine.DashEngineApi.mediaPlayPause$separatedMessageChannelSuffix", codec)
+        if (api != null) {
+          channel.setMessageHandler { _, reply ->
+            val wrapped: List<Any?> = try {
+              api.mediaPlayPause()
+              listOf(null)
+            } catch (exception: Throwable) {
+              MessagesPigeonUtils.wrapError(exception)
+            }
+            reply.reply(wrapped)
+          }
+        } else {
+          channel.setMessageHandler(null)
+        }
+      }
+      run {
+        val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.opendash_dash_engine.DashEngineApi.mediaVolumeUp$separatedMessageChannelSuffix", codec)
+        if (api != null) {
+          channel.setMessageHandler { _, reply ->
+            val wrapped: List<Any?> = try {
+              api.mediaVolumeUp()
+              listOf(null)
+            } catch (exception: Throwable) {
+              MessagesPigeonUtils.wrapError(exception)
+            }
+            reply.reply(wrapped)
+          }
+        } else {
+          channel.setMessageHandler(null)
+        }
+      }
+      run {
+        val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.opendash_dash_engine.DashEngineApi.mediaVolumeDown$separatedMessageChannelSuffix", codec)
+        if (api != null) {
+          channel.setMessageHandler { _, reply ->
+            val wrapped: List<Any?> = try {
+              api.mediaVolumeDown()
+              listOf(null)
+            } catch (exception: Throwable) {
+              MessagesPigeonUtils.wrapError(exception)
+            }
+            reply.reply(wrapped)
+          }
+        } else {
+          channel.setMessageHandler(null)
+        }
+      }
+      run {
+        val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.opendash_dash_engine.DashEngineApi.mediaMute$separatedMessageChannelSuffix", codec)
+        if (api != null) {
+          channel.setMessageHandler { _, reply ->
+            val wrapped: List<Any?> = try {
+              api.mediaMute()
+              listOf(null)
             } catch (exception: Throwable) {
               MessagesPigeonUtils.wrapError(exception)
             }

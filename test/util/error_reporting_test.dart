@@ -421,4 +421,16 @@ class _RecordingPlatform extends OpendashDashEnginePlatform
     if (throwOnRideError) throw Exception('channel gone');
     lines.add(message);
   }
+
+  @override
+  Future<void> mediaPlayPause() async {}
+
+  @override
+  Future<void> mediaVolumeUp() async {}
+
+  @override
+  Future<void> mediaVolumeDown() async {}
+
+  @override
+  Future<void> mediaMute() async {}
 }

@@ -2,7 +2,7 @@
 
 **Дата создания:** 04.10.2026
 
-**Статус:** этапы 1–4 реализованы и проверены 23.10.2026; этап 5 не начат.
+**Статус:** этапы 1–5 реализованы и проверены 23.10.2026; этап 6 не начат.
 Исследование обновлено 22.10.2026 по `re_app_new` — Royal Enfield 10.1.23(45), versionCode 193.
 План сохраняет независимые автоматические и полевые гейты.
 
@@ -143,7 +143,7 @@ packet regression отправлял card/marker вместо единствен
 идемпотентен. Регрессия проходит, повторное ревью исправления — без замечаний.
 Pigeon/Dart media-флаги и direct controls остаются этапу 5; все `[ride]` открыты.
 
-Где план сейчас (23.10.2026, после этапа 4): controller `currentHeartbeat`
+Состояние после этапа 4 (23.10.2026): controller `currentHeartbeat`
 подключён к `LiveHeartbeat`, читающему current/min/max системного AudioManager.
 Music/call нормализуются через `VolumeLevel` независимо; invalid/null/exception
 переходит в captured fallback только своего stream (`13`/`19`).
@@ -161,6 +161,33 @@ music=max/call=min(1) → `1A/11`, отсутствующий/throwing audio ser
 `lintDebug`: 0 ошибок, 20 прежних предупреждений вне изменений.
 Проверки выполнены на Temurin 21.0.7. Следующий этап — 5; все `[ride]` открыты.
 Code review этапа 4 — без замечаний.
+
+Где план сейчас (23.10.2026, после этапа 5): Pigeon schema расширена
+`required bool mediaActive` и `bool? mediaPlaying` в конце state и ровно четырьмя
+HostApi controls. Dart/Kotlin outputs перегенерированы штатным Pigeon 29.0.4,
+не редактировались руками. Controller публикует один input snapshot title/active/
+playing; plugin, façade, platform interface и method-channel делегируют controls
+в native provider. Idle/stop false/null и unknown true/null проходят без coercion.
+Все platform fakes мигрированы. Compatibility mapping не переключён на official:
+новые behavioral tests сохраняют paused/empty-title действия, title gate и call
+precedence; прежние duplicate-event/disposal проверки проходят. Stateful gate
+официальной карты остаётся частью gated fixture этапа 7, не выдаётся за текущий mapping.
+
+Проверки этапа 5: 134 root Flutter tests (3 новых behavioral), 5 package tests,
+489 JVM tests — успешно; root/package `flutter analyze` без замечаний;
+`lintDebug` — 0 ошибок, 20 прежних предупреждений вне изменений.
+Временный debug APK с отдельным applicationId на эмуляторе API 36 проверил
+public Dart `DashEngine` → generated Pigeon → настоящий MediaSession:
+play/pause, volume ±1, mute без controller; 15 typed state events, включая
+active с пустым title, PLAYING→OTHER=null, PAUSED→null=null и stop=false/null.
+Fixture запускал private media forwarding без Wi-Fi-соединения с приборкой,
+не подменяя plugin/provider/channel; notification-listener access выдан
+отдельному smoke-пакету. Это не проверка всей поездки или физических кнопок.
+Временные source/APK/пакет удалены; JVM/Gradle проверки на Temurin 21.0.7.
+Два code review (native/schema и Dart/callers) — без замечаний; отмеченное
+несвязанное форматирование тестов убрано. Новые media/call тесты держат реальную
+Riverpod-подписку на state, а не только read ленивого provider.
+Следующий этап — 6; все `[ride]` остаются открыты.
 
 Отложенные решения и отклонённые посылки:
 
@@ -641,18 +668,18 @@ pending art/state очищены, новая сессия не получает 
 
 Задачи:
 
-- [ ] `[auto]` Schema: добавить `required bool mediaActive`, `bool? mediaPlaying`
+- ✅ 23.10.2026 `[auto]` Schema: добавить `required bool mediaActive`, `bool? mediaPlaying`
   в конец state, idle false/null. Ровно четыре HostApi methods:
   `void mediaPlayPause(); void mediaVolumeUp(); void mediaVolumeDown(); void mediaMute();`
   Native overrides `fun mediaPlayPause(): Unit` и аналогично три остальных;
   public façade/platform/method-channel: `Future<void> mediaPlayPause()` и
   одноимённые `mediaVolumeUp()`, `mediaVolumeDown()`, `mediaMute()` без аргументов.
   **Что опровергнет посылку:** generated-first изменение запрещено; начать со schema.
-- [ ] `[auto]` Запустить `dart run pigeon --input pigeons/dash_engine.dart` из
+- ✅ 23.10.2026 `[auto]` Запустить `dart run pigeon --input pigeons/dash_engine.dart` из
   package directory; generated Dart/Kotlin outputs только регенерировать.
   **Что опровергнет посылку:** если генератор меняет несвязанные части, сначала
   проверить версию/конфигурацию Pigeon, а не править generated output вручную.
-- [ ] `[auto]` Обновить `DashInputs`, `publishState()`, plugin implementation,
+- ✅ 23.10.2026 `[auto]` Обновить `DashInputs`, `publishState()`, plugin implementation,
   public Dart façade, platform interface и method-channel implementation;
   state fields отражают chrome, methods делегируют provider.
   OTHER/null playback callback передаёт через Pigeon/Dart именно
@@ -660,7 +687,7 @@ pending art/state очищены, новая сессия не получает 
   последнего известного значения (§2.10).
   **Что опровергнет посылку:** если один из generated method channels не имеет
   реализации на обеих сторонах, boundary считается незавершённой.
-- [ ] `[auto]` Мигрировать ВСЕ implements/extends-platform fakes, включая
+- ✅ 23.10.2026 `[auto]` Мигрировать ВСЕ implements/extends-platform fakes, включая
   `packages/opendash_dash_engine/test/opendash_dash_engine_test.dart`
   `MockOpendashDashEnginePlatform`, root button fake и error-reporting fake;
   direct API проверять throwaway smoke через публичный façade независимо от
@@ -674,6 +701,8 @@ pending art/state очищены, новая сессия не получает 
 **Готово:** schema/generated outputs компилируются, state/API доступны через
 public Dart façade, fake-platform tests зелёные; generated source text не
 закрепляется отдельными хрупкими тестами.
+Проверено 23.10.2026: штатная генерация, root/package tests+analyze, native
+tests/lint и реальный façade→Pigeon→MediaSession smoke; результаты — §0.1.
 
 ### Этап 6 — Полное автоматическое покрытие и документация [auto]
 

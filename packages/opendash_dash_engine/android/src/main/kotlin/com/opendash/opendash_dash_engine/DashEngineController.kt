@@ -341,7 +341,13 @@ class DashEngineController(
      */
     private val inputs = MutableStateFlow(DashInputs())
     private val mediaForwarding = MediaForwarding(chrome, { current.value }) { media ->
-        inputs.update { it.copy(nowPlayingTitle = media.nowPlaying?.title) }
+        inputs.update {
+            it.copy(
+                nowPlayingTitle = media.nowPlaying?.title,
+                mediaActive = media.mediaActive,
+                mediaPlaying = media.mediaPlaying,
+            )
+        }
         publishState()
     }
 
@@ -1275,6 +1281,10 @@ class DashEngineController(
 
     fun skipNext(): Boolean = mediaInfo.skipNext()
     fun skipPrevious(): Boolean = mediaInfo.skipPrevious()
+    fun mediaPlayPause(): Unit = mediaInfo.playPause()
+    fun mediaVolumeUp(): Unit = mediaInfo.volumeUp()
+    fun mediaVolumeDown(): Unit = mediaInfo.volumeDown()
+    fun mediaMute(): Unit = mediaInfo.mute()
 
     /** Whether the phone has granted OpenDash notification-listener access
      *  (required for [mediaInfo]/[CallInfoProvider] to see anything). */
@@ -1582,6 +1592,8 @@ class DashEngineController(
                 nowPlayingTitle = inp.nowPlayingTitle,
                 incomingCaller = inp.incomingCaller,
                 hasActiveCall = inp.hasActiveCall,
+                mediaActive = inp.mediaActive,
+                mediaPlaying = inp.mediaPlaying,
             )
         )
     }

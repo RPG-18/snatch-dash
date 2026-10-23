@@ -148,6 +148,13 @@ class DashEngine {
   Future<bool> skipNext() => OpendashDashEnginePlatform.instance.skipNext();
   Future<bool> skipPrevious() =>
       OpendashDashEnginePlatform.instance.skipPrevious();
+  Future<void> mediaPlayPause() =>
+      OpendashDashEnginePlatform.instance.mediaPlayPause();
+  Future<void> mediaVolumeUp() =>
+      OpendashDashEnginePlatform.instance.mediaVolumeUp();
+  Future<void> mediaVolumeDown() =>
+      OpendashDashEnginePlatform.instance.mediaVolumeDown();
+  Future<void> mediaMute() => OpendashDashEnginePlatform.instance.mediaMute();
   Future<bool> isNotificationAccessGranted() =>
       OpendashDashEnginePlatform.instance.isNotificationAccessGranted();
   Future<void> openNotificationAccessSettings() =>

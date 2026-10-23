@@ -111,6 +111,10 @@ abstract class OpendashDashEnginePlatform extends PlatformInterface {
   Future<bool> hangupCall() => throw UnimplementedError();
   Future<bool> skipNext() => throw UnimplementedError();
   Future<bool> skipPrevious() => throw UnimplementedError();
+  Future<void> mediaPlayPause() => throw UnimplementedError();
+  Future<void> mediaVolumeUp() => throw UnimplementedError();
+  Future<void> mediaVolumeDown() => throw UnimplementedError();
+  Future<void> mediaMute() => throw UnimplementedError();
   Future<bool> isNotificationAccessGranted() => throw UnimplementedError();
   Future<void> openNotificationAccessSettings() => throw UnimplementedError();
 }

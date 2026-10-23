@@ -391,6 +391,14 @@ class OpendashDashEnginePlugin :
 
     override fun skipPrevious(): Boolean = engine().skipPrevious()
 
+    override fun mediaPlayPause(): Unit = engine().mediaPlayPause()
+
+    override fun mediaVolumeUp(): Unit = engine().mediaVolumeUp()
+
+    override fun mediaVolumeDown(): Unit = engine().mediaVolumeDown()
+
+    override fun mediaMute(): Unit = engine().mediaMute()
+
     override fun isNotificationAccessGranted(): Boolean = engine().isNotificationAccessGranted()
 
     /**

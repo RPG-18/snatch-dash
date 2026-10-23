@@ -76,4 +76,6 @@ internal data class DashInputs(
      * (`call != null`, against `call.incoming == true` for the answer button).
      */
     val hasActiveCall: Boolean = false,
+    val mediaActive: Boolean = false,
+    val mediaPlaying: Boolean? = null,
 )

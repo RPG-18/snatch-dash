@@ -210,6 +210,8 @@ class DashEngineState {
     this.nowPlayingTitle,
     this.incomingCaller,
     required this.hasActiveCall,
+    required this.mediaActive,
+    this.mediaPlaying,
   });
 
   DashStage stage;
@@ -267,6 +269,12 @@ class DashEngineState {
   /// button can end one that has already been answered.
   bool hasActiveCall;
 
+  /// Whether a media session is active, independently of its title or playback.
+  bool mediaActive;
+
+  /// Whether playback is playing or paused, or `null` when unknown or inactive.
+  bool? mediaPlaying;
+
   List<Object?> _toList() {
     return <Object?>[
       stage,
@@ -291,6 +299,8 @@ class DashEngineState {
       nowPlayingTitle,
       incomingCaller,
       hasActiveCall,
+      mediaActive,
+      mediaPlaying,
     ];
   }
 
@@ -322,6 +332,8 @@ class DashEngineState {
       nowPlayingTitle: result[19] as String?,
       incomingCaller: result[20] as String?,
       hasActiveCall: result[21]! as bool,
+      mediaActive: result[22]! as bool,
+      mediaPlaying: result[23] as bool?,
     );
   }
 
@@ -334,7 +346,7 @@ class DashEngineState {
     if (identical(this, other)) {
       return true;
     }
-    return _deepEquals(stage, other.stage) && _deepEquals(explicitDisconnect, other.explicitDisconnect) && _deepEquals(wifiStatus, other.wifiStatus) && _deepEquals(wifiSsid, other.wifiSsid) && _deepEquals(wifiError, other.wifiError) && _deepEquals(navigating, other.navigating) && _deepEquals(hasGps, other.hasGps) && _deepEquals(riderLat, other.riderLat) && _deepEquals(riderLng, other.riderLng) && _deepEquals(riderBearing, other.riderBearing) && _deepEquals(riderSpeed, other.riderSpeed) && _deepEquals(remainingKm, other.remainingKm) && _deepEquals(offRoute, other.offRoute) && _deepEquals(gpsLost, other.gpsLost) && _deepEquals(gpsWeak, other.gpsWeak) && _deepEquals(errorMessage, other.errorMessage) && _deepEquals(followMode, other.followMode) && _deepEquals(headingUp, other.headingUp) && _deepEquals(zoom, other.zoom) && _deepEquals(nowPlayingTitle, other.nowPlayingTitle) && _deepEquals(incomingCaller, other.incomingCaller) && _deepEquals(hasActiveCall, other.hasActiveCall);
+    return _deepEquals(stage, other.stage) && _deepEquals(explicitDisconnect, other.explicitDisconnect) && _deepEquals(wifiStatus, other.wifiStatus) && _deepEquals(wifiSsid, other.wifiSsid) && _deepEquals(wifiError, other.wifiError) && _deepEquals(navigating, other.navigating) && _deepEquals(hasGps, other.hasGps) && _deepEquals(riderLat, other.riderLat) && _deepEquals(riderLng, other.riderLng) && _deepEquals(riderBearing, other.riderBearing) && _deepEquals(riderSpeed, other.riderSpeed) && _deepEquals(remainingKm, other.remainingKm) && _deepEquals(offRoute, other.offRoute) && _deepEquals(gpsLost, other.gpsLost) && _deepEquals(gpsWeak, other.gpsWeak) && _deepEquals(errorMessage, other.errorMessage) && _deepEquals(followMode, other.followMode) && _deepEquals(headingUp, other.headingUp) && _deepEquals(zoom, other.zoom) && _deepEquals(nowPlayingTitle, other.nowPlayingTitle) && _deepEquals(incomingCaller, other.incomingCaller) && _deepEquals(hasActiveCall, other.hasActiveCall) && _deepEquals(mediaActive, other.mediaActive) && _deepEquals(mediaPlaying, other.mediaPlaying);
   }
 
   @override
@@ -343,7 +355,7 @@ class DashEngineState {
 
   @override
   String toString() {
-    return 'DashEngineState(stage: $stage, explicitDisconnect: $explicitDisconnect, wifiStatus: $wifiStatus, wifiSsid: $wifiSsid, wifiError: $wifiError, navigating: $navigating, hasGps: $hasGps, riderLat: $riderLat, riderLng: $riderLng, riderBearing: $riderBearing, riderSpeed: $riderSpeed, remainingKm: $remainingKm, offRoute: $offRoute, gpsLost: $gpsLost, gpsWeak: $gpsWeak, errorMessage: $errorMessage, followMode: $followMode, headingUp: $headingUp, zoom: $zoom, nowPlayingTitle: $nowPlayingTitle, incomingCaller: $incomingCaller, hasActiveCall: $hasActiveCall)';
+    return 'DashEngineState(stage: $stage, explicitDisconnect: $explicitDisconnect, wifiStatus: $wifiStatus, wifiSsid: $wifiSsid, wifiError: $wifiError, navigating: $navigating, hasGps: $hasGps, riderLat: $riderLat, riderLng: $riderLng, riderBearing: $riderBearing, riderSpeed: $riderSpeed, remainingKm: $remainingKm, offRoute: $offRoute, gpsLost: $gpsLost, gpsWeak: $gpsWeak, errorMessage: $errorMessage, followMode: $followMode, headingUp: $headingUp, zoom: $zoom, nowPlayingTitle: $nowPlayingTitle, incomingCaller: $incomingCaller, hasActiveCall: $hasActiveCall, mediaActive: $mediaActive, mediaPlaying: $mediaPlaying)';
   }
 }
 
@@ -1154,6 +1166,78 @@ class DashEngineApi {
     )
     ;
     return pigeonVar_replyValue! as bool;
+  }
+
+  Future<void> mediaPlayPause() async {
+    final pigeonVar_channelName = 'dev.flutter.pigeon.opendash_dash_engine.DashEngineApi.mediaPlayPause$pigeonVar_messageChannelSuffix';
+    final pigeonVar_channel = BasicMessageChannel<Object?>(
+      pigeonVar_channelName,
+      pigeonChannelCodec,
+      binaryMessenger: pigeonVar_binaryMessenger,
+    );
+    final Future<Object?> pigeonVar_sendFuture = pigeonVar_channel.send(null);
+    final pigeonVar_replyList = await pigeonVar_sendFuture as List<Object?>?;
+
+    _extractReplyValueOrThrow(
+        pigeonVar_replyList,
+        pigeonVar_channelName,
+        isNullValid: true,
+    )
+    ;
+  }
+
+  Future<void> mediaVolumeUp() async {
+    final pigeonVar_channelName = 'dev.flutter.pigeon.opendash_dash_engine.DashEngineApi.mediaVolumeUp$pigeonVar_messageChannelSuffix';
+    final pigeonVar_channel = BasicMessageChannel<Object?>(
+      pigeonVar_channelName,
+      pigeonChannelCodec,
+      binaryMessenger: pigeonVar_binaryMessenger,
+    );
+    final Future<Object?> pigeonVar_sendFuture = pigeonVar_channel.send(null);
+    final pigeonVar_replyList = await pigeonVar_sendFuture as List<Object?>?;
+
+    _extractReplyValueOrThrow(
+        pigeonVar_replyList,
+        pigeonVar_channelName,
+        isNullValid: true,
+    )
+    ;
+  }
+
+  Future<void> mediaVolumeDown() async {
+    final pigeonVar_channelName = 'dev.flutter.pigeon.opendash_dash_engine.DashEngineApi.mediaVolumeDown$pigeonVar_messageChannelSuffix';
+    final pigeonVar_channel = BasicMessageChannel<Object?>(
+      pigeonVar_channelName,
+      pigeonChannelCodec,
+      binaryMessenger: pigeonVar_binaryMessenger,
+    );
+    final Future<Object?> pigeonVar_sendFuture = pigeonVar_channel.send(null);
+    final pigeonVar_replyList = await pigeonVar_sendFuture as List<Object?>?;
+
+    _extractReplyValueOrThrow(
+        pigeonVar_replyList,
+        pigeonVar_channelName,
+        isNullValid: true,
+    )
+    ;
+  }
+
+  Future<void> mediaMute() async {
+    final pigeonVar_channelName = 'dev.flutter.pigeon.opendash_dash_engine.DashEngineApi.mediaMute$pigeonVar_messageChannelSuffix';
+    final pigeonVar_channel = BasicMessageChannel<Object?>(
+      pigeonVar_channelName,
+      pigeonChannelCodec,
+      binaryMessenger: pigeonVar_binaryMessenger,
+    );
+    final Future<Object?> pigeonVar_sendFuture = pigeonVar_channel.send(null);
+    final pigeonVar_replyList = await pigeonVar_sendFuture as List<Object?>?;
+
+    _extractReplyValueOrThrow(
+        pigeonVar_replyList,
+        pigeonVar_channelName,
+        isNullValid: true,
+    )
+    ;
   }
 
   Future<bool> isNotificationAccessGranted() async {

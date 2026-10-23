@@ -255,7 +255,7 @@ firmware-команду для объяснения этого условия н
 | `05 19` | playing/paused | known playback event/replay; unknown не отправляет indicator |
 | `05 58` / `05 40` | маркер и JPEG | metadata event/replay, paced single writer; hardware support не подтверждён |
 | `05 4C` / `05 1B` | опрос AudioManager | live STREAM_MUSIC / STREAM_VOICE_CALL; независимые fallback `13` / `19` |
-| play/pause, volume, mute | карта §6 | методы native provider; Dart API и mapping кнопок ещё не подключены |
+| play/pause, volume, mute | карта §6 | public Dart direct API; mapping кнопок остаётся совместимым до hardware gate |
 | next/previous | transport controls | реализованы |
 
 С 23.10.2026 protocol layer содержит типизированные `MediaActive`,
@@ -375,9 +375,27 @@ provider не останавливает и replay-ит сохранённый s
 `::currentHeartbeat`, вызываемый на каждом 1 Гц tick, в том числе до STREAMING.
 Меняются только `05 4C` и `05 1B`: температура остаётся 25 °C, порядок/состав
 11 TLV и captured initial burst неизменны. Нет `INFOTAINMENT` gate.
-Pigeon media-флаги и direct controls
-через Dart ещё не подключены. Отправка inactive/marker не доказывает, что приборка
-очищает или правильно показывает карточку/обложку.
+Pigeon-схема публикует `mediaActive` и единственный nullable `mediaPlaying` в конце
+`DashEngineState`. Controller переносит title/active/playing из chrome вместе
+в один `DashInputs` snapshot и публикует их без подстановки false или последнего
+known значения. Idle/stop — false/null; OTHER/null playback — true/null, даже
+при пустом title. Dart получает эти значения через обычный `stateStream`;
+до первого события `idleDashState` также false/null.
+
+Четыре public метода `DashEngine.mediaPlayPause`, `mediaVolumeUp`, `mediaVolumeDown`,
+`mediaMute` возвращают `Future<void>` и идут через platform interface,
+method-channel implementation и сгенерированный HostApi в native provider.
+Они доступны независимо от button mapping. Новых aliases нет: существующие
+коды, title-based compatibility gate и call precedence пока не заменены
+на official mapping/stateful gate без аппаратного подтверждения.
+
+23.10.2026 на API 36 проверена вся граница из публичного Dart façade:
+реальный MediaSession, play/pause, remote volume ±1, mute без controller,
+active с пустым title, PLAYING→OTHER=null, PAUSED→null=null и stop=false/null.
+Smoke включал только media forwarding без подключения к Wi-Fi дэша;
+fixture активировал обычный notification-listener access на отдельном пакете.
+Это не подтверждение wire-кнопок или отображения на физической приборке:
+отправка inactive/marker сама по себе не доказывает очистку или рендер карточки.
 
 23.10.2026 на Android-эмуляторе API 36 проверены реальные Bitmap/JPEG и
 привилегированный smoke с настоящим MediaSession: ART fallback, начальный snapshot,

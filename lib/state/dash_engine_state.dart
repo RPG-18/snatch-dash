@@ -29,6 +29,8 @@ DashEngineState get idleDashState => DashEngineState(
   headingUp: true,
   zoom: 0,
   hasActiveCall: false,
+  mediaActive: false,
+  mediaPlaying: null,
 );
 
 /// The engine's live state, straight from the native side.

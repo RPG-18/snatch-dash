@@ -137,6 +137,18 @@ class MethodChannelOpendashDashEngine extends OpendashDashEnginePlatform {
   Future<bool> skipPrevious() => _api.skipPrevious();
 
   @override
+  Future<void> mediaPlayPause() => _api.mediaPlayPause();
+
+  @override
+  Future<void> mediaVolumeUp() => _api.mediaVolumeUp();
+
+  @override
+  Future<void> mediaVolumeDown() => _api.mediaVolumeDown();
+
+  @override
+  Future<void> mediaMute() => _api.mediaMute();
+
+  @override
   Future<bool> isNotificationAccessGranted() =>
       _api.isNotificationAccessGranted();
 

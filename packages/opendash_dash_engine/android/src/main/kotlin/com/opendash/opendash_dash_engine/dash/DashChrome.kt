@@ -23,6 +23,8 @@ internal data class NowPlaying(
     val title: String,
     val album: String = "",
     val artist: String = "",
+    val mediaId: String? = null,
+    val artJpeg: ByteArray? = null,
 )
 
 /**
@@ -47,6 +49,8 @@ internal data class DashChrome(
     val destinationName: String = "Snatch",
     val nav: NavFigures? = null,
     val nowPlaying: NowPlaying? = null,
+    val mediaActive: Boolean = false,
+    val mediaPlaying: Boolean? = null,
     val caller: String? = null,
 ) {
     val routeTitle: String

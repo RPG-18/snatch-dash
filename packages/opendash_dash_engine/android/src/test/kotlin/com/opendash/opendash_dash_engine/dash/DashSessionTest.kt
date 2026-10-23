@@ -70,6 +70,7 @@ class DashSessionTest {
             ssid = ssid,
             chrome = chrome,
             clock = { testScheduler.currentTime },
+            heartbeat = { DashCommand.Heartbeat(25, 0x13, 0x19) },
             parent = parent,
             context = StandardTestDispatcher(testScheduler),
         ) { transport }
@@ -713,6 +714,7 @@ class DashSessionTest {
                     ssid = ssid,
                     chrome = MutableStateFlow(DashChrome()),
                     clock = { System.nanoTime() / 1_000_000 },
+                    heartbeat = { DashCommand.Heartbeat(25, 0x13, 0x19) },
                     parent = parent,
                     context = Dispatchers.Default,
                 ) { wire }
@@ -776,6 +778,7 @@ class DashSessionTest {
                 ssid = ssid,
                 chrome = MutableStateFlow(DashChrome()),
                 clock = { testScheduler.currentTime },
+                heartbeat = { DashCommand.Heartbeat(25, 0x13, 0x19) },
                 parent = parent,
                 context = StandardTestDispatcher(testScheduler),
             ) { throw java.net.BindException("Address already in use") }
@@ -810,6 +813,7 @@ class DashSessionTest {
                 ssid = ssid,
                 chrome = MutableStateFlow(DashChrome()),
                 clock = { System.currentTimeMillis() },
+                heartbeat = { DashCommand.Heartbeat(25, 0x13, 0x19) },
                 parent = parent,
                 context = Dispatchers.Default,
             ) { wire }

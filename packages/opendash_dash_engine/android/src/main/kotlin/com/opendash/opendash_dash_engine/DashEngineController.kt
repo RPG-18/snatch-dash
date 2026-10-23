@@ -40,7 +40,7 @@ import com.opendash.opendash_dash_engine.dash.Effect
 import com.opendash.opendash_dash_engine.dash.label
 import com.opendash.opendash_dash_engine.dash.DashSocket
 import com.opendash.opendash_dash_engine.dash.NavFigures
-import com.opendash.opendash_dash_engine.dash.NowPlaying
+import com.opendash.opendash_dash_engine.dash.MediaForwarding
 import com.opendash.opendash_dash_engine.dash.SessionEvent
 import com.opendash.opendash_dash_engine.dash.protocol.DashCommand
 import kotlinx.coroutines.CancellationException
@@ -338,6 +338,10 @@ class DashEngineController(
      * ways, so it has a class of its own: [DashCameraState].
      */
     private val inputs = MutableStateFlow(DashInputs())
+    private val mediaForwarding = MediaForwarding(chrome, { current.value }) { media ->
+        inputs.update { it.copy(nowPlayingTitle = media.nowPlaying?.title) }
+        publishState()
+    }
 
     /**
      * Where the map camera is pointing, and the joystick controls that move it.
@@ -811,6 +815,7 @@ class DashEngineController(
             current.value = DashSession.open(
                 ssid = ssid,
                 chrome = chrome,
+                heartbeat = { DashCommand.Heartbeat(25, 0x13, 0x19) },
                 clock = ::monotonicMs,
                 parent = scope.coroutineContext.job,
                 // The plugin's handler, carried over deliberately: the session's
@@ -1042,22 +1047,18 @@ class DashEngineController(
     }
 
     /**
-     * Collect before provider start so its initial MediaSession snapshot is visible.
-     * This stage forwards metadata into the existing periodic card; event-driven
-     * wire sequences and playback indicators belong to the single-writer cutover.
+     * Register the ordered event collector before provider start. The synchronous owner
+     * reduces each revision and partitions updates from the session's initial replay.
      * Notification access is optional — see [isNotificationAccessGranted].
      */
     private fun startMediaForwarding() {
         mediaForwardJob?.cancel()
+        val generation = mediaForwarding.begin()
         mediaForwardJob = scope.launch(start = CoroutineStart.UNDISPATCHED) {
-            mediaInfo.snapshot.collect { snapshot ->
-                val np = snapshot.metadata
-                // Empty/whitespace fields are valid metadata, unlike absence of metadata.
-                // Do not route this through the legacy external title-only filter.
-                chrome.update { it.copy(nowPlaying = np?.let { NowPlaying(it.title, it.album, it.artist) }) }
-                inputs.update { it.copy(nowPlayingTitle = np?.title) }
-                publishState()
-            }
+            mediaInfo.collectWithSnapshot(
+                onSnapshot = { mediaForwarding.acceptSnapshot(generation, it) },
+                onEvent = { mediaForwarding.acceptEvent(generation, it) },
+            )
         }
         callForwardJob?.cancel()
         callForwardJob = scope.launch(start = CoroutineStart.UNDISPATCHED) {
@@ -1077,13 +1078,12 @@ class DashEngineController(
     }
 
     private fun stopMediaForwarding() {
+        // Invalidate callbacks and clear/publish local state before explicit inactive.
+        // Delivery through the live writer does not depend on the cancelled collector.
+        mediaForwarding.stop()
         mediaForwardJob?.cancel(); mediaForwardJob = null
         callForwardJob?.cancel(); callForwardJob = null
         mediaInfo.stop()
-        // Collectors are cancelled: provider.stop() cannot clear their consumers for us.
-        chrome.update { it.copy(nowPlaying = null) }
-        inputs.update { it.copy(nowPlayingTitle = null) }
-        publishState()
     }
 
     fun setDestination(name: String?, lat: Double?, lng: Double?) {
@@ -1237,8 +1237,7 @@ class DashEngineController(
     fun setWifiPassword(password: String) { dashConfig.password = password }
 
     fun updateNowPlaying(title: String?, album: String, artist: String) {
-        val playing = title?.takeIf { it.isNotBlank() }?.let { NowPlaying(it, album, artist) }
-        chrome.update { it.copy(nowPlaying = playing) }
+        mediaForwarding.updateNowPlaying(title, album, artist)
     }
 
     fun updateCall(caller: String?) {
@@ -1435,7 +1434,7 @@ class DashEngineController(
             // Inside the launched job the same failure would be an uncaught exception in a
             // coroutine and the dash would sit in READY behind a stream that never started.
             streamer.prepareEncoder()
-            current.value?.startStreaming()
+            mediaForwarding.startStreaming()
         } catch (e: Throwable) {
             streamer?.releaseEncoder()
             threads?.close()

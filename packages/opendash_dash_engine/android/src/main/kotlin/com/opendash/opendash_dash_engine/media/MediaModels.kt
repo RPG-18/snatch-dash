@@ -34,7 +34,10 @@ data class MediaSnapshot(
 sealed interface MediaEvent {
     val revision: Long
 
-    data class Active(override val revision: Long) : MediaEvent
+    data class Active(
+        override val revision: Long,
+        val clearMetadata: Boolean,
+    ) : MediaEvent
     data class Inactive(override val revision: Long) : MediaEvent
     data class Metadata(
         override val revision: Long,

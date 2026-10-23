@@ -2,7 +2,7 @@
 
 **Дата создания:** 04.10.2026
 
-**Статус:** этапы 1–2 реализованы и проверены 23.10.2026; этап 3 не начат.
+**Статус:** этапы 1–3 реализованы и проверены 23.10.2026; этап 4 не начат.
 Исследование обновлено 22.10.2026 по `re_app_new` — Royal Enfield 10.1.23(45), versionCode 193.
 План сохраняет независимые автоматические и полевые гейты.
 
@@ -87,7 +87,7 @@ Code review этапа 1: замечаний к production-коду и тест�
 выполнены на установленном Temurin 21.0.7 с локальными `JAVA_HOME` и
 `-Dorg.gradle.java.home`, без изменения настроек проекта или пользователя.
 
-Где план сейчас (23.10.2026, после этапа 2): provider переведён на
+Состояние после этапа 2 (23.10.2026): provider переведён на
 snapshot/events, controller — на snapshot до start; старый provider.nowPlaying
 удалён. Реализованы lifecycle/generation guards, callback parity/dedup,
 metadata tuples, nullable playback, native controls и безопасный JPEG encoder.
@@ -110,6 +110,38 @@ skip/volume, metadata parity, stop/late metadata и mute без controller.
 Два code review (state/revision и Android/Bitmap/controller) — без замечаний.
 Проверки, как и на этапе 1, выполнены на Temurin 21.0.7 без изменения конфигурации.
 Следующий этап — 3; Pigeon, live heartbeat и все `[ride]` ещё открыты.
+
+Где план сейчас (23.10.2026, после этапа 3): media events и initial replay
+подключены к single writer. `MediaForwarding` сериализует chrome + enqueue
+и STREAMING capture, включая вложенные синхронные callbacks; `Active` различает
+bind reset и playback active. Session хранит art transfer/deadline отдельно
+от FIFO принятых control/card/marker events; metadata supersession отменяет
+неотправленный art, inactive/teardown — весь старый queued media.
+Periodic metadata коммитится вместе с invalidation, чтобы тик не отправил
+card B до отмены art A. Controller очищает локальное состояние и явно заказывает
+inactive до отмены collectors/provider.stop. Обязательный heartbeat supplier
+пока возвращает захваченные 25/13/19; live volume — следующий этап 4.
+
+Проверки этапа 3: полный JVM suite — 488 тестов, без failures/errors/skipped;
+42 новых packet-level теста (`DashSessionMediaTest` — 23,
+`MediaForwardingTest` — 19). Управляемое время подтверждает art spacing ≥10 мс,
+projection gap ≤250 мс и receipt→ACK ≤250 мс при 65535 байтах art, A→B/C,
+unknown/reconnect, stop/teardown и replay/reentrant races.
+Временный executable smoke на реальных localhost UDP-сокетах провёл handshake
+и production owner→session→writer: A(65535)→B(JPEG 727 байт) без chunks A после
+card B, JPEG B восстановлен побайтно; полный art 65535 дал 66 packets,
+минимальный наблюдавшийся интервал 10,390 мс, button→ACK 1,231 мс;
+после inactive нет старых card/art через следующий секундный tick.
+Это замер локального транспорта, не firmware/rendering и не полевая гарантия cadence.
+`lintDebug`: 0 ошибок, 20 прежних предупреждений вне изменений.
+Проверки выполнены на Temurin 21.0.7; временный smoke удалён.
+
+Code review writer — без замечаний. Ревью forwarding нашло stop с уже пустым
+chrome, но старой queued legacy card после title→null: до исправления новый
+packet regression отправлял card/marker вместо единственного inactive.
+Исправлено учётом media, заказанного после последнего inactive; повторный stop
+идемпотентен. Регрессия проходит, повторное ревью исправления — без замечаний.
+Pigeon/Dart media-флаги и direct controls остаются этапу 5; все `[ride]` открыты.
 
 Отложенные решения и отклонённые посылки:
 
@@ -466,11 +498,11 @@ semantics и 1 Hz fallback.
 
 Задачи:
 
-- [ ] `[auto]` В `DashChrome.NowPlaying` добавить `mediaId`, `artJpeg`;
+- ✅ 23.10.2026 `[auto]` В `DashChrome.NowPlaying` добавить `mediaId`, `artJpeg`;
   в chrome `mediaActive` и единственный nullable `mediaPlaying`, без дублирования
   playing в NowPlaying; сохранить `NowPlaying("Song")` совместимым.
   **Что опровергнет посылку:** две копии playback расходятся — модель неверна.
-- [ ] `[auto]` `DashSession.sendMedia(commands: List<DashCommand>): Unit`
+- ✅ 23.10.2026 `[auto]` `DashSession.sendMedia(commands: List<DashCommand>): Unit`
   принимает wire events только в STREAMING; controller всегда сначала обновляет
   current chrome даже до STREAMING. startStreaming атомарно получает revision
   snapshot и replay active→card→marker→art→known playback один раз; последующие
@@ -479,7 +511,7 @@ semantics и 1 Hz fallback.
   после unknown callback старое known playback не восстанавливается.
   **Что опровергнет посылку:** before/during/after transition interleaving теряет
   update или повторяет initial replay — ordering seam недостаточен.
-- [ ] `[auto]` Writer раскрывает AlbumArt в scalar chunks и incrementally
+- ✅ 23.10.2026 `[auto]` Writer раскрывает AlbumArt в scalar chunks и incrementally
   назначает earliest-next-send +10 ms (§2.11). Между chunks выбирает pending
   projection/button ACK/heartbeat, один coroutine/socket writer, без Thread.sleep
   и без блокировки всей очереди transfer-ом. Cancel pending art при принятом
@@ -495,12 +527,12 @@ semantics и 1 Hz fallback.
   Scalar codec не принимает логический AlbumArt (precondition failure).
   Тестировать реальную последовательность packets и её отмену/порядок, а не
   копии аргументов или forwarding между helpers.
-- [ ] `[auto]` В `DashEngineController.startMediaForwarding()` сначала поднять
+- ✅ 23.10.2026 `[auto]` В `DashEngineController.startMediaForwarding()` сначала поднять
   collectors, затем вызвать `mediaInfo.start()`; обновлять chrome, inputs,
   publishState и queue event sequences по правилам плана.
   **Что опровергнет посылку:** если initial snapshot теряется при старте
   collector, порядок запуска доказанно неверен.
-- [ ] `[auto]` В `stopMediaForwarding()` владельцем остановки и отправки
+- ✅ 23.10.2026 `[auto]` В `stopMediaForwarding()` владельцем остановки и отправки
   inactive является controller:
   1. Прекратить принимать callbacks остановленного media-поколения и очистить
      current snapshot/chrome: metadata отсутствует, `mediaActive=false`,
@@ -525,7 +557,7 @@ semantics и 1 Hz fallback.
   **Что опровергнет посылку:** inactive зависит от уже отменённого collector,
   late callback восстанавливает состояние, повторный stop даёт второй inactive
   или следующая сессия получает старую карточку/playback — cleanup неполон.
-- [ ] `[auto]` Обязательный `heartbeat: () -> DashCommand.Heartbeat` в
+- ✅ 23.10.2026 `[auto]` Обязательный `heartbeat: () -> DashCommand.Heartbeat` в
   `DashSession.open`: мигрировать все production/test factories в этом этапе.
   Supplier пока возвращает captured `Heartbeat(25,0x13,0x19)`; этап 4 заменяет
   его live provider. Initial burst остаётся captured.
@@ -554,6 +586,9 @@ inactive, после него нет старых periodic/event cards и chunks
 Stop после transport teardown: доставки в закрытый transport не требуется,
 pending art/state очищены, новая сессия не получает старых packets/state.
 Отдельный обычный reconnect без media stop сохраняет snapshot активной поездки.
+Проверено 23.10.2026: packet-level `DashSessionMediaTest` и `MediaForwardingTest`,
+полный JVM suite, `lintDebug`, executable UDP smoke и два code review;
+результаты и исправление по ревью — §0.1. Старые literal wire goldens не менялись.
 
 ### Этап 4 — Live volume heartbeat [auto]
 

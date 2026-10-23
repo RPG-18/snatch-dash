@@ -239,7 +239,7 @@ class MediaInfoProvider internal constructor(
         val current = snapshot.value
         val revision = current.revision + 1
         stream.publish(
-            MediaEvent.Active(revision),
+            MediaEvent.Active(revision, clearMetadata),
             current.copy(
                 revision = revision,
                 active = true,

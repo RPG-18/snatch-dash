@@ -79,6 +79,8 @@ class MediaInfoProviderTest {
             assertEquals(playback.playing, r.provider.snapshot.value.playing)
             assertTrue(r.provider.snapshot.value.active)
             assertEquals(listOf("Active", "Metadata", "Active", "Playback"), r.events.map { it.javaClass.simpleName })
+            assertTrue(assertIs<MediaEvent.Active>(r.events[0]).clearMetadata)
+            assertFalse(assertIs<MediaEvent.Active>(r.events[2]).clearMetadata)
             assertEquals(1, first.callbacks.size)
             assertTrue(second.callbacks.isEmpty())
             first.callback.metadataChanged(FakeMetadata(rawTitle = "New"))
@@ -278,7 +280,7 @@ class MediaInfoProviderTest {
             session.playbackChanged(playback)
             assertEquals(playback?.playing, r.provider.snapshot.value.playing)
             assertTrue(r.provider.snapshot.value.active)
-            assertIs<MediaEvent.Active>(r.events[count])
+            assertFalse(assertIs<MediaEvent.Active>(r.events[count]).clearMetadata)
             assertEquals(playback, assertIs<MediaEvent.Playback>(r.events[count + 1]).playback)
             assertEquals(count + 2, r.events.size)
         }

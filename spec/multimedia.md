@@ -238,26 +238,29 @@ firmware-команду для объяснения этого условия н
 [`MediaEventStream`](../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/media/MediaEventStream.kt),
 [`MediaAdapters`](../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/media/MediaAdapters.kt),
 [`AlbumArtEncoder`](../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/media/AlbumArtEncoder.kt),
-`DashEngineController`, `DashSession` (секундный цикл), `K1GCodec.displayText`.
-С 23.10.2026 нативная модель media реализована; событийный wire-путь ещё не подключён.
+[`MediaForwarding`](../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/MediaForwarding.kt),
+[`DashSession`](../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/dash/DashSession.kt),
+`DashEngineController`, `K1GCodec.displayText`.
+С 23.10.2026 нативная модель media и событийный single-writer wire-путь реализованы;
+физическое отображение остаётся отдельным аппаратным гейтом.
 Таблица ниже описывает фактическую отправку из сессии, не весь доступный codec API.
 
 | | оригинал | snatch-dash сейчас |
 |---|---|---|
-| `05 0D` | событийно с фильтрами | 1 Гц из последнего принятого metadata snapshot, без wire-дедупликации |
+| `05 0D` | событийно с фильтрами | при принятом metadata event + прежний 1 Гц из последнего snapshot |
 | поля | album/title/artist | title/album/artist |
 | обрезка / кодировка | 19 UTF-16 units / lossy char→byte | ICU-транслитерация в ASCII, до 20 байт после расширения |
-| `05 17` | событийно | только `AA` в стартовом бёрсте |
-| `05 19` | playing/paused | нет |
-| `05 58` / `05 40` | маркер и JPEG | нет |
+| `05 17` | событийно | bind/playback/inactive, snapshot replay и явный media stop |
+| `05 19` | playing/paused | known playback event/replay; unknown не отправляет indicator |
+| `05 58` / `05 40` | маркер и JPEG | metadata event/replay, paced single writer; hardware support не подтверждён |
 | `05 4C` / `05 1B` | опрос AudioManager | захваченные `13` / `19` в heartbeat |
 | play/pause, volume, mute | карта §6 | методы native provider; Dart API и mapping кнопок ещё не подключены |
 | next/previous | transport controls | реализованы |
 
 С 23.10.2026 protocol layer содержит типизированные `MediaActive`,
 `MediaPlayback`, `AlbumArtMarker`, `AlbumArtChunk` и параметры music/call volume
-в `Heartbeat`. Эти формы пока не подключены к media callbacks; defaults
-heartbeat и захваченный стартовый бёрст не изменены.
+в `Heartbeat`. Media events проходят через session writer только в STREAMING;
+defaults heartbeat и захваченный стартовый бёрст не изменены.
 `AlbumArtFrames` формирует chunks вне Android API: singleton заканчивается
 отдельным пустым `FF`, multichunk — `FF` с данными, включая полные 1000 байт
 при exact multiple; пустой JPEG и размер >65535 дают no frames.
@@ -307,9 +310,9 @@ thumbnail/scaled 75×75 и JPEG quality50. Заимствованный Bitmap �
 Null/failed-compress/empty/exception/>65535 дают no art, сохраняя принятую metadata.
 Ошибки framework getters до encoder оставляют прежний snapshot и не превращаются
 в legacy send fallback. Raw id/title cache коммитится до публикации event.
-Чистая граница `dispatchMediaMetadata` ловит только `IllegalStateException` внутри
-enqueue и добавляет card-only tuple с album `NowPlaying`, не отменяя уже
-поставленные эффекты. Она ещё не подключена к sender; это не отправка fallback сейчас.
+Граница `dispatchMediaMetadata` подключена к enqueue в session writer:
+ловит только `IllegalStateException` внутри enqueue и добавляет card-only tuple
+с album `NowPlaying`, не отменяя уже поставленные эффекты или raw cache.
 
 Native controls используют текущий Android controller: PLAYING → pause, любой
 другой nonnull playback → play, null controller/playback → no-op.
@@ -317,13 +320,52 @@ Volume меняет controller volume на ±1 с FLAG_SHOW_UI; mute перек�
 AudioManager STREAM_MUSIC без controller gate. Ошибки adapters дают тихий no-op;
 next/previous сохраняют Boolean результат. Новые permission/FGS не добавлены.
 
-Controller запускает snapshot collector до provider.start и переносит metadata
-в прежнюю periodic card без фильтрации пустых/whitespace полей. При media stop,
-после отмены collectors, сам очищает chrome и публикуемый nowPlayingTitle.
-Обычный reconnect активной поездки provider не останавливает. Pigeon media-флаги,
-paced art, события pause/inactive на проводе ещё не подключены: после очистки
-карточки перестают отправляться, но команды очистки приборке пока не поступает.
-Поэтому нельзя утверждать ни удержание карточки, ни её исчезновение с экрана.
+`MediaForwarding` — один owner в controller: сначала применяет provider snapshot
+и последующие revision events к chrome/inputs, публикует title, затем заказывает
+wire sequence. Monitor сериализует обновление media + enqueue и переход STREAMING;
+вложенный синхронный callback откладывается до конца текущей транзакции.
+Collector регистрируется до provider.start; события сводятся по порядку,
+а не чтением более нового provider snapshot при обработке старого event.
+Bind Active несёт `clearMetadata`: reset очищает старые metadata/playback,
+обычный playback Active их не стирает.
+
+Session при переходе READY→STREAMING ставит snapshot replay перед публикацией
+нового состояния, чтобы reentrant observer не мог обогнать его event-пакетом.
+Replay: active/inactive → текущая card → marker → art → known playback; только
+ненулевой playing даёт `05 19`. Последующие events передаются один раз.
+Replay-derived indicator ждёт завершения art; обычный playback event проходит
+между chunks сразу. Новый unknown/known event отменяет отложенный прежний replay
+indicator; одна лишь замена metadata не теряет ещё актуальный known replay.
+Наличие metadata для replay не зависит от active: обработанный metadata callback
+сам по себе не обязан повторять Active.
+
+Writer хранит текущий art transfer, не помещая весь transfer в delay-loop.
+Следующий chunk планируется не раньше +10 мс от завершения последнего art send,
+включая границу A→B; между chunks обслуживаются projection, ACK и heartbeat.
+Новое принятое metadata отменяет только неотправленные chunks A, сохраняя FIFO
+принятых card/marker events. Уже начатый packet может закончиться, но после card B
+ни одного chunk A нет: B с JPEG начинает новый transfer, B без JPEG даёт absent
+marker. Callback, подавленный provider dedup, не создаёт события и не отменяет art.
+Periodic card читает только metadata, уже принятую session вместе с invalidation,
+а не промежуточный chrome B до enqueue: иначе тик мог бы отправить card B раньше
+отмены art A. Совместимый 1 Гц и порядок остальных полей тика сохранены.
+
+Media stop сначала инвалидирует owner generation, очищает chrome, inputs и
+публикуемый title, затем явно заказывает inactive через ещё живой STREAMING writer;
+после этого controller отменяет collectors и вызывает provider.stop. Доставка
+inactive не зависит от уже отменённого collector. Writer инвалидирует и queued
+event/periodic cards, и art; уже начатый packet заканчивается до inactive.
+Даже пустой chrome может иметь старую queued legacy card (title→null), поэтому
+owner учитывает media, заказанное после последнего inactive. Повторный stop
+не добавляет второго inactive; late callback не восстанавливает state.
+Teardown отбрасывает pending art/media; после закрытия transport финальная доставка
+inactive не гарантируется и не повторяется. Обычный reconnect активной поездки
+provider не останавливает и replay-ит сохранённый snapshot.
+
+`DashSession.open` требует heartbeat supplier: controller пока передаёт прежние
+`Heartbeat(25,0x13,0x19)`, не AudioManager. Pigeon media-флаги и direct controls
+через Dart ещё не подключены. Отправка inactive/marker не доказывает, что приборка
+очищает или правильно показывает карточку/обложку.
 
 23.10.2026 на Android-эмуляторе API 36 проверены реальные Bitmap/JPEG и
 привилегированный smoke с настоящим MediaSession: ART fallback, начальный snapshot,

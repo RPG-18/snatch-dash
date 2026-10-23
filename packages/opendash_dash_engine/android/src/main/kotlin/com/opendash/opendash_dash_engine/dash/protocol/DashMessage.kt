@@ -110,10 +110,10 @@ internal object K1GCodec {
     /**
      * Bytes for one command — the single place that knows the wire format of what we send.
      *
-     * Every value below came off a capture, and the fields nobody has explained keep their
-     * captured value rather than a tidier one: `05 03 = 0x34`, `05 0B = "001000"`,
-     * `05 55 = 0x20`. Changing an unexplained byte to a rounder one is how a protocol port
-     * breaks in the field months later.
+     * Existing captured fields keep their value rather than a tidier one:
+     * `05 03 = 0x34`, `05 0B = "001000"`, `05 55 = 0x20`. New media forms follow
+     * the static contract in spec/multimedia.md; encoding does not prove hardware support.
+     * Logical album art is not a scalar packet and must be expanded by the writer.
      */
     fun encode(cmd: DashCommand): ByteArray = when (cmd) {
         DashCommand.AuthRequest -> K1GPacket.build(K1GPacket.tlv(0x08, 0x04, 0x01))
@@ -165,9 +165,9 @@ internal object K1GCodec {
                 K1GPacket.tlv(0x06, 0x04, 0xA2),
                 K1GPacket.tlv(0x06, 0x0F, 0xAA),
                 K1GPacket.tlv(0x06, 0x01, 0x01),
-                K1GPacket.tlv(0x05, 0x4C, 0x13),
+                K1GPacket.tlv(0x05, 0x4C, cmd.musicVolume),
                 K1GPacket.tlv(0x05, 0x2D, 0x00, 0x00),
-                K1GPacket.tlv(0x05, 0x1B, 0x19),
+                K1GPacket.tlv(0x05, 0x1B, cmd.callVolume),
                 K1GPacket.tlv(0x05, 0x21, 0x32),
                 K1GPacket.tlv(0x05, 0x4D, 0x32),
             ),
@@ -231,6 +231,16 @@ internal object K1GCodec {
                     displayText(cmd.artist, MEDIA_FIELD_MAX),
             ),
         )
+        is DashCommand.MediaActive ->
+            K1GPacket.build(K1GPacket.tlv(0x05, 0x17, if (cmd.active) 0x55 else 0xAA))
+        is DashCommand.MediaPlayback ->
+            K1GPacket.build(K1GPacket.tlv(0x05, 0x19, if (cmd.playing) 0x55 else 0xAA))
+        is DashCommand.AlbumArtMarker ->
+            K1GPacket.build(K1GPacket.tlv(0x05, 0x58, if (cmd.present) 0x55 else 0xAA))
+        is DashCommand.AlbumArtChunk ->
+            K1GPacket.build(K1GPacket.tlv(0x05, 0x40, cmd.value))
+        is DashCommand.AlbumArt ->
+            throw IllegalArgumentException("AlbumArt must be expanded into scalar chunks before encoding")
         is DashCommand.CallNotify ->
             K1GPacket.build(K1GPacket.tlv(0x05, 0x22, displayText(cmd.callerName, MEDIA_FIELD_MAX) + 0x00))
         DashCommand.CallClear -> K1GPacket.build(K1GPacket.tlv(0x05, 0x22, 0x00))

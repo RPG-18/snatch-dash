@@ -236,6 +236,7 @@ firmware-команду для объяснения этого условия н
 Текущие источники: `MediaInfoProvider` (методы `start`, `bind`, `publish`,
 `stop`), `DashSession` (секундный цикл), `K1GCodec.displayText`.
 Это существующий порт, **не** реализация будущего media-автомата.
+Таблица ниже описывает фактическую отправку из сессии, не весь доступный codec API.
 
 | | оригинал | snatch-dash сейчас |
 |---|---|---|
@@ -248,6 +249,20 @@ firmware-команду для объяснения этого условия н
 | `05 4C` / `05 1B` | опрос AudioManager | захваченные `13` / `19` в heartbeat |
 | play/pause, volume, mute | карта §6 | не реализованы как эти действия |
 | next/previous | transport controls | реализованы |
+
+С 23.10.2026 protocol layer содержит типизированные `MediaActive`,
+`MediaPlayback`, `AlbumArtMarker`, `AlbumArtChunk` и параметры music/call volume
+в `Heartbeat`. Эти формы пока не подключены к media callbacks; defaults
+heartbeat и захваченный стартовый бёрст не изменены.
+`AlbumArtFrames` формирует chunks вне Android API: singleton заканчивается
+отдельным пустым `FF`, multichunk — `FF` с данными, включая полные 1000 байт
+при exact multiple; пустой JPEG и размер >65535 дают no frames.
+Логический `AlbumArt` scalar codec отвергает: отправка требует paced writer,
+а не пачки packets из одного вызова `encode`.
+`VolumeLevel` использует нормализованную целочисленную шкалу с widened arithmetic,
+не Float-формулу оригинала; AudioManager ещё не подключён.
+JVM-тесты и smoke JPEG→packets→JPEG проверяют serialization и сохранность данных,
+но не отображение на приборке и не cadence передачи.
 
 Наш провайдер действительно слушает активные сессии и `onSessionDestroyed`,
 снимает callback при смене контроллера и stop. `publish()` читает текущие

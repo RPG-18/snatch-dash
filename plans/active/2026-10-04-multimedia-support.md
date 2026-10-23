@@ -2,7 +2,7 @@
 
 **Дата создания:** 04.10.2026
 
-**Статус:** этап 1 реализован и проверен 23.10.2026; этап 2 не начат.
+**Статус:** этапы 1–2 реализованы и проверены 23.10.2026; этап 3 не начат.
 Исследование обновлено 22.10.2026 по `re_app_new` — Royal Enfield 10.1.23(45), versionCode 193.
 План сохраняет независимые автоматические и полевые гейты.
 
@@ -71,7 +71,7 @@ initial dedup, lifecycle и владение Bitmap. Новые anchors — §1.
 автоматических или аппаратных подтверждений. Совместимость прерывания art
 остаётся открытым `[ride]` этапа 7.
 
-Где план сейчас (23.10.2026, после этапа 1): wire-команды, scalar encoding,
+Состояние после этапа 1 (23.10.2026): wire-команды, scalar encoding,
 `AlbumArtFrames` и `VolumeLevel` реализованы; media callbacks, paced writer,
 live AudioManager и Pigeon ещё не подключены. Следующий этап — 2.
 Проверены полный `:opendash_dash_engine:testDebugUnitTest` (413 тестов,
@@ -86,6 +86,30 @@ Code review этапа 1: замечаний к production-коду и тест�
 загрузка JBR 21 с redirector и прямого CDN завершилась таймаутами. Проверки
 выполнены на установленном Temurin 21.0.7 с локальными `JAVA_HOME` и
 `-Dorg.gradle.java.home`, без изменения настроек проекта или пользователя.
+
+Где план сейчас (23.10.2026, после этапа 2): provider переведён на
+snapshot/events, controller — на snapshot до start; старый provider.nowPlaying
+удалён. Реализованы lifecycle/generation guards, callback parity/dedup,
+metadata tuples, nullable playback, native controls и безопасный JPEG encoder.
+`collectWithSnapshot` регистрирует event collector до чтения revision snapshot;
+одна scope-owned coroutine публикует события через `MutableSharedFlow`,
+неограниченный FIFO сохраняет их для медленных consumers без дропа.
+Provider.stop вызывается до отмены владеющего scope.
+`dispatchMediaMetadata` проверяет узкую card-only fallback-границу отдельно;
+её подключение к sender, как и paced art/playback/inactive packets, — этап 3.
+
+Проверки этапа 2: полный JVM suite — 446 тестов (33 новых), без failures/errors/skipped;
+Android API 36 — 16 успешных сценариев: 9 новых Bitmap/JPEG tests, 6 прежних
+ICU text tests и временный live MediaSession smoke. Smoke проверил ART fallback
+в JPEG 798 байт 75×75, initial snapshot, pause→null→OTHER→play, null playPause no-op,
+skip/volume, metadata parity, stop/late metadata и mute без controller.
+Для доступа к реальному MediaSession использованы shell permissions только
+в smoke; notification-access UI не проверялся. Временный smoke удалён.
+`lintDebug`: 0 ошибок, 20 прежних предупреждений вне изменений; новый WrongConstant
+устранён явной проверкой null до `when(state)`, без suppression.
+Два code review (state/revision и Android/Bitmap/controller) — без замечаний.
+Проверки, как и на этапе 1, выполнены на Temurin 21.0.7 без изменения конфигурации.
+Следующий этап — 3; Pigeon, live heartbeat и все `[ride]` ещё открыты.
 
 Отложенные решения и отклонённые посылки:
 
@@ -370,11 +394,11 @@ snapshot и безопасными Android adapters.
 
 Задачи:
 
-- [ ] `[auto]` В `MediaModels.kt` добавить `MediaPlayback`, metadata/media
+- ✅ 23.10.2026 `[auto]` В `MediaModels.kt` добавить `MediaPlayback`, metadata/media
   snapshots и `MediaEvent` (`Active`, `Inactive`, `Metadata`, `Playback`).
   **Что опровергнет посылку:** если reducer не может выразить разницу между
   отсутствием медиа и неизвестным playback state, модель недостаточна.
-- [ ] `[auto]` Provider публикует `SharedFlow<MediaEvent>` и
+- ✅ 23.10.2026 `[auto]` Provider публикует `SharedFlow<MediaEvent>` и
   `StateFlow<MediaSnapshot>` с atomic snapshot/subscription revision seam (§2.7).
   В этом же зелёном этапе мигрировать ВСЕ реальные `DashEngineController`
   callers с nowPlaying на snapshot: минимально forward metadata в нынешнюю
@@ -382,14 +406,14 @@ snapshot и безопасными Android adapters.
   Удалить старый nowPlaying API, не оставлять shim.
   **Что опровергнет посылку:** caller остался на удалённом API или snapshot
   невозможно получить без следующего callback — cutover не завершён.
-- [ ] `[auto]` Реализовать bind/rebind/destroy/stop transitions, выбор
+- ✅ 23.10.2026 `[auto]` Реализовать bind/rebind/destroy/stop transitions, выбор
   `sessions.firstOrNull()`, active + current metadata/playback публикацию и
   тихий no-op без notification access. Не переносить stale token/controller
   при пустом списке, двойной inactive холодного старта и отсутствие unregister
   при stop (§1.2); старый callback после switch/stop не меняет новый snapshot.
   **Что опровергнет посылку:** если старый callback способен публиковать после
   смены token, порядок unsubscribe/register считается сломанным.
-- [ ] `[auto]` Реализовать callback/caches/null-vs-blank и точные fallback tuples
+- ✅ 23.10.2026 `[auto]` Реализовать callback/caches/null-vs-blank и точные fallback tuples
   по §2.8–9; не смешивать `bluconnect.djf.A1` (старое имя `x9k.A1`)
   с service `REForeGroundService.A`. Metadata event: card→marker→art при наличии,
   без дополнительного active; bind/playback публикуют active отдельно.
@@ -397,7 +421,7 @@ snapshot и безопасными Android adapters.
   очищают прежнее true/false до `mediaPlaying=null`, сохраняя `mediaActive=true`.
   **Что опровергнет посылку:** direct initial snapshot теряется из-за counter
   или null и empty имеют один результат — reducer не соответствует контракту.
-- [ ] `[auto]` `AlbumArtEncoder.encode(bitmap: Bitmap?): ByteArray?` через seam:
+- ✅ 23.10.2026 `[auto]` `AlbumArtEncoder.encode(bitmap: Bitmap?): ByteArray?` через seam:
   thumbnail/scaled75×75 с filter=true, JPEG quality50;
   null/failed-compress/empty/exception/>65535 → null, metadata сохраняется.
   Сохранить текущий fallback порта `ALBUM_ART → ART → DISPLAY_ICON`;
@@ -409,7 +433,7 @@ snapshot и безопасными Android adapters.
   **Что опровергнет посылку:** если Android framework не позволяет стабильно
   тестировать bitmap conversion на JVM, оставить framework call behind seam и
   тестировать reducer/result contract.
-- [ ] `[auto]` Provider `playPause(): Unit`, `volumeUp(): Unit`,
+- ✅ 23.10.2026 `[auto]` Provider `playPause(): Unit`, `volumeUp(): Unit`,
   `volumeDown(): Unit`, `mute(): Unit`: null controller/playback → playPause no-op;
   PLAYING → pause, любой другой nonnull → play; volume controller.adjustVolume
   ±1 с FLAG_SHOW_UI=1; mute через AudioManager STREAM_MUSIC, isStreamMute →
@@ -430,6 +454,10 @@ playing=null, новый playback event без `05 19`; null metadata остаё
 отдельным сценарием counter/очистки (§2.8).
 Android live `MediaSession` не нужен для JVM tests; bitmap alias/ownership
 проверяется Android smoke, а не mock-echo.
+Проверено 23.10.2026: `MediaInfoProviderTest`, `MediaEventStreamTest`,
+`MediaMetadataDispatchTest`, Android `AlbumArtEncoderTest` и временный live
+MediaSession smoke; полные результаты — §0.1. Native snapshots пока обновляют
+только прежнюю periodic card и nowPlayingTitle, не wire indicators/Pigeon media-флаги.
 
 ### Этап 3 — Single-writer session и media forwarding [auto]
 

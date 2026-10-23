@@ -233,21 +233,25 @@ firmware-команду для объяснения этого условия н
 
 ## 8. Что из этого есть у нас
 
-Текущие источники: `MediaInfoProvider` (методы `start`, `bind`, `publish`,
-`stop`), `DashSession` (секундный цикл), `K1GCodec.displayText`.
-Это существующий порт, **не** реализация будущего media-автомата.
+Текущие источники:
+[`MediaInfoProvider`](../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/media/MediaInfoProvider.kt),
+[`MediaEventStream`](../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/media/MediaEventStream.kt),
+[`MediaAdapters`](../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/media/MediaAdapters.kt),
+[`AlbumArtEncoder`](../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/media/AlbumArtEncoder.kt),
+`DashEngineController`, `DashSession` (секундный цикл), `K1GCodec.displayText`.
+С 23.10.2026 нативная модель media реализована; событийный wire-путь ещё не подключён.
 Таблица ниже описывает фактическую отправку из сессии, не весь доступный codec API.
 
 | | оригинал | snatch-dash сейчас |
 |---|---|---|
-| `05 0D` | событийно с фильтрами | 1 Гц, если `nowPlaying != null`, без wire-дедупликации |
+| `05 0D` | событийно с фильтрами | 1 Гц из последнего принятого metadata snapshot, без wire-дедупликации |
 | поля | album/title/artist | title/album/artist |
 | обрезка / кодировка | 19 UTF-16 units / lossy char→byte | ICU-транслитерация в ASCII, до 20 байт после расширения |
 | `05 17` | событийно | только `AA` в стартовом бёрсте |
 | `05 19` | playing/paused | нет |
 | `05 58` / `05 40` | маркер и JPEG | нет |
 | `05 4C` / `05 1B` | опрос AudioManager | захваченные `13` / `19` в heartbeat |
-| play/pause, volume, mute | карта §6 | не реализованы как эти действия |
+| play/pause, volume, mute | карта §6 | методы native provider; Dart API и mapping кнопок ещё не подключены |
 | next/previous | transport controls | реализованы |
 
 С 23.10.2026 protocol layer содержит типизированные `MediaActive`,
@@ -260,18 +264,71 @@ heartbeat и захваченный стартовый бёрст не изме�
 Логический `AlbumArt` scalar codec отвергает: отправка требует paced writer,
 а не пачки packets из одного вызова `encode`.
 `VolumeLevel` использует нормализованную целочисленную шкалу с widened arithmetic,
-не Float-формулу оригинала; AudioManager ещё не подключён.
+не Float-формулу оригинала; AudioManager ещё не подключён к heartbeat.
 JVM-тесты и smoke JPEG→packets→JPEG проверяют serialization и сохранность данных,
 но не отображение на приборке и не cadence передачи.
 
-Наш провайдер действительно слушает активные сессии и `onSessionDestroyed`,
-снимает callback при смене контроллера и stop. `publish()` читает текущие
-metadata при metadata/playback callback: null metadata либо пустые/blank title
-и artist очищают `nowPlaying`. Bitmap art читается, но не передаётся.
-Отдельных wire-событий pause/inactive нет: после очистки карточки перестают
-отправляться, но команды очистки приборке не поступает. Поэтому нельзя
-утверждать ни обязательную бесконечную отправку последнего трека, ни его
-исчезновение с экрана.
+Provider владеет `StateFlow<MediaSnapshot>` и `SharedFlow<MediaEvent>`.
+Snapshot содержит монотонную revision, active, nullable playing и metadata с
+готовым JPEG; второй playback в metadata не хранится. Один monitor сериализует
+bind/stop/callbacks и публикацию snapshot. Одна coroutine в scope controller
+передаёт события из неограниченного FIFO в стандартный `MutableSharedFlow`:
+медленный collector задерживает доставку, но не Android callback и не теряет
+события; цена — удержание очереди в памяти до чтения или отмены scope.
+`collectWithSnapshot` сначала регистрирует collector, затем под monitor читает
+snapshot, отдаёт его один раз и пропускает только events с revision не новее
+этой границы. Изменения во время приостановленного replay остаются в очереди.
+Обычный `events` не replay-ит состояние. Provider останавливается до отмены scope.
+
+Выбирается первая активная сессия; повторный start/same-token bind не регистрирует
+дубли. Перед rebind старый callback снимается, token/cache/counter сбрасываются.
+Callbacks несут generation: поздний callback после switch, destroy или stop,
+включая stop→start, не восстанавливает старое состояние. Android callbacks
+приходят через явный main Handler. Нет notification access — нет регистрации.
+
+Initial metadata обходит counter, но проходит dedup. Каждый metadata callback,
+включая null, увеличивает counter: первый пропускается, второй обрабатывается
+и сбрасывает counter. Обработанный null и all-null title/album/artist очищают
+metadata, playback и raw cache и публикуют inactive; all-null проверяется до
+advertisement. Empty/whitespace не равны null. Dedup — nonnull raw id без учёта
+регистра + nonnull raw title с учётом регистра, до advertisement/art. При той же
+паре поздняя обложка, album/artist/ad отдельно не принимаются.
+Normal без title или с пустым title получает title `Now Playing`, пустые album/artist;
+whitespace остаётся как есть. Numeric advertisement≠0 получает album
+`Advertisement`, пустые title/artist. Совместимый wire-порядок полей не меняется.
+Metadata не порождает дополнительный Active; bind и playback публикуют его отдельно.
+PLAYING/PAUSED дают playing=true/false, OTHER/null playback callback — active=true,
+playing=null, без сохранения прошлого known state. Начальный known playback
+также попадает в snapshot/events; это политика порта, не доказательство replay оригинала.
+
+`AlbumArtEncoder` сохраняет порядок выбора `ALBUM_ART → ART → DISPLAY_ICON`,
+thumbnail/scaled 75×75 и JPEG quality50. Заимствованный Bitmap не recycle-ится;
+собственные thumbnail/scaled освобождаются после компрессии, с учётом aliasing.
+Null/failed-compress/empty/exception/>65535 дают no art, сохраняя принятую metadata.
+Ошибки framework getters до encoder оставляют прежний snapshot и не превращаются
+в legacy send fallback. Raw id/title cache коммитится до публикации event.
+Чистая граница `dispatchMediaMetadata` ловит только `IllegalStateException` внутри
+enqueue и добавляет card-only tuple с album `NowPlaying`, не отменяя уже
+поставленные эффекты. Она ещё не подключена к sender; это не отправка fallback сейчас.
+
+Native controls используют текущий Android controller: PLAYING → pause, любой
+другой nonnull playback → play, null controller/playback → no-op.
+Volume меняет controller volume на ±1 с FLAG_SHOW_UI; mute переключает
+AudioManager STREAM_MUSIC без controller gate. Ошибки adapters дают тихий no-op;
+next/previous сохраняют Boolean результат. Новые permission/FGS не добавлены.
+
+Controller запускает snapshot collector до provider.start и переносит metadata
+в прежнюю periodic card без фильтрации пустых/whitespace полей. При media stop,
+после отмены collectors, сам очищает chrome и публикуемый nowPlayingTitle.
+Обычный reconnect активной поездки provider не останавливает. Pigeon media-флаги,
+paced art, события pause/inactive на проводе ещё не подключены: после очистки
+карточки перестают отправляться, но команды очистки приборке пока не поступает.
+Поэтому нельзя утверждать ни удержание карточки, ни её исчезновение с экрана.
+
+23.10.2026 на Android-эмуляторе API 36 проверены реальные Bitmap/JPEG и
+привилегированный smoke с настоящим MediaSession: ART fallback, начальный snapshot,
+pause/OTHER/play, skip/volume, metadata parity, stop/late metadata и mute без
+controller. Это не проверка notification-access UI и не подтверждение приборки.
 
 Порядок, 1 Гц и захваченный heartbeat сохранены. С 20.10.2026 по требованию
 пользователя текст транслитерируется системным Android ICU; границы и error

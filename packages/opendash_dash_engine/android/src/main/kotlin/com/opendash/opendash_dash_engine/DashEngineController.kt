@@ -48,6 +48,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
@@ -209,7 +210,7 @@ class DashEngineController(
     private val snapshots = MapSnapshotProvider(context)
     private val overlays = OverlayRenderer()
     private var toneGenerator: ToneGenerator? = null
-    private val mediaInfo = MediaInfoProvider(context)
+    private val mediaInfo = MediaInfoProvider(context, scope)
     private val callController = CallController(context)
     private val powerManager = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
 
@@ -1041,24 +1042,25 @@ class DashEngineController(
     }
 
     /**
-     * Forwards the phone's now-playing/incoming-call state to the dash via
-     * `DashSession.updateNowPlaying`/`updateCall`, so it shows up in the
-     * dash's own media/call cards. Ported from `DashViewModel.startMediaForwarding`.
-     * No-ops silently if notification access hasn't been granted — see
-     * [isNotificationAccessGranted].
+     * Collect before provider start so its initial MediaSession snapshot is visible.
+     * This stage forwards metadata into the existing periodic card; event-driven
+     * wire sequences and playback indicators belong to the single-writer cutover.
+     * Notification access is optional — see [isNotificationAccessGranted].
      */
     private fun startMediaForwarding() {
-        mediaInfo.start()
         mediaForwardJob?.cancel()
-        mediaForwardJob = scope.launch {
-            mediaInfo.nowPlaying.collect { np ->
-                updateNowPlaying(np?.title, np?.album.orEmpty(), np?.artist.orEmpty())
+        mediaForwardJob = scope.launch(start = CoroutineStart.UNDISPATCHED) {
+            mediaInfo.snapshot.collect { snapshot ->
+                val np = snapshot.metadata
+                // Empty/whitespace fields are valid metadata, unlike absence of metadata.
+                // Do not route this through the legacy external title-only filter.
+                chrome.update { it.copy(nowPlaying = np?.let { NowPlaying(it.title, it.album, it.artist) }) }
                 inputs.update { it.copy(nowPlayingTitle = np?.title) }
                 publishState()
             }
         }
         callForwardJob?.cancel()
-        callForwardJob = scope.launch {
+        callForwardJob = scope.launch(start = CoroutineStart.UNDISPATCHED) {
             CallInfoProvider.incomingCall.collect { call ->
                 // Filtered to ringing calls only, same as the line above — an
                 // active/outgoing call has nothing to "answer", so surfacing it
@@ -1071,12 +1073,17 @@ class DashEngineController(
                 publishState()
             }
         }
+        mediaInfo.start()
     }
 
     private fun stopMediaForwarding() {
         mediaForwardJob?.cancel(); mediaForwardJob = null
         callForwardJob?.cancel(); callForwardJob = null
         mediaInfo.stop()
+        // Collectors are cancelled: provider.stop() cannot clear their consumers for us.
+        chrome.update { it.copy(nowPlaying = null) }
+        inputs.update { it.copy(nowPlayingTitle = null) }
+        publishState()
     }
 
     fun setDestination(name: String?, lat: Double?, lng: Double?) {

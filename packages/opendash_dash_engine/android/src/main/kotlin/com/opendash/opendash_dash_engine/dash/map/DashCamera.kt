@@ -26,7 +26,7 @@ object DashCamera {
      * navigation does it. How this reads on the round panel is unmodeled: the
      * bezel crops the frame's corners and the frame→visible-circle mapping
      * lives nowhere in code, so the value is confirmed by ride
-     * (plans/active/2026-10-01-forward-view.md, stage 2). North-up centres
+     * (plans/done/2026-10-01-forward-view.md, stage 2). North-up centres
      * instead — with the map not turning, there is no "ahead" to favour.
      */
     const val NAV_PIVOT_Y = 0.85f

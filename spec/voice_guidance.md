@@ -6,12 +6,15 @@
 [`lib/l10n/app_ru.arb`](../lib/l10n/app_ru.arb),
 [`lib/l10n/app_en.arb`](../lib/l10n/app_en.arb),
 [`lib/nav/maneuver_cue_scheduler.dart`](../lib/nav/maneuver_cue_scheduler.dart),
-[`lib/main.dart`](../lib/main.dart)
+[`lib/main.dart`](../lib/main.dart),
+[`lib/nav/voice_settings.dart`](../lib/nav/voice_settings.dart),
+[`lib/state/voice_settings.dart`](../lib/state/voice_settings.dart),
+[`VoiceOutput.kt`](../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/voice/VoiceOutput.kt),
+[`VoiceAdapters.kt`](../packages/opendash_dash_engine/android/src/main/kotlin/com/opendash/opendash_dash_engine/voice/VoiceAdapters.kt)
 
-Подсистема озвучивает будущие манёвры независимо от открытого экрана. Экранный
-выбор режима в эту реализацию не входит: для полевой проверки каждый запуск
-принудительно устанавливает и сохраняет `VoiceMode.full` до старта
-контроллеров.
+Подсистема озвучивает манёвры, прибытие и потерю/восстановление связи с дэшем
+независимо от открытого экрана. У всех источников один сохранённый выбор:
+включено/выключено, громкость 25/50/75% и политика музыки.
 
 ## Из чего собрана
 
@@ -19,8 +22,11 @@
 |---|---|
 | `NavLoop` | 1-Гц навигационный тик, расстояния до следующего манёвра и назначения; сброс при старте маршрута и успешном перестроении |
 | `ManeuverCueScheduler` | чистый автомат порогов, дедупликация и пропуск устаревших подсказок |
-| `VoiceManager` | локализованная фраза манёвра, режим, TTS и чайм |
-| `main()` | временная принудительная запись `VoiceMode.full` при каждом запуске |
+| `VoiceManager` | локализованные фразы, загруженный snapshot настроек, миграция preferences и последовательная запись изменений |
+| `main()` | загрузка настроек до запуска контроллеров; до завершения загрузки объявления молчат |
+| `VoiceSettingsController` | синхронный UI snapshot; изменения делегируются единственному storage owner `VoiceManager` |
+| `VoiceOutput` | одна активная операция Android TTS, её terminal result и конкретный audio-focus lease |
+| `OpendashDashEnginePlugin` | lifetime владельца речи от engine attach до detach, независимо от Activity и dash-соединения |
 
 `NavLoop` не ждёт TTS: `maybeAnnounce()` запускается как fire-and-forget, чтобы
 речь не задерживала следующий навигационный тик. Планировщик отмечает событие
@@ -58,14 +64,70 @@
 старте маршрута и после успешного перестроения; связь перестроения с этим
 сбросом описана в [`route_restructuring.md`](./route_restructuring.md).
 
-## Режим, язык и границы проверки
+## Настройки, язык и аудиофокус
+
+Defaults: **включено, 50%, приглушать музыку**. Preferences:
+`voice_enabled` (`bool`), `voice_volume` (`low|medium|high`),
+`voice_music_policy` (`duck|pauseAndResume|unchanged`). Каждое отсутствующее,
+неизвестное или неверно типизированное поле получает свой default без
+потери корректных соседних полей. Валидный новый enabled приоритетнее
+legacy `voice_mode`; иначе `off` становится false, `full/chime` — true.
+Legacy key удаляется только после успешной записи всех трёх полей.
+Обычный startup ничего не перезаписывает.
+
+Изменения snapshot применяются до ожидания диска. Off сразу отправляет
+`stopVoice`; громкость/политика действуют со следующей фразы. Записи
+сериализованы; отказ записи логируется через `talker.error`, не отменяет
+runtime выбор и не ломает следующие записи. Off возвращает до scheduler,
+изменение настроек не сбрасывает уже отмеченные cues.
+
+**С 25.10.2026 отменена временная принудительная запись `VoiceMode.full`**
+при каждом запуске: она была введена для полевой проверки и перетирала
+выбор райдера. `VoiceMode`, chime и `flutter_tts` удалены; иначе старые
+источники речи могли бы обходить общее выключение и audio focus.
 
 `VoiceManager` выбирает `ru-RU` для русской локали устройства и `en-US` для
-остальных, затем передаёт фразу в `flutter_tts`. `VoiceMode.chime` и
-`VoiceMode.off` остаются в модели для отдельной задачи экранного выбора, но
-`main()` сейчас намеренно перезаписывает сохранённое значение на `full`.
-Поэтому уведомления о потере и восстановлении связи с дэшем тоже произносятся,
-а не подаются чаймом.
+остальных и вызывает Pigeon `speakVoice`. Future завершается по окончании
+или отмене речи, а не при enqueue. Native error логируется и не выходит в
+fire-and-forget навигацию; `cancelled`/`focusDenied` штатны, fallback нет.
+Уже отмеченная подсказка после ошибки не повторяется.
+
+| Политика | Audio focus |
+|---|---|
+| `duck` | `AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK` |
+| `pauseAndResume` | `AUDIOFOCUS_GAIN_TRANSIENT` |
+| `unchanged` | без запроса focus |
+
+TTS и focus используют `USAGE_ASSISTANCE_NAVIGATION_GUIDANCE` /
+`CONTENT_TYPE_SPEECH`. Громкость — `KEY_PARAM_VOLUME`, коэффициент речи
+относительно системной громкости; приложение не меняет stream volume и
+не отправляет чужому плееру play/pause. Восстановление музыки зависит от
+focus handler конкретного плеера, не гарантируется для всех приложений.
+Android 15+ может отказать в focus без foreground app/service: фраза
+пропускается, новый service ради неё не создаётся.
+
+Владелец лениво инициализирует TTS без focus, обслуживает только последнюю
+операцию и не держит очередь. Замещение сначала завершает A и освобождает
+её request, затем запускает B с новым lease. TTS callbacks проверяют
+utterance ID, focus callbacks — операцию и lease; поздние события A не
+меняют B. Любая потеря focus отменяет речь, gain не возобновляет её.
+Terminal path инвалидирует операцию до cleanup и завершает result ровно
+один раз даже при исключениях stop/release. Stop во время initialization
+не даёт позднему init произнести отменённую фразу. Init failure кешируется
+до пересоздания engine owner; отсутствующие голосовые данные дают ошибку,
+а не другой язык, beep или автоматическую установку.
+
+Все переходы и callbacks исполняются на main. Host suspend работа принадлежит
+plugin scope, с `UNDISPATCHED` для регистрации до ожиданий и
+`Main.immediate` для доставки terminal result во время dispose до
+`job.cancel()`. Engine detach останавливает/освобождает/завершает речь и
+вызывает shutdown до controller teardown. Activity recreation, закрытие
+настроек и разрыв dash-соединения владельца не уничтожают.
+
+Отдельный focus-helper поверх прежнего `flutter_tts` отвергнут 25.10.2026:
+его Dart callbacks не идентифицировали utterance, поэтому позднее завершение
+старой фразы могло освободить focus новой. Идентичность и cleanup теперь
+принадлежат одному нативному владельцу.
 
 Все типы `ManeuverType` озвучиваются собственными RU/EN-фразами из
 `AppLocalizations`: прямо, плавные и резкие повороты, развилки, обычные
@@ -88,6 +150,10 @@ SDK-аннотации маршрута запрашиваются на англ
 Язык речи при английском названии улицы, сохранение левого/правого направления
 и озвучивание номера съезда проверяются на границе TTS в
 [`test/nav/voice_manager_test.dart`](../test/nav/voice_manager_test.dart).
+Миграция, типизированное восстановление и порядок записей проверяются в
+[`test/state/voice_settings_test.dart`](../test/state/voice_settings_test.dart);
+native terminal paths — в
+[`VoiceOutputTest.kt`](../packages/opendash_dash_engine/android/src/test/kotlin/com/opendash/opendash_dash_engine/voice/VoiceOutputTest.kt).
 Работа TTS при погашенном экране и фактическое попадание фраз в точки маршрута
 требуют заезда; критерии находятся в
 [`docs/ON_HARDWARE_VERIFICATION_RU.md`](../docs/ON_HARDWARE_VERIFICATION_RU.md),

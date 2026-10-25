@@ -161,11 +161,6 @@ class AppLocalizationsEn extends AppLocalizations {
   String get routePreviewGo => 'Let\'s go';
 
   @override
-  String routeVoiceGuidanceTooltip(String mode) {
-    return 'Voice guidance: $mode';
-  }
-
-  @override
   String get routeSaveDestinationTooltip => 'Save this destination';
 
   @override
@@ -194,13 +189,34 @@ class AppLocalizationsEn extends AppLocalizations {
       'Routing failed — check your connection';
 
   @override
-  String get voiceModeOff => 'off';
+  String get settingsVoiceTitle => 'Voice guidance';
 
   @override
-  String get voiceModeChime => 'chime';
+  String get voiceSettingsEnabled => 'Voice announcements';
 
   @override
-  String get voiceModeFull => 'full';
+  String get voiceSettingsVolume => 'Volume';
+
+  @override
+  String get voiceSettingsVolumeLow => 'Low';
+
+  @override
+  String get voiceSettingsVolumeMedium => 'Medium';
+
+  @override
+  String get voiceSettingsVolumeHigh => 'High';
+
+  @override
+  String get voiceSettingsDuringAnnouncements => 'During announcements';
+
+  @override
+  String get voiceSettingsMusicDuck => 'Lower music and other sounds';
+
+  @override
+  String get voiceSettingsMusicPause => 'Pause music';
+
+  @override
+  String get voiceSettingsMusicUnchanged => 'Leave other audio unchanged';
 
   @override
   String get dashStageOffline => 'Offline';

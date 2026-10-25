@@ -15,6 +15,8 @@ export 'src/messages.g.dart'
         DashLogLevel,
         DashStage,
         NavPoint,
+        VoiceMusicPolicy,
+        VoiceSpeechResult,
         WifiStatus;
 
 /// Dart-side façade over the native dash engine (WiFi pairing, K1G protocol
@@ -141,7 +143,24 @@ class DashEngine {
   Future<void> updateCall(String? caller) =>
       OpendashDashEnginePlatform.instance.updateCall(caller);
 
-  Future<void> playChime() => OpendashDashEnginePlatform.instance.playChime();
+  /// Speaks with per-utterance focus, completing only when speech ends or stops.
+  ///
+  /// A new utterance cancels its predecessor, including during TTS initialization.
+  /// Focus denial skips speech; native initialization/playback errors propagate.
+  Future<VoiceSpeechResult> speakVoice({
+    required String text,
+    required String languageTag,
+    required double volume,
+    required VoiceMusicPolicy policy,
+  }) => OpendashDashEnginePlatform.instance.speakVoice(
+    text: text,
+    languageTag: languageTag,
+    volume: volume,
+    policy: policy,
+  );
+
+  /// Cancels active or initializing speech and releases its audio focus.
+  Future<void> stopVoice() => OpendashDashEnginePlatform.instance.stopVoice();
 
   Future<bool> answerCall() => OpendashDashEnginePlatform.instance.answerCall();
   Future<bool> hangupCall() => OpendashDashEnginePlatform.instance.hangupCall();

@@ -124,6 +124,18 @@ enum DashLogLevel {
   error;
 }
 
+enum VoiceMusicPolicy {
+  duck,
+  pauseAndResume,
+  unchanged;
+}
+
+enum VoiceSpeechResult {
+  completed,
+  cancelled,
+  focusDenied;
+}
+
 /// One position on the route line sent to the dash.
 ///
 /// A class rather than the `List<List<double>>` this used to be: a pair of bare
@@ -606,23 +618,29 @@ class _PigeonCodec extends StandardMessageCodec {
     }    else if (value is DashLogLevel) {
       buffer.putUint8(131);
       writeValue(buffer, value.index);
-    }    else if (value is NavPoint) {
+    }    else if (value is VoiceMusicPolicy) {
       buffer.putUint8(132);
-      writeValue(buffer, value.encode());
-    }    else if (value is DashEngineState) {
+      writeValue(buffer, value.index);
+    }    else if (value is VoiceSpeechResult) {
       buffer.putUint8(133);
-      writeValue(buffer, value.encode());
-    }    else if (value is DashButtonEvent) {
+      writeValue(buffer, value.index);
+    }    else if (value is NavPoint) {
       buffer.putUint8(134);
       writeValue(buffer, value.encode());
-    }    else if (value is DashLogEntry) {
+    }    else if (value is DashEngineState) {
       buffer.putUint8(135);
       writeValue(buffer, value.encode());
-    }    else if (value is DashConfigView) {
+    }    else if (value is DashButtonEvent) {
       buffer.putUint8(136);
       writeValue(buffer, value.encode());
-    }    else if (value is BatteryOptimisationStatus) {
+    }    else if (value is DashLogEntry) {
       buffer.putUint8(137);
+      writeValue(buffer, value.encode());
+    }    else if (value is DashConfigView) {
+      buffer.putUint8(138);
+      writeValue(buffer, value.encode());
+    }    else if (value is BatteryOptimisationStatus) {
+      buffer.putUint8(139);
       writeValue(buffer, value.encode());
     } else {
       super.writeValue(buffer, value);
@@ -642,16 +660,22 @@ class _PigeonCodec extends StandardMessageCodec {
         final value = readValue(buffer) as int?;
         return value == null ? null : DashLogLevel.values[value];
       case 132:
-        return NavPoint.decode(readValue(buffer)!);
+        final value = readValue(buffer) as int?;
+        return value == null ? null : VoiceMusicPolicy.values[value];
       case 133:
-        return DashEngineState.decode(readValue(buffer)!);
+        final value = readValue(buffer) as int?;
+        return value == null ? null : VoiceSpeechResult.values[value];
       case 134:
-        return DashButtonEvent.decode(readValue(buffer)!);
+        return NavPoint.decode(readValue(buffer)!);
       case 135:
-        return DashLogEntry.decode(readValue(buffer)!);
+        return DashEngineState.decode(readValue(buffer)!);
       case 136:
-        return DashConfigView.decode(readValue(buffer)!);
+        return DashButtonEvent.decode(readValue(buffer)!);
       case 137:
+        return DashLogEntry.decode(readValue(buffer)!);
+      case 138:
+        return DashConfigView.decode(readValue(buffer)!);
+      case 139:
         return BatteryOptimisationStatus.decode(readValue(buffer)!);
       default:
         return super.readValueOfType(type, buffer);
@@ -1073,9 +1097,27 @@ class DashEngineApi {
     ;
   }
 
-  /// Turn-guidance chime. No Dart equivalent to `ToneGenerator`, so it lives here.
-  Future<void> playChime() async {
-    final pigeonVar_channelName = 'dev.flutter.pigeon.opendash_dash_engine.DashEngineApi.playChime$pigeonVar_messageChannelSuffix';
+  Future<VoiceSpeechResult> speakVoice(String text, String languageTag, double volume, VoiceMusicPolicy policy) async {
+    final pigeonVar_channelName = 'dev.flutter.pigeon.opendash_dash_engine.DashEngineApi.speakVoice$pigeonVar_messageChannelSuffix';
+    final pigeonVar_channel = BasicMessageChannel<Object?>(
+      pigeonVar_channelName,
+      pigeonChannelCodec,
+      binaryMessenger: pigeonVar_binaryMessenger,
+    );
+    final Future<Object?> pigeonVar_sendFuture = pigeonVar_channel.send(<Object?>[text, languageTag, volume, policy]);
+    final pigeonVar_replyList = await pigeonVar_sendFuture as List<Object?>?;
+
+    final Object? pigeonVar_replyValue = _extractReplyValueOrThrow(
+        pigeonVar_replyList,
+        pigeonVar_channelName,
+        isNullValid: false,
+    )
+    ;
+    return pigeonVar_replyValue! as VoiceSpeechResult;
+  }
+
+  Future<void> stopVoice() async {
+    final pigeonVar_channelName = 'dev.flutter.pigeon.opendash_dash_engine.DashEngineApi.stopVoice$pigeonVar_messageChannelSuffix';
     final pigeonVar_channel = BasicMessageChannel<Object?>(
       pigeonVar_channelName,
       pigeonChannelCodec,

@@ -5,6 +5,9 @@ import com.opendash.opendash_dash_engine.util.DebugLog
 import com.opendash.opendash_dash_engine.media.MediaInfoProvider
 import com.opendash.opendash_dash_engine.util.BatteryOptimisation
 import com.opendash.opendash_dash_engine.util.RideDiagnostics
+import com.opendash.opendash_dash_engine.voice.AndroidVoiceTtsAdapter
+import com.opendash.opendash_dash_engine.voice.AndroidVoiceFocusAdapter
+import com.opendash.opendash_dash_engine.voice.VoiceOutput
 import io.flutter.embedding.engine.plugins.activity.ActivityAware
 import io.flutter.embedding.engine.plugins.activity.ActivityPluginBinding
 import io.flutter.embedding.engine.plugins.FlutterPlugin
@@ -15,6 +18,7 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.async
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -114,6 +118,7 @@ class OpendashDashEnginePlugin :
     }
     private val scope = CoroutineScope(Dispatchers.Main + job + exceptionHandler)
     private var controller: DashEngineController? = null
+    private var voiceOutput: VoiceOutput? = null
 
     /**
      * The host Activity, while there is one.
@@ -219,6 +224,10 @@ class OpendashDashEnginePlugin :
         DebugLog.i(TAG) { "Plugin attached — pid=$pid processUptime=${processUptimeMs}ms" }
 
         appContext = binding.applicationContext
+        voiceOutput = VoiceOutput(
+            AndroidVoiceTtsAdapter(binding.applicationContext),
+            AndroidVoiceFocusAdapter(binding.applicationContext),
+        )
         controller = DashEngineController(
             context = binding.applicationContext,
             scope = scope,
@@ -381,7 +390,33 @@ class OpendashDashEnginePlugin :
 
     override fun updateCall(caller: String?) = engine().updateCall(caller)
 
-    override fun playChime() = engine().playChime()
+    override suspend fun speakVoice(
+        text: String,
+        languageTag: String,
+        volume: Double,
+        policy: VoiceMusicPolicy,
+    ): VoiceSpeechResult {
+        val output = attachedVoiceOutput()
+        // Finish the owned child synchronously during dispose, before job.cancel().
+        // Plain Main would queue its await continuation and lose CANCELLED to cancellation.
+        return scope.async(Dispatchers.Main.immediate, start = CoroutineStart.UNDISPATCHED) {
+            output.speak(text, languageTag, volume, policy).await()
+        }.await()
+    }
+
+    override suspend fun stopVoice() {
+        val output = attachedVoiceOutput()
+        scope.async(Dispatchers.Main.immediate, start = CoroutineStart.UNDISPATCHED) {
+            output.stop()
+        }.await()
+    }
+
+    private fun attachedVoiceOutput(): VoiceOutput {
+        if (!scope.isActive) {
+            throw DashPigeonError("ENGINE_GONE", "Plugin detached before voice could run")
+        }
+        return voiceOutput ?: throw DashPigeonError("ENGINE_GONE", "Voice owner not attached")
+    }
 
     override fun answerCall(): Boolean = engine().answerCall()
 
@@ -437,6 +472,8 @@ class OpendashDashEnginePlugin :
         logEvents.detach()
         if (DebugLog.sink === debugLogSink) DebugLog.sink = null
         debugLogSink = null
+        voiceOutput?.dispose()
+        voiceOutput = null
         controller?.dispose()
         controller = null
         appContext = null

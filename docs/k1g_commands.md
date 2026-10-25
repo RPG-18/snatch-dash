@@ -451,8 +451,9 @@ describes the implemented native/Dart boundary and single writer:
   normalized integer buckets, silence=`10`, invalid/unavailable stream fallback
   `13`/`19`. Fixed 11-TLV heartbeat, no `INFOTAINMENT` mode gate.
 - **Controls are available directly:** play/pause, volume± and mute through
-  public Dart API. This does not change physical-button mapping, its current
-  title gate, call precedence or ACK-before-forward.
+  public Dart API. Since 2026-10-23, buttons `05/06/07` use play/pause,
+  music volume up/down when `mediaActive`, after call precedence; inactive
+  consumes them without track/zoom fallback. See the button contract below.
 
 Firmware11.63 experiments and predeclared fallback branches are in
 [`hardware checklist`, §6](ON_HARDWARE_VERIFICATION.md#6-media--call-bridge-native-new-plugin-code)
@@ -549,12 +550,19 @@ the work — and the `06 80` echo goes out **before** the `06 0C` packets.
   presumably have greyed the icon out. That is exactly the feedback we lack.
 - **The zoom scales differ on purpose.** The original steps 2 whole levels with
   a floor of `8.0`; ours is in hundredths — `1000…1500`, step `50` (half a level).
-- **Our code meanings come from `open-dash`, not from here.** The comment in
-  [`dash_button_controller.dart`](../lib/state/dash_button_controller.dart) cites
-  that port's `DashViewModel` constants. The table above is from the official
-  app, and they disagree on `05`/`06`/`07`: ours calls them "previous track" and
-  "answer/reject call", here they are play/pause and media volume. Hardware
-  settles that, not reading.
+- **Narrow button cutover, 2026-10-23:** the user confirmed physical up means
+  music volume up, down means volume down, center means pause. After incoming
+  call `06` answer / active call `07` hangup precedence, `05` calls
+  `mediaPlayPause`, `06` `mediaVolumeUp`, `07` `mediaVolumeDown` only when
+  `mediaActive`, independent of title/playing. Inactive consumes these codes
+  without action, track skip or zoom. Native toggle pauses PLAYING, resumes
+  PAUSED/OTHER, and no-ops on null playback. Their old track/zoom aliases are gone.
+  `09/0A` and next alias `22` retain `nowPlayingTitle != null` (including `''`)
+  track routing, otherwise zoom; `13/14` remain zoom. Call precedence and
+  ACK-before-forward are unchanged. No paired-code timing debounce is added.
+  Mute/call-volume mapping and a new `09/0A` gate are not implemented or accepted.
+  This user confirmation is not hardware re-verification of the corrected build;
+  see [Findings](ON_HARDWARE_VERIFICATION.md#findings).
 
 ## Composite blocks
 

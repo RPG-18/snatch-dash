@@ -6,14 +6,15 @@ import 'package:shared_preferences/shared_preferences.dart';
 /// — see that method's doc for why (avoids a hydration race at app startup).
 const prefsKeyAutoUpdateEnabled = 'auto_update_enabled';
 
-/// Persisted "Автоматическое обновление" toggle (Settings screen's
-/// «Обновления» card) — gates both the on-launch check
-/// (`AppUpdateController.checkOnLaunch`) and whether the card's channel
-/// switch/status section is shown at all. Same `SharedPreferences`-backed
-/// load-in-`build()` shape as `CurrencySettingsController` — see that
-/// class's doc for the `_generation` race-guard rationale. Defaults to
-/// `true` — matches the auto-check-every-launch behaviour this toggle was
-/// added on top of, so existing installs don't silently stop checking.
+/// Persisted "Автоматическое обновление" toggle for the Settings updates card.
+///
+/// Gates the on-launch check (`AppUpdateController.checkOnLaunch`) and
+/// visibility of the nightly channel switch, not manual check results or
+/// installation actions. Same `SharedPreferences`-backed load-in-`build()`
+/// shape as `CurrencySettingsController` — see that class's doc for the
+/// `_generation` race-guard rationale. Defaults to `true` — matches the
+/// auto-check-every-launch behaviour this toggle was added on top of, so
+/// existing installs don't silently stop checking.
 class AutoUpdateController extends Notifier<bool> {
   int _generation = 0;
 

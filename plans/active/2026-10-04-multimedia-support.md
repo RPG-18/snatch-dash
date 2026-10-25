@@ -43,6 +43,32 @@ wire формы проверяются отдельно. Unresolved hardware н�
 
 ## 0.1. Статус
 
+**Текущий статус кнопок, 23.10.2026 (после этапа 6).** Пользователь подтвердил
+физическое назначение вверх/вниз/центра: громкость музыки +/−/пауза.
+Принят узкий cutover `05/06/07`; действующий контракт —
+[`spec/multimedia.md`, §8](../../spec/multimedia.md#8-что-из-этого-есть-у-нас).
+После прежнего call precedence эти коды требуют только `mediaActive`, при
+inactive поглощаются без skip/zoom; `09/0A/22` сохраняют title gate, `13/14` zoom.
+Это отдельное уточнение прежнего запрета менять mapping, не принятие всей
+official map: `03/04` call-volume, `08` mute и новый gate `09/0A` не внедрены.
+Исторические записи этапов 5–6 ниже описывают состояние до этого cutover.
+
+Основание: стационарная проверка мультимедиа на Huawei HBN-LX9, сборка
+`93e3f9f3c+dirty`, `ride-20261023-180816.log` /
+`/tmp/snatch-media-20261023-180816.pcapng`. Старые `06/07` делали skip,
+`05` previous; все 64 кнопки получили ACK. Четыре пары `07→05` за 39–224 мс
+давали двойной previous, но одно это физическое нажатие или два, неизвестно:
+временной debounce не вводится. Это не заезд и не аппаратная перепроверка
+исправленной сборки. 24 декодируемых JPEG 75×75 не доказывают отображение.
+Подробности — Findings обеих hardware checklist; остальные гейты этапа 7 открыты.
+
+Проверки узкого cutover: root `flutter test` — **143 теста успешно**,
+`flutter analyze` — без замечаний. Отдельный executable smoke через Flutter
+engine проверил production Riverpod dispatcher и Dart façade: titleless active,
+повтор up, down, pause/resume, inactive без skip/zoom и call precedence.
+Плеер в smoke имитировался; Android controls и физический дэш этим запуском
+не проверялись. Временный скрипт и assets удалены, на телефон сборка не установлена.
+
 Состояние на 22.10.2026: реализация не начата. Исследование от
 04.10.2026 относилось к 10.1.22; его факты и источники остаются в
 [`spec/multimedia.md`](../../spec/multimedia.md). Повторная статическая сверка
@@ -234,9 +260,10 @@ Code review исправил неточное «непустой title»: тек
 
 Отложенные решения и отклонённые посылки:
 
-- порядок, ширина `05 0D`, удаление 1 Hz-повтора и mapping кнопок —
-  независимые решения после проверки прошивки 11.63; encoding baseline с
-  20.10.2026 — ICU-транслитерация, не прежний UTF-8;
+- порядок, ширина `05 0D`, удаление 1 Hz-повтора и оставшаяся official mapping —
+  независимые решения после проверки прошивки 11.63; узкий cutover `05/06/07`
+  принят отдельно 23.10.2026 (§0.1). Encoding baseline с 20.10.2026 —
+  ICU-транслитерация, не прежний UTF-8;
 - ❌ 04.10.2026 универсальный отдельный пустой `FF` после любого art:
   для singleton оригинал добавляет пустой `FF`, при ненулевом остатке финальный
   `FF` несёт данные. Уточнение 22.10.2026: при exact-multiple ≥2000 оригинал
@@ -448,14 +475,14 @@ SHA-256: `889b9c42f21ef426c114cadac788c9c6220a29dc686e8a5b0e3fbd07a0e4f404`.
     Подавленный dedup callback ничего не отменяет; поздняя обложка при прежней
     паре id/title отдельно не принимается. Это политика порта, не вывод из
     декомпиляции; отдельная очередь/поток для замены art не вводится.
-12. Call answer/reject precedence и текущие `_isLooseNextButton`/
-    `_isLoosePreviousButton` не меняются до hardware gate. Новые direct API
-    доступны независимо от текущего remap.
-    ACK-before-forward — намеренный существующий контракт порта, сохраняется,
-    хотя оригинал выполняет action-before-ACK. Будущий mapping использует
-    stateful `mediaActive` для `05/06/07/09/0A`, не непустой title; это политика
-    порта вместо original listener gate. Mute и call-volume этим media gate
-    не ограничиваются; mute не требует controller.
+12. Call answer/reject precedence и ACK-before-forward сохраняются; оригинал
+    выполняет action-before-ACK. Уточнение 23.10.2026: после call precedence
+    `05/06/07` используют `mediaActive`, не title/playing; inactive поглощает
+    их без track/zoom. Старые aliases этих трёх кодов удалены.
+    `09/0A/22` сохраняют title-based track/zoom, `13/14` — zoom.
+    Direct API доступны независимо. Оставшаяся official map, включая
+    mute/call-volume и mediaActive gate для `09/0A`, остаётся кандидатом
+    hardware gate, не текущим контрактом.
 
 Механическая проверка: `K1GGoldenTest`, pure tests helpers, `DashSessionTest`,
 provider/reducer tests, Dart button tests, `flutter analyze`,
@@ -843,16 +870,21 @@ Flutter tests и analyze, native lint и public-API emulator smoke прошли 
   heartbeat gap ≤1 s плюс тот же измеренный jitter, art spacing≥10 ms.
   **Что опровергнет посылку:** новая шкала/transfer даёт неправильный volume
   или gaps сверх baseline — отклонить конкретную ветвь, сохранить captured fallback.
-- [ ] `[ride]` Official buttons проверять ТОЛЬКО явно gated fixture mapping:
-  `03/04` call-volume, `05` play/pause, `06/07` music volume, `08` mute,
-  `09/0A` next/previous; active/no-media/ringing call и call precedence.
-  Проверять отдельно original code→phone action и портовые ACK-before-forward/
-  mediaActive-gate для `05/06/07/09/0A`: это не gate оригинального listener.
-  Пустой title не выключает mediaActive; mute/call-volume доступны без него.
-  Phone action и ACK проверить вместе с pcap; старый mapping APK не доказывает
-  новый mapping. Код `18` не считать play и не добавлять как alias.
-  **Что опровергнет посылку:** любое расхождение оставляет текущий mapping,
-  direct API доступны независимо; не принимать alias как доказательство.
+- [ ] `[ride]` Повторно проверить исправленные production `05/06/07`:
+  play/pause, music volume± при mediaActive после прежнего call precedence;
+  active/paused/OTHER/null playback, no-media, empty/null title, ringing/active
+  call, каждую кнопку дважды. Inactive не даёт skip/zoom; `09/0A/22` сохраняют
+  title gate, `13/14` zoom. Phone action и ACK записать вместе с pcap:
+  evidence старой сборки и подтверждение назначения не доказывают исправленную.
+  **Что опровергнет посылку:** несовпадение действия с подтверждённым назначением
+  оставляет перепроверку открытой, а не разрешает весь official mapping.
+- [ ] `[ride]` Оставшиеся official buttons проверять только в gated fixture:
+  `03/04` call-volume, `08` mute, candidate mediaActive-gate для `09/0A`.
+  Они не реализованы/не приняты в production. Отделять original code→phone
+  action от ACK-before-forward и mediaActive policy порта (не listener gate
+  оригинала). `18` не считать play и не добавлять как alias.
+  **Что опровергнет посылку:** любое расхождение сохраняет текущий контракт;
+  direct API доступны независимо, alias не доказывает official mapping.
 - [ ] `[ride]` Записать findings и обновить обе checklist copies, не объявляя
   codec behavior hardware verified.
   **Что опровергнет посылку:** недоступное железо оставляет все ride items
@@ -867,8 +899,9 @@ Flutter tests и analyze, native lint и public-API emulator smoke прошли 
 - retention без periodic подтверждён → удалить только repeat, иначе1 Hz;
 - каждый marker/playback/art path принят или отклонён отдельно по evidence;
   best-effort не означает hardware verified;
-- official buttons подтверждены → применить mapping/stateful gate; иначе
-  сохранить нынешний mapping; call precedence и ACK-before-forward неизменны;
+- оставшиеся official buttons подтверждены → применить только проверенную часть
+  mapping/stateful gate; иначе сохранить контракт после cutover `05/06/07`;
+  call precedence и ACK-before-forward неизменны;
 - live volumes и cadence принимаются отдельно; нет firmware-mode ветви.
 
 **Готово:** ВСЕ `[ride]` оценены: приняты либо явно отклонены с evidence,
@@ -883,8 +916,8 @@ Flutter tests и analyze, native lint и public-API emulator smoke прошли 
   без evidence.
 - Не переносить album-art chunking в frame/encoder loop и не использовать
   `Thread.sleep` в control writer.
-- Не менять текущие button aliases, call precedence или `05 0D` fallback до
-  hardware gate.
+- Не менять оставшиеся button aliases, call precedence или `05 0D` fallback
+  до hardware gate; узкое исключение `05/06/07` от 23.10.2026 описано в §0.1.
 - Сохранять KDoc с датами и объяснениями полевых находок; не заменять их
   пересказом очевидного кода.
 - Перед каждым commit запускать `/code-review` по diff; находки либо исправить,

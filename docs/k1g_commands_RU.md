@@ -451,8 +451,9 @@ intra-value prefix we saw isn't decoded yet»*, и функция намерен
   целочисленные корзины, silence=`10`, invalid/unavailable stream fallback
   `13`/`19`. Фиксированные 11 TLV heartbeat, без `INFOTAINMENT` mode gate.
 - **Controls доступны напрямую:** play/pause, volume± и mute через public
-  Dart API. Это не меняет физический mapping кнопок, нынешний title gate,
-  call precedence и ACK-before-forward.
+  Dart API. С 23.10.2026 кнопки `05/06/07` вызывают play/pause и громкость
+  музыки ± при `mediaActive`, после call precedence; inactive поглощает их
+  без track/zoom fallback. Контракт кнопок — ниже.
 
 Опыты firmware11.63 и предопределённые fallback-ветви —
 [`hardware checklist`, §6](ON_HARDWARE_VERIFICATION_RU.md#6-мост-медиа--звонков-нативный-новый-код-плагина)
@@ -548,12 +549,20 @@ if (maxZoom - d2 < 2.0)        { send(hbg.N2); }                  // 06 0C 0001 
   обратная связь, которой у нас нет.
 - **Шкалы зума разные осознанно.** У оригинала шаг 2 уровня и пол `8.0`; у нас
   зум в сотых — `1000…1500`, шаг `50` (полуровень).
-- **Смыслы кодов у нас взяты из `open-dash`, а не отсюда.** Комментарий в
-  [`dash_button_controller.dart`](../lib/state/dash_button_controller.dart)
-  ссылается на константы `DashViewModel` того порта. Таблица выше — из
-  официального приложения, и по `05`/`06`/`07` они расходятся: у нас это
-  «предыдущий трек» и «ответить/отклонить звонок», здесь — play/pause и
-  громкость медиа. Спор решает железо, не чтение.
+- **Узкий cutover кнопок, 23.10.2026:** пользователь подтвердил физическое
+  назначение: вверх — громкость музыки +, вниз — громкость −, центр — пауза.
+  После приоритета входящего звонка (`06` answer) / активного (`07` hangup)
+  `05` вызывает `mediaPlayPause`, `06` — `mediaVolumeUp`, `07` — `mediaVolumeDown`
+  только при `mediaActive`, независимо от title/playing. Inactive поглощает
+  эти коды без действия, переключения треков и зума. Native toggle ставит
+  PLAYING на паузу, возобновляет PAUSED/OTHER, null playback — no-op.
+  Старые track/zoom aliases этих кодов удалены. `09/0A` и next-alias `22`
+  сохраняют track routing при `nowPlayingTitle != null` (включая `''`),
+  иначе zoom; `13/14` остаются zoom. Call precedence и ACK-before-forward
+  сохранены. Debounce парных кодов по времени не добавлен.
+  Mute/call-volume mapping и новый gate `09/0A` не реализованы и не приняты.
+  Подтверждение пользователя — не перепроверка исправленной сборки на железе;
+  см. [Findings](ON_HARDWARE_VERIFICATION_RU.md#findings).
 
 ## Составные блоки
 

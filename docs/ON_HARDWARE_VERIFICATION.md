@@ -89,7 +89,7 @@ button are equal values, and that is where a repeat gets swallowed.
 - [ ] `0x09`/`0x0A` (RIGHT/LEFT) use media next/previous when
       **`nowPlayingTitle != null`, including `''`**; null falls back to zoom.
       This compatibility gate does not use `mediaPlaying` or `mediaActive`
-      (`_isLooseNextButton` / `_isLoosePreviousButton`). Test playing, paused,
+      (`DashButtonController._handle`). Test playing, paused,
       absent media and active media with an empty title.
 - [ ] `0x15` and `0x0B` hit **no branch at all**. The 2026-09-05 ride sent them
       nine and six times; `0x15` shows up in the 2026-09-09 logs too. From the
@@ -100,11 +100,12 @@ button are equal values, and that is where a repeat gets swallowed.
       forces zoom to `16.0` there), `0x0B` is start-navigation. What remains is
       confirming which physical controls these are, and then wiring them to
       `recenter()` and a navigation start.
-- [ ] **The meanings of `0x05`/`0x06`/`0x07` are disputed.** Our mapping came
-      from `open-dash` (previous track, answer/reject call); the official app
-      uses the same codes for media play/pause and media volume. Press each with
-      media playing and with a call ringing, and record what the dash actually
-      does — that is the only way to settle it.
+- [ ] **Recheck corrected `05/06/07` on hardware.** On 2026-10-23 the user
+      confirmed up=music volume up, down=volume down, center=pause; the old
+      mapping defect is recorded in Findings. Verify the corrected build:
+      after incoming `06` answer / active-call `07` hangup precedence,
+      `05` play/pause and `06/07` volume± require only `mediaActive`.
+      Inactive consumes them without track/zoom action; title/playing do not gate.
 - [ ] **Zoom-limit feedback (`06 0C`) — we send none.** The original answers every
       zoom press with `06 0C` carrying `30`/`20`/`10` (normal / at the upper bound /
       at the lower). Check whether firmware 11.63 reacts to that TLV — does it grey
@@ -118,15 +119,21 @@ button are equal values, and that is where a repeat gets swallowed.
 
 ## 5. Voice guidance
 
-- [ ] Restart the app, start a route whose first maneuver is more than 300 m
-      away, raise media volume, and turn the phone screen off. The forced
-      `VoiceMode.full` must produce speech, never a chime.
+- [ ] In More → Voice guidance, enable Voice announcements and choose the speech
+      volume and music policy. Restart the app and confirm those settings were
+      restored. Start a route whose first maneuver is more than 300 m away,
+      raise media volume, and turn the phone screen off. Expect speech, not a chime;
+      restarting the app no longer forces voice on.
 - [ ] For one normally approached maneuver, hear exactly three localized
       phrases in order near the 1 Hz thresholds: “In 300 meters …”,
       “In 150 meters …”, then “Now …”. No duplicate within a range and no
       late replay of a skipped farther cue.
 - [ ] At the destination, hear “You have arrived at your destination”
       exactly once.
+- [ ] Disable Voice announcements, restart the app, and confirm it remains off
+      with the selected volume and music policy preserved. Maneuvers, arrival,
+      and dash connection loss/recovery must stay silent. Re-enable voice before
+      continuing audible checks.
 
 ## 6. Media / call bridge (native, new plugin code)
 
@@ -210,16 +217,15 @@ candidate builds and change only one variable, restoring the baseline after each
       scale; allow for the next 1 Hz heartbeat, not an immediate volume event.
       Invalid/unavailable stream readings independently retain fallback
       music=`13`, call=`19`; do not treat a silent stream as fallback.
-- [ ] **Independent button probes.** Only in an explicitly gated official-map
-      fixture probe `03/04` call volume, `05` play/pause, `06/07` music volume,
-      `08` mute, `09/0A` next/previous, each twice. Test active/paused/no-media,
-      empty title and ringing-call precedence. Separate code→phone-action
-      evidence from port ACK-before-forward and candidate mediaActive gating
-      for `05/06/07/09/0A` (not the original listener gate). Mute/call volume
-      do not require a title/controller. Probe existing aliases separately:
-      they do not confirm official codes. `18` is not a play alias (original
-      sends missed-call count). The current mapping/title gate stays unchanged
-      until this independent gate is resolved; direct APIs remain available.
+- [ ] **Independent button probes.** Recheck production `05/06/07` twice each
+      with active/paused/OTHER/null playback, no media, empty/null title and
+      ringing/active calls. Native toggle pauses PLAYING, resumes PAUSED/OTHER,
+      null playback no-ops. Keep `09/0A` and next alias `22` title-based
+      track/zoom routing and `13/14` zoom. No paired-code timing debounce.
+      Separately, only in a gated fixture probe `03/04` call volume, `08` mute
+      and a candidate `mediaActive` gate for `09/0A`: these are not implemented
+      or accepted production changes. Separate code→phone action from
+      ACK-before-forward evidence. `18` is not a play alias (missed-call count).
 - [ ] **Media + video / cadence.** Compare max65535 art against no-art baseline
       with projection and button presses. Measure timestamp cadence **250 ms**,
       receipt→ACK **≤250 ms + measured baseline jitter**, heartbeat gap
@@ -239,9 +245,9 @@ or reject each marker/playback/art path separately by screen+pcap; broken map,
 ignored art or intolerance of interruption rejects that path, **not** a switch
 to finishing old art A. Wrong volume or excess gaps rejects that specific
 branch, retaining captured fallback; live-volume scale and cadence are separate
-decisions. Official mapping/stateful gate requires its own evidence; any
-disagreement keeps the current mapping, call precedence and ACK-first contract.
-No firmware-mode branch is introduced. Keep every unresolved item open; only
+decisions. The remaining official mapping/stateful gate requires separate
+evidence; it is not implied by the narrow `05/06/07` cutover. Preserve call
+precedence and ACK-first. No firmware-mode branch is introduced. Keep every unresolved item open; only
 a human with the above evidence updates both checklists and Findings.
 
 ## 7. Power / thermals (screen-off ride)
@@ -285,4 +291,18 @@ what was expected (per the original app's behavior) vs. what happened, and
 whether it's a Flutter-port bug or a pre-existing unverified item that's
 still unverified._
 
-(none logged yet)
+- **2026-10-23 — old button mapping defect; corrected-build recheck pending.**
+  Stationary multimedia test (not a ride), Huawei HBN-LX9, build
+  `93e3f9f3c+dirty`; `ride-20261023-180816.log` and
+  `/tmp/snatch-media-20261023-180816.pcapng`, capture 18:08:19.661–18:10:48.192.
+  All 64 RX buttons were ACKed (`05=7, 06=21, 07=10, 09=17, 0A=2,
+  13=2, 14=4, 0B=1`). The old dispatcher mapped `06/07` to skip and `05`
+  to previous; the user confirmed the intended physical up/down/center
+  actions are music volume up/down/pause. The narrow production correction
+  is documented in [§8](../spec/multimedia.md), not hardware-verified here.
+  Four `07→05` pairs 39–224 ms apart caused double previous under the old
+  mapping; whether these represent one physical press or two is unknown,
+  so no timing debounce is inferred. The capture contains 24 complete,
+  decodable 75×75 JPEGs, but no screen proof. Firmware version is not
+  independently established by this evidence; the firmware 11.63 gate,
+  corrected-build button check, display/art/volume and other open items remain open.

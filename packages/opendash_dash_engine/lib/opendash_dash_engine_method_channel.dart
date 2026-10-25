@@ -122,7 +122,15 @@ class MethodChannelOpendashDashEngine extends OpendashDashEnginePlatform {
   Future<void> updateCall(String? caller) => _api.updateCall(caller);
 
   @override
-  Future<void> playChime() => _api.playChime();
+  Future<VoiceSpeechResult> speakVoice({
+    required String text,
+    required String languageTag,
+    required double volume,
+    required VoiceMusicPolicy policy,
+  }) => _api.speakVoice(text, languageTag, volume, policy);
+
+  @override
+  Future<void> stopVoice() => _api.stopVoice();
 
   @override
   Future<bool> answerCall() => _api.answerCall();

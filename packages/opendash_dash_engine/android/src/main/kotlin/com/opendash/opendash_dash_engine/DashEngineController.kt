@@ -1,8 +1,6 @@
 package com.opendash.opendash_dash_engine
 
 import android.content.Context
-import android.media.AudioManager
-import android.media.ToneGenerator
 import android.os.PowerManager
 import com.opendash.opendash_dash_engine.dash.DashConfig
 import com.opendash.opendash_dash_engine.dash.FrameStreamer
@@ -210,7 +208,6 @@ class DashEngineController(
 
     private val snapshots = MapSnapshotProvider(context)
     private val overlays = OverlayRenderer()
-    private var toneGenerator: ToneGenerator? = null
     private val mediaInfo = MediaInfoProvider(context, scope)
     private val liveHeartbeat = LiveHeartbeat(context)
     private val callController = CallController(context)
@@ -1294,15 +1291,6 @@ class DashEngineController(
         context.startActivity(MediaInfoProvider.accessSettingsIntent())
     }
 
-    /** Turn-guidance chime for [VoiceMode.CHIME] — `ToneGenerator` has no Dart/Flutter
-     *  equivalent, so this stays behind the plugin; ported from `VoiceManager.chime()`. */
-    fun playChime() {
-        runCatching {
-            val tone = toneGenerator ?: ToneGenerator(AudioManager.STREAM_MUSIC, 80).also { toneGenerator = it }
-            tone.startTone(ToneGenerator.TONE_PROP_BEEP, 180)
-        }.onFailure { DebugLog.w(TAG) { "chime failed: ${it.message}" } }
-    }
-
     fun currentConfig(): DashConfigView = DashConfigView(
         ssidPrefix = dashConfig.ssidPrefix,
         ssid = dashConfig.ssid,
@@ -1339,7 +1327,6 @@ class DashEngineController(
             sessionFeedJob?.cancel(); sessionFeedJob = null
             teardown(viaFsm = false)
         }
-        runCatching { toneGenerator?.release() }
     }
 
     // ── Streaming / render loop ─────────────────────────────────────────

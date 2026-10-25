@@ -356,12 +356,6 @@ abstract class AppLocalizations {
   /// **'Let\'s go'**
   String get routePreviewGo;
 
-  /// No description provided for @routeVoiceGuidanceTooltip.
-  ///
-  /// In en, this message translates to:
-  /// **'Voice guidance: {mode}'**
-  String routeVoiceGuidanceTooltip(String mode);
-
   /// No description provided for @routeSaveDestinationTooltip.
   ///
   /// In en, this message translates to:
@@ -416,23 +410,65 @@ abstract class AppLocalizations {
   /// **'Routing failed — check your connection'**
   String get routeErrorRoutingFailedConnection;
 
-  /// No description provided for @voiceModeOff.
+  /// No description provided for @settingsVoiceTitle.
   ///
   /// In en, this message translates to:
-  /// **'off'**
-  String get voiceModeOff;
+  /// **'Voice guidance'**
+  String get settingsVoiceTitle;
 
-  /// No description provided for @voiceModeChime.
+  /// No description provided for @voiceSettingsEnabled.
   ///
   /// In en, this message translates to:
-  /// **'chime'**
-  String get voiceModeChime;
+  /// **'Voice announcements'**
+  String get voiceSettingsEnabled;
 
-  /// No description provided for @voiceModeFull.
+  /// No description provided for @voiceSettingsVolume.
   ///
   /// In en, this message translates to:
-  /// **'full'**
-  String get voiceModeFull;
+  /// **'Volume'**
+  String get voiceSettingsVolume;
+
+  /// No description provided for @voiceSettingsVolumeLow.
+  ///
+  /// In en, this message translates to:
+  /// **'Low'**
+  String get voiceSettingsVolumeLow;
+
+  /// No description provided for @voiceSettingsVolumeMedium.
+  ///
+  /// In en, this message translates to:
+  /// **'Medium'**
+  String get voiceSettingsVolumeMedium;
+
+  /// No description provided for @voiceSettingsVolumeHigh.
+  ///
+  /// In en, this message translates to:
+  /// **'High'**
+  String get voiceSettingsVolumeHigh;
+
+  /// No description provided for @voiceSettingsDuringAnnouncements.
+  ///
+  /// In en, this message translates to:
+  /// **'During announcements'**
+  String get voiceSettingsDuringAnnouncements;
+
+  /// No description provided for @voiceSettingsMusicDuck.
+  ///
+  /// In en, this message translates to:
+  /// **'Lower music and other sounds'**
+  String get voiceSettingsMusicDuck;
+
+  /// No description provided for @voiceSettingsMusicPause.
+  ///
+  /// In en, this message translates to:
+  /// **'Pause music'**
+  String get voiceSettingsMusicPause;
+
+  /// No description provided for @voiceSettingsMusicUnchanged.
+  ///
+  /// In en, this message translates to:
+  /// **'Leave other audio unchanged'**
+  String get voiceSettingsMusicUnchanged;
 
   /// No description provided for @dashStageOffline.
   ///

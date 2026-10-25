@@ -36,6 +36,10 @@ enum WifiStatus { idle, requesting, connected, error }
 /// the app routes them to `verbose` rather than to its own debug level.
 enum DashLogLevel { debug, info, warning, error }
 
+enum VoiceMusicPolicy { duck, pauseAndResume, unchanged }
+
+enum VoiceSpeechResult { completed, cancelled, focusDenied }
+
 /// One position on the route line sent to the dash.
 ///
 /// A class rather than the `List<List<double>>` this used to be: a pair of bare
@@ -245,8 +249,16 @@ abstract class DashEngineApi {
   void updateNowPlaying(String? title, String album, String artist);
   void updateCall(String? caller);
 
-  /// Turn-guidance chime. No Dart equivalent to `ToneGenerator`, so it lives here.
-  void playChime();
+  @async
+  VoiceSpeechResult speakVoice(
+    String text,
+    String languageTag,
+    double volume,
+    VoiceMusicPolicy policy,
+  );
+
+  @async
+  void stopVoice();
 
   bool answerCall();
   bool hangupCall();

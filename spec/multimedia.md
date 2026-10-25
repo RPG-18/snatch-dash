@@ -420,14 +420,22 @@ known значения. Idle/stop — false/null; OTHER/null playback — true/n
 Четыре public метода `DashEngine.mediaPlayPause`, `mediaVolumeUp`, `mediaVolumeDown`,
 `mediaMute` возвращают `Future<void>` и идут через platform interface,
 method-channel implementation и сгенерированный HostApi в native provider.
-Они доступны независимо от button mapping. Новых aliases нет: существующие
-коды, title-based compatibility gate и call precedence пока не заменены
-на official mapping/stateful gate без аппаратного подтверждения.
-Compatibility gate — именно `nowPlayingTitle != null`, не `mediaActive` и
-не `mediaPlaying`: titleless active не включает media routing, пустая ненулевая
-строка включает. Приоритет остаётся call answer `06` / hangup `07`, затем
-next `06/09/22` или previous `05/07/0A` при title; иначе эти aliases зумируют
-карту вместе с `13/14`. Direct API не переводит `05` в play/pause автоматически.
+Они доступны независимо от button mapping. С 23.10.2026 после приоритета
+входящего звонка (`06` answer) и активного звонка (`07` hangup) код `05`
+вызывает `mediaPlayPause`, `06` — `mediaVolumeUp`, `07` — `mediaVolumeDown`
+только при `mediaActive=true`, независимо от title и `mediaPlaying`.
+При inactive эти три кода поглощаются без действия: не переключают треки
+и не зумируют. Native toggle ставит PLAYING на паузу, возобновляет PAUSED/OTHER;
+null playback остаётся no-op. Старые track/zoom aliases `05/06/07` удалены.
+Для `09/0A` и next-alias `22` сохранён gate `nowPlayingTitle != null`
+(включая `''`): next/previous при title, иначе zoom. `13/14` всегда зумируют.
+Mute/call-volume mapping и новый gate для `09/0A` не внедрены.
+
+Основание узкого cutover — подтверждение пользователем 23.10.2026 физического
+намерения: вверх увеличивает громкость музыки, вниз уменьшает, центр ставит
+на паузу. Это не повторная проверка исправленной сборки на приборке и не
+закрытие всего hardware gate; evidence старого mapping — в Findings checklist.
+Парные `07→05` не фильтруются по времени: одно это нажатие или два, не установлено.
 
 По зафиксированным результатам этапа 5 в плане, 23.10.2026 на API 36 проверена
 граница из публичного Dart façade:
@@ -473,7 +481,8 @@ ACK-before-forward в порте — существующий намеренны
   Отдельно — прерывание multichunk A принятыми metadata B с JPEG и без JPEG:
   отсутствие chunks A после card B на wire не доказывает отсутствие зависания
   или возврата A на экране; нужны pcap и наблюдение приборки.
-- Физическая карта кнопок `03`…`0A`, включая mute, и эффект `18`.
+- Повторная проверка исправленного `05/06/07` mapping на приборке, включая
+  call precedence; оставшаяся карта `03/04/08`, новый gate `09/0A` и эффект `18`.
 
 Источник `INFOTAINMENT` установлен статически (§7); это не открытый вопрос
 о границе firmware-режима. Проверка взаимодействия media/video всё ещё нужна.

@@ -4,40 +4,25 @@ import 'package:opendash_dash_engine/opendash_dash_engine.dart';
 import '../util/app_logger.dart' show talker;
 import 'dash_engine_state.dart';
 
-/// K1G joystick/media/call button codes the physical dash sends as `09 00`
-/// events — see `DashSession.dispatchIncoming`. Values match the original
-/// native app's `DashViewModel` companion constants.
-///
-/// They do NOT all match the OFFICIAL Royal Enfield app, whose full dispatch
-/// table was read out on 2026-09-22 (docs/k1g_commands.md, "Buttons `09 00`").
-/// It maps 0x05 to media play/pause and 0x06/0x07 to media volume up/down,
-/// where the codes below — inherited from open-dash — call them previous-track
-/// and answer/reject-call. Both readings cannot be right; only the hardware
-/// can say which, and nothing here changes until it does.
+// Physical up/down/center confirmed by the rider on 2026-10-23.
+// Call actions still take precedence over the overlapping volume codes.
 const _btnCallAnswer = 0x06;
 const _btnCallReject = 0x07;
+const _btnMediaPlayPause = 0x05;
+const _btnMediaVolumeUp = 0x06;
+const _btnMediaVolumeDown = 0x07;
 const _btnMapZoomIn = 0x13;
 const _btnMapZoomOut = 0x14;
 const _btnMediaNext = 0x09;
 const _btnMediaPrevious = 0x0A;
+const _btnMediaNextAlias = 0x22;
 
-// A second, looser set of codes some dash firmware/rocker variants send for
-// "next"/"previous" instead of (or in addition to) the media codes above.
-// Treated exactly like those codes below — the two sets don't overlap with
-// the zoom codes, so merging them changes nothing but saves two branches.
-// They DO overlap with the call codes (0x06/0x07), which is why the call
-// branches have to stay first.
-bool _isLooseNextButton(int code) =>
-    code == 0x06 || code == 0x09 || code == 0x22;
-bool _isLoosePreviousButton(int code) =>
-    code == 0x05 || code == 0x07 || code == 0x0A;
-
-/// Dispatches physical dash button presses to an app-side action, mirroring
-/// `DashViewModel.onButton` — the native `DashSession`/`DashEngineController`
-/// only ack the button and forward the raw code (see `dashEngineRawStreamProvider`);
-/// deciding what a code *means* (with music playing it skips tracks, otherwise
-/// it zooms the map, and a ringing call takes precedence over both) is Dart's
-/// job, same as it was the ViewModel's job in the original app.
+/// Routes dash buttons to media, call, and map actions.
+///
+/// Native code acknowledges and forwards each raw event before Dart routing.
+/// Up/down/center use mediaActive, not title or playback state, so paused and
+/// titleless sessions remain controllable. With no media they do not zoom.
+/// Track buttons retain their title-based media/zoom behavior.
 ///
 /// Nothing here branches on `navigating` any more: the dash renders the map in
 /// both idle and navigation, so next/prev mean the same thing either way.
@@ -68,7 +53,7 @@ class DashButtonController extends Notifier<void> {
 
   void _handle(int code) {
     final engine = ref.read(dashEngineStateProvider);
-    final mediaActive = engine.nowPlayingTitle != null;
+    final hasMediaTitle = engine.nowPlayingTitle != null;
     final hasIncomingCall = engine.incomingCaller != null;
 
     if (hasIncomingCall && code == _btnCallAnswer) {
@@ -78,19 +63,22 @@ class DashButtonController extends Notifier<void> {
       // already answered/outgoing — matching the original's `call != null`
       // (vs `call.incoming == true` for answer).
       DashEngine.instance.hangupCall();
-    } else if (mediaActive &&
-        (code == _btnMediaNext || _isLooseNextButton(code))) {
+    } else if (code == _btnMediaPlayPause) {
+      if (engine.mediaActive) DashEngine.instance.mediaPlayPause();
+    } else if (code == _btnMediaVolumeUp) {
+      if (engine.mediaActive) DashEngine.instance.mediaVolumeUp();
+    } else if (code == _btnMediaVolumeDown) {
+      if (engine.mediaActive) DashEngine.instance.mediaVolumeDown();
+    } else if (hasMediaTitle &&
+        (code == _btnMediaNext || code == _btnMediaNextAlias)) {
       DashEngine.instance.skipNext();
-    } else if (mediaActive &&
-        (code == _btnMediaPrevious || _isLoosePreviousButton(code))) {
+    } else if (hasMediaTitle && code == _btnMediaPrevious) {
       DashEngine.instance.skipPrevious();
     } else if (code == _btnMapZoomIn ||
         code == _btnMediaNext ||
-        _isLooseNextButton(code)) {
+        code == _btnMediaNextAlias) {
       DashEngine.instance.zoomIn();
-    } else if (code == _btnMapZoomOut ||
-        code == _btnMediaPrevious ||
-        _isLoosePreviousButton(code)) {
+    } else if (code == _btnMapZoomOut || code == _btnMediaPrevious) {
       DashEngine.instance.zoomOut();
     } else {
       // The native side acks and forwards every `09 00`, so a code with no branch

@@ -30,6 +30,9 @@
        Android Lint names this `QueryPermissionsNeeded` on the `resolveActivity` call. -->
   <queries>
     <intent>
+      <action android:name="android.intent.action.TTS_SERVICE" />
+    </intent>
+    <intent>
       <action android:name="android.settings.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
       <!-- The scheme is not decoration. AOSP's filter declares
            `<data android:scheme="package"/>`, and visibility matching runs ordinary

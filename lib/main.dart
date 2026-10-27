@@ -31,9 +31,7 @@ void main() async {
   // screen on a rider's phone left no evidence anywhere. See util/error_reporting.dart.
   installErrorReporting();
   await initializeDateFormatting();
-  // Temporary for field verification: overwrite persisted OFF/CHIME before
-  // controllers start. A separate UI task will restore rider-selectable mode.
-  await VoiceManager.instance.setMode(VoiceMode.full);
+  await VoiceManager.instance.initialize();
   await ymk.initMapkit(apiKey: _yandexApiKey);
   // MapKit stays idle — search/routing requests never leave the device —
   // until onStart() is called, mirroring Activity.onStart()/onStop() on the

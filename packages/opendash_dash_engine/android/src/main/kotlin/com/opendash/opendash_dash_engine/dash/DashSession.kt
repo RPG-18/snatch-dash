@@ -1,6 +1,7 @@
 package com.opendash.opendash_dash_engine.dash
 
 import com.opendash.opendash_dash_engine.dash.map.Percentiles
+import com.opendash.opendash_dash_engine.dash.protocol.AlbumArtFrames
 import com.opendash.opendash_dash_engine.dash.protocol.DashCommand
 import com.opendash.opendash_dash_engine.dash.protocol.DashMessage
 import com.opendash.opendash_dash_engine.dash.protocol.K1GCodec
@@ -15,6 +16,7 @@ import kotlinx.coroutines.CoroutineName
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
@@ -22,6 +24,7 @@ import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.channels.ChannelResult
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
@@ -32,6 +35,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.selects.onTimeout
+import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -112,6 +117,7 @@ internal class DashSession private constructor(
     private val ssid: String,
     private val chrome: StateFlow<DashChrome>,
     private val clock: () -> Long,
+    private val heartbeat: () -> DashCommand.Heartbeat,
     parent: Job,
     context: CoroutineContext,
 ) {
@@ -216,6 +222,7 @@ internal class DashSession private constructor(
          *   `::monotonicMs` here would make the watchdog's threshold untestable and would let
          *   a caller pass the wall clock by omission, which is the bug this project keeps
          *   re-learning (see `util/Clock.kt`).
+         * @param heartbeat sampled on every 1 Hz tick, including before STREAMING.
          * @param transport called once, on the caller's thread. A throw here (a
          *   `BindException` when the previous session's sockets are somehow still open) is
          *   reported through the returned session like any other failure, so the caller has
@@ -225,11 +232,12 @@ internal class DashSession private constructor(
             ssid: String,
             chrome: StateFlow<DashChrome>,
             clock: () -> Long,
+            heartbeat: () -> DashCommand.Heartbeat,
             parent: Job,
             context: CoroutineContext = Dispatchers.IO,
             transport: () -> DashTransport,
         ): DashSession =
-            DashSession(ssid, chrome, clock, parent, context).also { it.start(transport) }
+            DashSession(ssid, chrome, clock, heartbeat, parent, context).also { it.start(transport) }
     }
 
     private val job = SupervisorJob(parent)
@@ -255,7 +263,35 @@ internal class DashSession private constructor(
     val events: Flow<SessionEvent> = eventChannel.receiveAsFlow()
 
     /** The single path onto the control socket — see the class doc's "One writer". */
-    private val outbox = Channel<DashCommand>(Channel.UNLIMITED)
+    private val outbox = Channel<Outbound>(Channel.UNLIMITED)
+
+    private sealed interface Outbound {
+        data class Control(val command: DashCommand) : Outbound
+        data object Farewell : Outbound
+        data class Media(
+            val commands: List<DashCommand>,
+            val epoch: Long,
+            val artRevision: Long,
+            val playbackRevision: Long,
+            val replay: Boolean = false,
+        ) : Outbound
+        data class PeriodicCard(val command: DashCommand.NowPlaying, val epoch: Long) : Outbound
+    }
+
+    private class PendingArt(
+        val frames: List<DashCommand.AlbumArtChunk>,
+        val epoch: Long,
+        val revision: Long,
+        var index: Int = 0,
+    )
+
+    private class DeferredPlayback(
+        val command: DashCommand.MediaPlayback,
+        val epoch: Long,
+        val revision: Long,
+    )
+
+    private enum class SendResult { SENT, SKIPPED, FAILED }
 
     private val auth = DashAuth(ssid)
     private val authConfirmed = CompletableDeferred<Unit>()
@@ -269,12 +305,24 @@ internal class DashSession private constructor(
      * Owns both the end-of-session claim and every state write. Checking an atomic flag
      * before a separate state write still lets Main overwrite an IO teardown with STREAMING.
      *
-     * Only state and non-suspending event publication belong here: no logging, socket IO,
-     * cancellation or joins. [closeMutex] may enter this lock, never the other way around,
+     * Only non-suspending state, queue and packet-claim operations belong here: no logging,
+     * socket IO, cancellation or joins. [closeMutex] may enter this lock, never the other way around,
      * so a controller holding its session lock can still wait for [close] safely.
      */
     private val lifecycleLock = Any()
     private var finished = false
+
+    // Enqueue and packet claims share this lock. Metadata invalidates ART only: every
+    // accepted card/marker still leaves once in FIFO order. Inactive/teardown invalidate
+    // the whole media epoch, including already queued periodic cards.
+    private var mediaEpoch = 0L
+    private var artRevision = 0L
+    private var playbackRevision = 0L
+    private var queuedPlayback = chrome.value.mediaPlaying
+
+    // Chrome is written under the owner's monitor, not lifecycleLock. A tick must not
+    // publish B between that write and sendMedia's invalidation of A's pending art.
+    private var periodicNowPlaying: NowPlaying? = null
 
     /** So two concurrent [close] calls cannot cancel the first one's farewell mid-flight. */
     private val closeMutex = Mutex()
@@ -328,7 +376,21 @@ internal class DashSession private constructor(
      * projection frame before that is a packet it has no state for.
      */
     fun startStreaming() {
-        advanceState(DashState.READY, DashState.STREAMING)
+        synchronized(lifecycleLock) {
+            if (finished || !job.isActive || _state.value != DashState.READY) return
+            val snapshot = chrome.value
+            queuedPlayback = snapshot.mediaPlaying
+            periodicNowPlaying = snapshot.nowPlaying
+            outbox.trySend(
+                Outbound.Media(
+                    mediaReplay(snapshot), mediaEpoch, artRevision, playbackRevision, replay = true,
+                ),
+            )
+            // StateFlow can synchronously resume an Unconfined collector, reentering the
+            // owner and sendMedia on this same monitor. Its event must follow this replay.
+            _state.value = DashState.STREAMING
+        }
+        logState(DashState.READY, DashState.STREAMING)
     }
 
     /**
@@ -342,9 +404,50 @@ internal class DashSession private constructor(
      */
     fun rtpSender(): ((ByteArray) -> Unit)? = transport?.let { t -> { pkt -> t.sendRtp(pkt) } }
 
-    /** Queue one command. Ignored once the session has ended. */
+    /** Queue one non-media command. Ignored once the session has ended. */
     fun send(cmd: DashCommand) {
-        outbox.trySend(cmd)
+        queueControl(cmd)
+    }
+
+    /**
+     * Accept one media event without suspending. The owner serializes chrome changes,
+     * this call and [startStreaming], so an event is either in the initial replay or after
+     * it, never both. An empty batch still communicates a cleared/unknown snapshot.
+     */
+    fun sendMedia(commands: List<DashCommand>) {
+        synchronized(lifecycleLock) {
+            if (finished || !job.isActive || _state.value != DashState.STREAMING) return
+            val snapshot = chrome.value
+            if (commands.any { it is DashCommand.MediaActive && !it.active }) {
+                mediaEpoch++
+                artRevision++
+                playbackRevision++
+            } else {
+                // A card-only exception fallback must not undo a partially accepted art
+                // transfer. Normal metadata always includes its present/absent marker.
+                if (commands.any { it is DashCommand.AlbumArtMarker || it is DashCommand.AlbumArt } ||
+                    (commands.none { it is DashCommand.NowPlaying } && snapshot.nowPlaying == null)
+                ) {
+                    artRevision++
+                }
+                if (commands.any { it is DashCommand.MediaPlayback } ||
+                    snapshot.mediaPlaying != queuedPlayback
+                ) {
+                    playbackRevision++
+                }
+            }
+            queuedPlayback = snapshot.mediaPlaying
+            periodicNowPlaying = snapshot.nowPlaying
+            if (commands.isNotEmpty()) {
+                outbox.trySend(Outbound.Media(commands, mediaEpoch, artRevision, playbackRevision))
+            }
+        }
+    }
+
+    private fun queueControl(command: DashCommand) {
+        synchronized(lifecycleLock) {
+            if (!finished && job.isActive) outbox.trySend(Outbound.Control(command))
+        }
     }
 
     /**
@@ -374,8 +477,7 @@ internal class DashSession private constructor(
     suspend fun close(farewell: Boolean) = withContext(NonCancellable) {
         closeMutex.withLock {
             if (finish() && farewell) {
-                outbox.trySend(DashCommand.ProjectionStop)
-                outbox.trySend(DashCommand.ProjectionOff)
+                outbox.trySend(Outbound.Farewell)
                 outbox.close()
                 // Bounded: the farewell is two datagrams to a link-local broadcast, so a
                 // second is four orders of magnitude of headroom. If the radio really is
@@ -479,7 +581,7 @@ internal class DashSession private constructor(
                     while (!auth.dashHasSpoken) {
                         delay(AUTH_REASK_INTERVAL_MS)
                         if (auth.dashHasSpoken) break
-                        outbox.trySend(DashCommand.AuthRequest)
+                        queueControl(DashCommand.AuthRequest)
                         asks++
                         if (asks == 1) {
                             RideDiagnostics.log(
@@ -573,6 +675,10 @@ internal class DashSession private constructor(
         val prev = synchronized(lifecycleLock) {
             if (finished) return false
             finished = true
+            mediaEpoch++
+            artRevision++
+            playbackRevision++
+            periodicNowPlaying = null
             _state.value.also {
                 if (next != null) _state.value = next
                 if (event != null) eventChannel.trySend(event)
@@ -588,27 +694,152 @@ internal class DashSession private constructor(
 
     // ── The one writer ────────────────────────────────────────────────────
 
+    @OptIn(ExperimentalCoroutinesApi::class)
     private suspend fun sendLoop(t: DashTransport) {
-        // Drains what is already queued after close(), which is what makes the farewell
-        // reliable: close() puts two commands in and closes the channel, and this loop is
-        // the thing that guarantees they reach the wire before the job is cancelled.
-        for (cmd in outbox) {
-            // Encoding can refuse: `AuthSendKey` requires a 128-byte block, so a dash
-            // offering a key that is not RSA-1024 throws here. Before stage 4 that throw
-            // happened inside the RX loop, which caught it and failed the session; letting it
-            // out of the ONE writer instead would drop every later control packet — the
-            // farewell included — with no error state anywhere.
-            val bytes = try {
-                K1GCodec.encode(cmd)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                DebugLog.e(TAG, { "Refusing to send $cmd" }, e)
-                fail("${e.javaClass.simpleName}: ${e.message}")
-                return
+        var art: PendingArt? = null
+        var playback: DeferredPlayback? = null
+        var lastArtSentAtMs: Long? = null
+
+        while (currentCoroutineContext().isActive) {
+            art?.let {
+                if (!currentMedia(it.epoch, art = it.revision)) art = null
             }
-            t.send(bytes)
+            playback?.let {
+                if (!currentMedia(it.epoch, playback = it.revision, playing = it.command.playing)) {
+                    playback = null
+                }
+            }
+
+            // Drain ordinary work before each art packet, not just before the transfer.
+            // In particular a replacement waiting on the channel wins over a due old chunk.
+            val ready = outbox.tryReceive()
+            val item = if (ready.isSuccess) {
+                ready.getOrThrow()
+            } else {
+                if (ready.isClosed) return
+                val pending = art
+                if (pending == null) {
+                    val indicator = playback
+                    if (indicator != null) {
+                        playback = null
+                        if (transmit(
+                                t, indicator.command, indicator.epoch,
+                                playback = indicator.revision,
+                            ) == SendResult.FAILED
+                        ) return
+                        continue
+                    }
+                    outbox.receiveCatching().getOrNull() ?: return
+                } else {
+                    val waitMs = (lastArtSentAtMs?.plus(10L) ?: clock()) - clock()
+                    if (waitMs <= 0L) {
+                        when (transmit(
+                            t, pending.frames[pending.index], pending.epoch, art = pending.revision,
+                        )) {
+                            SendResult.FAILED -> return
+                            SendResult.SKIPPED -> art = null
+                            SendResult.SENT -> {
+                                // Actual completion time, not the transfer's planned start:
+                                // a slow packet can never make the next spacing shorter.
+                                lastArtSentAtMs = clock()
+                                pending.index++
+                                if (pending.index == pending.frames.size) art = null
+                            }
+                        }
+                        continue
+                    }
+                    val next = select<ChannelResult<Outbound>?> {
+                        outbox.onReceiveCatching { it }
+                        onTimeout(waitMs) { null }
+                    } ?: continue
+                    next.getOrNull() ?: return
+                }
+            }
+            when (item) {
+                is Outbound.Control -> {
+                    if (transmit(t, item.command) == SendResult.FAILED) return
+                }
+                Outbound.Farewell -> {
+                    if (transmit(t, DashCommand.ProjectionStop) == SendResult.FAILED) return
+                    if (transmit(t, DashCommand.ProjectionOff) == SendResult.FAILED) return
+                }
+                is Outbound.PeriodicCard -> {
+                    if (transmit(t, item.command, item.epoch) == SendResult.FAILED) return
+                }
+                is Outbound.Media -> {
+                    for (command in item.commands) {
+                        if (!currentMedia(item.epoch)) break
+                        when (command) {
+                            is DashCommand.AlbumArt -> {
+                                if (currentMedia(item.epoch, art = item.artRevision)) {
+                                    val frames = AlbumArtFrames.encode(command.jpeg)
+                                    if (frames.isNotEmpty()) {
+                                        art = PendingArt(frames, item.epoch, item.artRevision)
+                                    }
+                                }
+                            }
+                            is DashCommand.MediaPlayback -> {
+                                if (item.replay &&
+                                    (art != null || item.commands.any { it is DashCommand.AlbumArt })
+                                ) {
+                                    playback = DeferredPlayback(
+                                        command, item.epoch, item.playbackRevision,
+                                    )
+                                } else if (transmit(
+                                        t, command, item.epoch,
+                                        playback = if (item.replay) item.playbackRevision else null,
+                                    ) == SendResult.FAILED
+                                ) {
+                                    return
+                                }
+                            }
+                            else -> if (transmit(t, command, item.epoch) == SendResult.FAILED) return
+                        }
+                    }
+                }
+            }
         }
+    }
+
+    private fun currentMedia(
+        epoch: Long,
+        art: Long? = null,
+        playback: Long? = null,
+        playing: Boolean? = null,
+    ): Boolean = synchronized(lifecycleLock) {
+        !finished && mediaEpoch == epoch &&
+            (art == null || artRevision == art) &&
+            (playback == null ||
+                (playbackRevision == playback && chrome.value.mediaPlaying == playing))
+    }
+
+    private fun transmit(
+        t: DashTransport,
+        command: DashCommand,
+        epoch: Long? = null,
+        art: Long? = null,
+        playback: Long? = null,
+    ): SendResult {
+        // Encoding can refuse AuthSendKey (not RSA-1024), as before. A failed writer must
+        // fail the session rather than strand every later command, farewell included.
+        val bytes = try {
+            K1GCodec.encode(command)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            DebugLog.e(TAG, { "Refusing to send $command" }, e)
+            fail("${e.javaClass.simpleName}: ${e.message}")
+            return SendResult.FAILED
+        }
+        // This is the packet's linearization point, immediately before socket IO. An
+        // invalidation after the claim may let this ONE packet finish; no later old packet
+        // can claim the epoch/revision. Never hold lifecycleLock over a blocking send.
+        if (epoch != null && !currentMedia(
+                epoch, art, playback, (command as? DashCommand.MediaPlayback)?.playing,
+            )
+        ) return SendResult.SKIPPED
+        t.send(bytes)
+        return SendResult.SENT
     }
 
     /**
@@ -621,7 +852,7 @@ internal class DashSession private constructor(
      */
     private suspend fun sendScript(script: List<Step>) {
         for (step in script) {
-            outbox.send(step.cmd)
+            queueControl(step.cmd)
             if (step.pauseAfterMs > 0) delay(step.pauseAfterMs)
         }
     }
@@ -643,30 +874,34 @@ internal class DashSession private constructor(
     private suspend fun tickLoop() {
         var n = 0L
         while (currentCoroutineContext().isActive) {
-            val streaming = _state.value == DashState.STREAMING
-            val c = chrome.value
-            if (streaming) outbox.trySend(DashCommand.ProjectionFrame)
-            if (n % TICKS_PER_SECOND == 0L) {
-                if (streaming) {
-                    outbox.trySend(routeCard(c, projectionOn = true))
-                    c.nav?.let { outbox.trySend(activeNav(it)) }
-                    val caller = c.caller
-                    when {
-                        caller != null -> outbox.trySend(DashCommand.CallNotify(caller))
-                        // Only when one WAS showing: the dash needs the card cleared once,
-                        // not a clear every second for the whole ride.
-                        sentCaller != null -> outbox.trySend(DashCommand.CallClear)
+            synchronized(lifecycleLock) {
+                val streaming = !finished && _state.value == DashState.STREAMING
+                val c = chrome.value
+                if (streaming) queueControl(DashCommand.ProjectionFrame)
+                if (n % TICKS_PER_SECOND == 0L) {
+                    if (streaming) {
+                        queueControl(routeCard(c, projectionOn = true))
+                        c.nav?.let { queueControl(activeNav(it)) }
+                        val caller = c.caller
+                        when {
+                            caller != null -> queueControl(DashCommand.CallNotify(caller))
+                            // Clear once, not every second for the rest of the ride.
+                            sentCaller != null -> queueControl(DashCommand.CallClear)
+                        }
+                        sentCaller = caller
+                        periodicNowPlaying?.let {
+                            outbox.trySend(
+                                Outbound.PeriodicCard(
+                                    DashCommand.NowPlaying(it.title, it.album, it.artist), mediaEpoch,
+                                ),
+                            )
+                        }
                     }
-                    sentCaller = caller
-                    c.nowPlaying?.let {
-                        outbox.trySend(DashCommand.NowPlaying(it.title, it.album, it.artist))
-                    }
+                    queueControl(heartbeat())
                 }
-                outbox.trySend(DashCommand.Heartbeat())
+                // Keep the dash clock correct — it has no source of its own.
+                if (n % TICKS_PER_TIME_SYNC == 0L) queueControl(timeSyncNow())
             }
-            // Keep the dash clock correct — it has no source of its own and shows whatever
-            // the phone last fed it.
-            if (n % TICKS_PER_TIME_SYNC == 0L) outbox.trySend(timeSyncNow())
             n++
             delay(TICK_MS)
         }
@@ -821,7 +1056,7 @@ internal class DashSession private constructor(
                 when (val ev = auth.ingest(msg)) {
                     is AuthEvent.SendKey -> {
                         DebugLog.i(TAG) { "Got RSA pubkey — sending q3c.d" }
-                        outbox.trySend(DashCommand.AuthSendKey(ev.cipher))
+                        queueControl(DashCommand.AuthSendKey(ev.cipher))
                     }
                     AuthEvent.Confirmed -> {
                         // HERE, not after `authConfirmed.await()` in run(): that is a
@@ -866,7 +1101,7 @@ internal class DashSession private constructor(
                         RideDiagnostics.log("auth", "REJECTED — retry #$authRejectRetries")
                         auth.reset()
                         if (authRejectRetries <= MAX_AUTH_REJECT_RETRIES) {
-                            outbox.trySend(DashCommand.AuthRequest)
+                            queueControl(DashCommand.AuthRequest)
                         }
                     }
                     AuthEvent.None -> {}
@@ -875,7 +1110,7 @@ internal class DashSession private constructor(
             // The dash opened its decoder and waits for the matching reply. NOT a per-frame
             // ack, whatever better-dash called it — see DashMessage.DecoderOpened.
             is DashMessage.DecoderOpened -> {
-                outbox.trySend(DashCommand.DecoderOpenedAck(keyFrame = msg.keyFrame))
+                queueControl(DashCommand.DecoderOpenedAck(keyFrame = msg.keyFrame))
                 if (msg.keyFrame) {
                     idrAckCount.incrementAndGet()
                     if (!loggedFirstIdrAck) {
@@ -890,7 +1125,7 @@ internal class DashSession private constructor(
             is DashMessage.Button -> {
                 // Ack first, report second (invariant 7): the dash is waiting on the echo,
                 // and the ride-file line below appends to external storage.
-                outbox.trySend(DashCommand.ButtonAck(msg.code))
+                queueControl(DashCommand.ButtonAck(msg.code))
                 RideDiagnostics.log(
                     "joystick",
                     "09 00 code=0x${msg.code.toString(16).uppercase()} full=${msg.raw.toHexFull()}",

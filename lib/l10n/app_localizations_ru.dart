@@ -164,11 +164,6 @@ class AppLocalizationsRu extends AppLocalizations {
   String get routePreviewGo => 'Поехали';
 
   @override
-  String routeVoiceGuidanceTooltip(String mode) {
-    return 'Голосовые подсказки: $mode';
-  }
-
-  @override
   String get routeSaveDestinationTooltip => 'Сохранить это место';
 
   @override
@@ -198,13 +193,34 @@ class AppLocalizationsRu extends AppLocalizations {
       'Не удалось построить маршрут — проверьте соединение';
 
   @override
-  String get voiceModeOff => 'выкл';
+  String get settingsVoiceTitle => 'Голосовые подсказки';
 
   @override
-  String get voiceModeChime => 'сигнал';
+  String get voiceSettingsEnabled => 'Звуковое сопровождение';
 
   @override
-  String get voiceModeFull => 'голос';
+  String get voiceSettingsVolume => 'Громкость';
+
+  @override
+  String get voiceSettingsVolumeLow => 'Низкая';
+
+  @override
+  String get voiceSettingsVolumeMedium => 'Средняя';
+
+  @override
+  String get voiceSettingsVolumeHigh => 'Высокая';
+
+  @override
+  String get voiceSettingsDuringAnnouncements => 'При оповещениях';
+
+  @override
+  String get voiceSettingsMusicDuck => 'Приглушать музыку и другие звуки';
+
+  @override
+  String get voiceSettingsMusicPause => 'Ставить музыку на паузу';
+
+  @override
+  String get voiceSettingsMusicUnchanged => 'Ничего не менять';
 
   @override
   String get dashStageOffline => 'Не в сети';

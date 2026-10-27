@@ -21,15 +21,14 @@ import '../util/app_logger.dart';
 import '../util/byte_size.dart';
 import '../util/github_release.dart';
 import '../widgets/text_prompt_dialog.dart';
+import 'voice_settings_screen.dart';
 
-/// "More" tab: dash connection/pairing, offline maps, map theme and currency.
+/// "More" tab: connection, offline maps, map theme, currency and voice settings.
+///
 /// Ports `SettingsScreen.kt`'s connection section (`DashConfig` via the native
 /// engine's `getConfig`/`setSsid`/`setWifiPassword`/`forgetDash`).
-/// No account/sign-in section —
-/// Firebase auth was dropped from this port. Voice guidance lives on the
-/// Route tab (matches the original's per-trip toggle placement); media/call
-/// notification access has a status tile here that deep-links to system
-/// settings, since Android grants it outside the app's own permission flow.
+/// Firebase auth was dropped from this port. Media/call notification access
+/// deep-links to system settings, since Android grants it outside the app.
 class SettingsScreen extends ConsumerStatefulWidget {
   const SettingsScreen({super.key});
 
@@ -312,6 +311,15 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
           const SizedBox(height: 16),
           Card(
             child: ListTile(
+              leading: const Icon(Icons.record_voice_over_outlined),
+              title: Text(l10n.settingsVoiceTitle),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => showVoiceSettingsSheet(context),
+            ),
+          ),
+          const SizedBox(height: 16),
+          Card(
+            child: ListTile(
               leading: Icon(
                 _notificationAccessGranted
                     ? Icons.notifications_active_outlined
@@ -357,11 +365,25 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
           const SizedBox(height: 16),
           Card(
             child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                ListTile(
-                  leading: const Icon(Icons.info_outline),
-                  title: Text(l10n.settingsAboutTitle),
-                  subtitle: Text(l10n.settingsAboutSubtitle),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Icon(Icons.info_outline),
+                      const SizedBox(height: 8),
+                      Text(
+                        l10n.settingsAboutTitle,
+                        style: Theme.of(context).textTheme.titleMedium,
+                      ),
+                      Text(
+                        l10n.settingsAboutSubtitle,
+                        style: Theme.of(context).textTheme.bodyMedium,
+                      ),
+                    ],
+                  ),
                 ),
                 _AboutLink(
                   label: l10n.settingsAboutYandexTermsLink,
@@ -460,11 +482,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
   }
 }
 
-/// One underlined, tappable line in the About card.
-///
-/// The empty [leading] matches the footprint of the icon on the card's first
-/// tile, so every line's text starts at the same left edge instead of flush
-/// with the card.
+// Links share the About card icon's left edge.
 class _AboutLink extends StatelessWidget {
   const _AboutLink({required this.label, required this.url});
 
@@ -475,7 +493,6 @@ class _AboutLink extends StatelessWidget {
   Widget build(BuildContext context) {
     return ListTile(
       dense: true,
-      leading: const SizedBox(width: 24, height: 24),
       title: Text(
         label,
         style: TextStyle(
@@ -745,8 +762,8 @@ class _UpdatesCard extends ConsumerWidget {
                 .read(autoUpdateSettingsProvider.notifier)
                 .setEnabled(enabled),
           ),
-          // Channel switch + check status only matter once auto-update is on —
-          // collapsed (and their state along with them) while it's off.
+          // Only the channel switch depends on auto-update; manual check
+          // results and installation actions stay visible independently.
           AnimatedSize(
             duration: const Duration(milliseconds: 200),
             child: !autoUpdate
@@ -772,19 +789,18 @@ class _UpdatesCard extends ConsumerWidget {
                           ref.invalidate(appUpdateControllerProvider);
                         },
                       ),
-                      if (update.status != AppUpdateStatus.idle &&
-                          update.status != AppUpdateStatus.checking) ...[
-                        const Divider(height: 1),
-                        _UpdateStatusTile(
-                          update: update,
-                          onDownload: notifier.downloadAndInstall,
-                          onGrantPermission:
-                              notifier.openInstallPermissionSettings,
-                        ),
-                      ],
                     ],
                   ),
           ),
+          if (update.status != AppUpdateStatus.idle &&
+              update.status != AppUpdateStatus.checking) ...[
+            const Divider(height: 1),
+            _UpdateStatusTile(
+              update: update,
+              onDownload: notifier.downloadAndInstall,
+              onGrantPermission: notifier.openInstallPermissionSettings,
+            ),
+          ],
         ],
       ),
     );
@@ -810,13 +826,23 @@ class _UpdateStatusTile extends StatelessWidget {
         leading: const Icon(Icons.check_circle_outline),
         title: Text(l10n.settingsUpdatesStatusUpToDate),
       ),
-      AppUpdateStatus.available => ListTile(
-        leading: const Icon(Icons.new_releases_outlined),
-        title: Text(l10n.settingsUpdatesStatusAvailable(update.release!.name)),
-        trailing: FilledButton(
-          onPressed: onDownload,
-          child: Text(l10n.settingsUpdatesDownloadButton),
-        ),
+      AppUpdateStatus.available => Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          ListTile(
+            leading: const Icon(Icons.new_releases_outlined),
+            title: Text(
+              l10n.settingsUpdatesStatusAvailable(update.release!.name),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+            child: FilledButton(
+              onPressed: onDownload,
+              child: Text(l10n.settingsUpdatesDownloadButton),
+            ),
+          ),
+        ],
       ),
       AppUpdateStatus.downloading => ListTile(
         leading: const SizedBox(
@@ -833,13 +859,21 @@ class _UpdateStatusTile extends StatelessWidget {
               : l10n.settingsUpdatesDownloadingIndeterminate,
         ),
       ),
-      AppUpdateStatus.needsInstallPermission => ListTile(
-        leading: const Icon(Icons.lock_outline),
-        title: Text(l10n.settingsUpdatesNeedsPermission),
-        trailing: FilledButton(
-          onPressed: onGrantPermission,
-          child: Text(l10n.settingsUpdatesGrantPermissionButton),
-        ),
+      AppUpdateStatus.needsInstallPermission => Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          ListTile(
+            leading: const Icon(Icons.lock_outline),
+            title: Text(l10n.settingsUpdatesNeedsPermission),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+            child: FilledButton(
+              onPressed: onGrantPermission,
+              child: Text(l10n.settingsUpdatesGrantPermissionButton),
+            ),
+          ),
+        ],
       ),
       AppUpdateStatus.error => ListTile(
         leading: Icon(

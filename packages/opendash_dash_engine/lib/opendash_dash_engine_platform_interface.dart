@@ -99,9 +99,14 @@ abstract class OpendashDashEnginePlatform extends PlatformInterface {
   }) => throw UnimplementedError();
   Future<void> updateCall(String? caller) => throw UnimplementedError();
 
-  /// Turn-guidance chime for [VoiceMode.chime] — no Dart/Flutter equivalent
-  /// to `ToneGenerator`, so this stays behind the plugin.
-  Future<void> playChime() => throw UnimplementedError();
+  Future<VoiceSpeechResult> speakVoice({
+    required String text,
+    required String languageTag,
+    required double volume,
+    required VoiceMusicPolicy policy,
+  }) => throw UnimplementedError();
+
+  Future<void> stopVoice() => throw UnimplementedError();
 
   /// Media/call bridge — native `NotificationListenerService` +
   /// `MediaSessionManager` forwarding (see the plugin's `media/` package).
@@ -111,6 +116,10 @@ abstract class OpendashDashEnginePlatform extends PlatformInterface {
   Future<bool> hangupCall() => throw UnimplementedError();
   Future<bool> skipNext() => throw UnimplementedError();
   Future<bool> skipPrevious() => throw UnimplementedError();
+  Future<void> mediaPlayPause() => throw UnimplementedError();
+  Future<void> mediaVolumeUp() => throw UnimplementedError();
+  Future<void> mediaVolumeDown() => throw UnimplementedError();
+  Future<void> mediaMute() => throw UnimplementedError();
   Future<bool> isNotificationAccessGranted() => throw UnimplementedError();
   Future<void> openNotificationAccessSettings() => throw UnimplementedError();
 }

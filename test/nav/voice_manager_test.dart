@@ -1,52 +1,41 @@
+import 'dart:async';
+
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:opendash_dash_engine/opendash_dash_engine.dart';
+import 'package:opendash_dash_engine/opendash_dash_engine_platform_interface.dart';
 import 'package:snatch_dash/nav/geo_point.dart';
 import 'package:snatch_dash/nav/route.dart';
 import 'package:snatch_dash/nav/voice_manager.dart';
+import 'package:snatch_dash/nav/voice_settings.dart';
+
+import '../voice_test_support.dart';
 
 void main() {
   final binding = TestWidgetsFlutterBinding.ensureInitialized();
-  const channel = MethodChannel('flutter_tts');
-  final spoken = <String>[];
-  final languages = <String>[];
+  late OpendashDashEnginePlatform originalPlatform;
+  late FakeVoiceEngine engine;
+  late VoicePreferencesDisk disk;
   late VoiceManager voice;
 
   setUp(() async {
-    spoken.clear();
-    languages.clear();
-    SharedPreferences.setMockInitialValues({});
-    binding.defaultBinaryMessenger.setMockMethodCallHandler(channel, (
-      call,
-    ) async {
-      if (call.method == 'setLanguage') {
-        languages.add(call.arguments as String);
-      } else if (call.method == 'speak') {
-        final arguments = call.arguments;
-        spoken.add(
-          arguments is String
-              ? arguments
-              : (arguments as Map<Object?, Object?>)['text']! as String,
-        );
-      }
-      return 1;
-    });
-    voice = VoiceManager.instance;
-    voice.resetTrip();
-    await voice.setMode(VoiceMode.full);
+    originalPlatform = OpendashDashEnginePlatform.instance;
+    engine = FakeVoiceEngine();
+    OpendashDashEnginePlatform.instance = engine;
+    disk = VoicePreferencesDisk(binding)..install();
+    voice = VoiceManager();
+    await voice.initialize();
   });
 
-  tearDown(() async {
-    voice.resetTrip();
-    await voice.setMode(VoiceMode.off);
+  tearDown(() {
     binding.platformDispatcher.clearLocaleTestValue();
-    binding.defaultBinaryMessenger.setMockMethodCallHandler(channel, null);
+    OpendashDashEnginePlatform.instance = originalPlatform;
+    disk.dispose();
   });
 
   Future<String> announce(ManeuverType type, {int? exitNumber}) async {
-    spoken.clear();
-    languages.clear();
+    engine.requests.clear();
     voice.resetTrip();
     await voice.maybeAnnounce(
       Maneuver(
@@ -59,7 +48,7 @@ void main() {
       50,
       5000,
     );
-    return spoken.single;
+    return engine.requests.single.text;
   }
 
   test(
@@ -71,7 +60,7 @@ void main() {
         final text = await announce(type);
         expect(text, matches(RegExp('[А-Яа-яЁё]')), reason: type.name);
         expect(text, isNot(matches(RegExp('[A-Za-z]'))), reason: type.name);
-        expect(languages.single, 'ru-RU');
+        expect(engine.requests.single.languageTag, 'ru-RU');
       }
     },
   );
@@ -98,7 +87,10 @@ void main() {
         final rightText = await announce(pair.$2);
         expect(rightText, matches(right), reason: pair.$2.name);
         expect(rightText, isNot(matches(left)), reason: pair.$2.name);
-        expect(languages.single, language == 'ru' ? 'ru-RU' : 'en-US');
+        expect(
+          engine.requests.single.languageTag,
+          language == 'ru' ? 'ru-RU' : 'en-US',
+        );
       }
     });
 
@@ -120,5 +112,141 @@ void main() {
         matches(RegExp(language == 'ru' ? 'круг' : 'roundabout')),
       );
     });
+  }
+
+  const turn = Maneuver(
+    type: ManeuverType.right,
+    location: GeoPoint(0, 0),
+    cumulativeMeters: 1000,
+  );
+
+  test(
+    'all announcements stay silent until initialization completes',
+    () async {
+      final reading = Completer<void>();
+      final releaseRead = Completer<void>();
+      disk.beforeRead = () {
+        reading.complete();
+        return releaseRead.future;
+      };
+      // A fresh preferences cache models a new application startup.
+      disk.install();
+      voice = VoiceManager();
+      await voice.maybeAnnounce(turn, 250, 5000);
+      await voice.announceConnectionLost();
+      await voice.announceConnectionRestored();
+      expect(engine.requests, isEmpty);
+
+      final first = voice.initialize();
+      final second = voice.initialize();
+      await reading.future;
+      await voice.maybeAnnounce(turn, 250, 5000);
+      await voice.announceConnectionLost();
+      await voice.announceConnectionRestored();
+      expect(engine.requests, isEmpty);
+
+      releaseRead.complete();
+      await Future.wait([first, second]);
+      expect(disk.reads, 2); // One setUp read, one shared startup read.
+      await voice.maybeAnnounce(turn, 250, 5000);
+      await voice.announceConnectionLost();
+      await voice.announceConnectionRestored();
+      expect(engine.requests, hasLength(3));
+    },
+  );
+
+  test(
+    'off stops pending speech before disk and does not replay its cue',
+    () async {
+      final speech = Completer<VoiceSpeechResult>();
+      engine.onSpeak = () => speech.future;
+      engine.onStop = () => speech.complete(VoiceSpeechResult.cancelled);
+      final speaking = voice.maybeAnnounce(turn, 250, 5000);
+      expect(engine.requests, hasLength(1));
+      final writeStarted = Completer<void>();
+      final releaseWrite = Completer<void>();
+      disk.beforeWrite = (key, value) async {
+        if (!writeStarted.isCompleted) {
+          writeStarted.complete();
+          await releaseWrite.future;
+        }
+        return true;
+      };
+
+      final saving = voice.applySettings(
+        voice.settings.copyWith(enabled: false),
+      );
+      expect(voice.settings.enabled, isFalse);
+      expect(engine.stops, 1);
+      expect(disk.values['voice_enabled'], isNull);
+      await speaking;
+      await writeStarted.future;
+      await voice.maybeAnnounce(turn, 250, 5000);
+      await voice.announceConnectionLost();
+      await voice.announceConnectionRestored();
+      expect(engine.requests, hasLength(1));
+
+      releaseWrite.complete();
+      await saving;
+      engine.onSpeak = null;
+      engine.onStop = null;
+      await voice.applySettings(voice.settings.copyWith(enabled: true));
+      await voice.maybeAnnounce(turn, 250, 5000);
+      expect(engine.requests, hasLength(1));
+      await voice.maybeAnnounce(turn, 140, 5000);
+      expect(engine.requests, hasLength(2));
+    },
+  );
+
+  test(
+    'volume and policy affect the next phrase without restarting speech',
+    () async {
+      final speech = Completer<VoiceSpeechResult>();
+      engine.onSpeak = () => speech.future;
+      final speaking = voice.maybeAnnounce(turn, 250, 5000);
+      final first = engine.requests.single;
+
+      await voice.applySettings(
+        voice.settings.copyWith(
+          volume: VoiceVolume.high,
+          musicPolicy: VoiceMusicPolicy.pauseAndResume,
+        ),
+      );
+      expect(engine.stops, 0);
+      expect(engine.requests, hasLength(1));
+      expect(first.volume, 0.5);
+      expect(first.policy, VoiceMusicPolicy.duck);
+
+      speech.complete(VoiceSpeechResult.completed);
+      await speaking;
+      engine.onSpeak = null;
+      await voice.maybeAnnounce(turn, 140, 5000);
+      expect(engine.requests.last.volume, 0.75);
+      expect(engine.requests.last.policy, VoiceMusicPolicy.pauseAndResume);
+    },
+  );
+
+  for (final outcome in ['cancelled', 'focusDenied', 'native error']) {
+    test(
+      '$outcome consumes a cue without breaking the next announcement',
+      () async {
+        engine.onSpeak = () => outcome == 'native error'
+            ? Future.error(PlatformException(code: 'VOICE_TTS_PLAYBACK'))
+            : Future.value(
+                outcome == 'cancelled'
+                    ? VoiceSpeechResult.cancelled
+                    : VoiceSpeechResult.focusDenied,
+              );
+        await voice.maybeAnnounce(turn, 250, 5000);
+        await voice.maybeAnnounce(turn, 250, 5000);
+        expect(engine.requests, hasLength(1));
+
+        engine.onSpeak = null;
+        await voice.maybeAnnounce(turn, 140, 5000);
+        await voice.announceConnectionLost();
+        await voice.announceConnectionRestored();
+        expect(engine.requests, hasLength(4));
+      },
+    );
   }
 }

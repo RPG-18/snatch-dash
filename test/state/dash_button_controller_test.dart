@@ -6,6 +6,7 @@ import 'package:opendash_dash_engine/opendash_dash_engine.dart';
 import 'package:opendash_dash_engine/opendash_dash_engine_platform_interface.dart';
 import 'package:plugin_platform_interface/plugin_platform_interface.dart';
 import 'package:snatch_dash/state/dash_button_controller.dart';
+import 'package:snatch_dash/state/dash_engine_state.dart';
 
 /// That a button pressed twice does something twice.
 ///
@@ -43,17 +44,25 @@ void main() {
     expect(platform.calls, ['zoomIn', 'zoomIn']);
   });
 
-  test('alternating buttons still act, so the test above is about repeats', () async {
-    final container = ProviderContainer();
-    addTearDown(container.dispose);
-    container.read(dashButtonControllerProvider);
+  test(
+    'dedicated zoom buttons retain directions while media is active',
+    () async {
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      container.read(dashButtonControllerProvider);
+      final stateSub = container.listen(dashEngineStateProvider, (_, _) {});
+      addTearDown(stateSub.close);
+      await pumpEventQueue();
+      platform.publish(title: 'Song', mediaActive: true, mediaPlaying: true);
+      await pumpEventQueue();
 
-    platform.press(_zoomIn);
-    platform.press(_zoomOut);
-    await pumpEventQueue();
+      platform.press(_zoomIn);
+      platform.press(_zoomOut);
+      await pumpEventQueue();
 
-    expect(platform.calls, ['zoomIn', 'zoomOut']);
-  });
+      expect(platform.calls, ['zoomIn', 'zoomOut']);
+    },
+  );
 
   test('the subscription goes away with the container', () async {
     final container = ProviderContainer();
@@ -63,8 +72,230 @@ void main() {
     platform.press(_zoomIn);
     await pumpEventQueue();
 
-    expect(platform.calls, isEmpty, reason: 'a disposed controller still acted');
+    expect(
+      platform.calls,
+      isEmpty,
+      reason: 'a disposed controller still acted',
+    );
   });
+
+  test('repeated volume up dispatches twice without skip or zoom', () async {
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+    container.read(dashButtonControllerProvider);
+    final stateSub = container.listen(dashEngineStateProvider, (_, _) {});
+    addTearDown(stateSub.close);
+    await pumpEventQueue();
+
+    platform.publish(title: 'Song', mediaActive: true, mediaPlaying: true);
+    await pumpEventQueue();
+    platform.press(0x06);
+    platform.press(0x06);
+    await pumpEventQueue();
+
+    expect(platform.calls, ['mediaVolumeUp', 'mediaVolumeUp']);
+  });
+
+  for (final scenario in const <({String? title, bool? playing})>[
+    (title: null, playing: true),
+    (title: '', playing: false),
+    (title: 'Song', playing: null),
+  ]) {
+    test('active media routes volume and center with $scenario', () async {
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      container.read(dashButtonControllerProvider);
+      final stateSub = container.listen(dashEngineStateProvider, (_, _) {});
+      addTearDown(stateSub.close);
+      await pumpEventQueue();
+
+      platform.publish(
+        title: scenario.title,
+        mediaActive: true,
+        mediaPlaying: scenario.playing,
+      );
+      await pumpEventQueue();
+      platform.press(0x06);
+      platform.press(0x07);
+      platform.press(0x05);
+      await pumpEventQueue();
+
+      expect(platform.calls, [
+        'mediaVolumeUp',
+        'mediaVolumeDown',
+        'mediaPlayPause',
+      ]);
+    });
+  }
+  for (final title in <String?>[null, 'Song']) {
+    test(
+      'inactive media consumes volume and center with title=$title',
+      () async {
+        final container = ProviderContainer();
+        addTearDown(container.dispose);
+        container.read(dashButtonControllerProvider);
+        final stateSub = container.listen(dashEngineStateProvider, (_, _) {});
+        addTearDown(stateSub.close);
+        await pumpEventQueue();
+
+        platform.publish(title: title, mediaActive: false, mediaPlaying: true);
+        await pumpEventQueue();
+        platform.press(0x05);
+        platform.press(0x06);
+        platform.press(0x07);
+        await pumpEventQueue();
+
+        expect(platform.calls, isEmpty);
+      },
+    );
+  }
+
+  test('captured 07 then 05 dispatches volume down then toggle', () async {
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+    container.read(dashButtonControllerProvider);
+    final stateSub = container.listen(dashEngineStateProvider, (_, _) {});
+    addTearDown(stateSub.close);
+    await pumpEventQueue();
+
+    platform.publish(title: 'Song', mediaActive: true, mediaPlaying: true);
+    await pumpEventQueue();
+    platform.press(0x07);
+    platform.press(0x05);
+    await pumpEventQueue();
+
+    expect(platform.calls, ['mediaVolumeDown', 'mediaPlayPause']);
+  });
+
+  test(
+    'paused media with an empty title retains next and previous track actions',
+    () async {
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      container.read(dashButtonControllerProvider);
+      final stateSub = container.listen(dashEngineStateProvider, (_, _) {});
+      addTearDown(stateSub.close);
+      await pumpEventQueue();
+
+      platform.publish(title: '', mediaActive: true, mediaPlaying: false);
+      await pumpEventQueue();
+      platform.press(0x09);
+      platform.press(0x0A);
+      await pumpEventQueue();
+
+      expect(platform.calls, ['skipNext', 'skipPrevious']);
+    },
+  );
+
+  test('media stop restores zoom for both track buttons', () async {
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+    container.read(dashButtonControllerProvider);
+    final stateSub = container.listen(dashEngineStateProvider, (_, _) {});
+    addTearDown(stateSub.close);
+    await pumpEventQueue();
+
+    platform.publish(title: 'Song', mediaActive: true, mediaPlaying: true);
+    await pumpEventQueue();
+    platform.press(0x09);
+    platform.press(0x0A);
+    await pumpEventQueue();
+
+    platform.publish(mediaActive: false);
+    await pumpEventQueue();
+    platform.press(0x09);
+    platform.press(0x0A);
+    await pumpEventQueue();
+
+    expect(platform.calls, ['skipNext', 'skipPrevious', 'zoomIn', 'zoomOut']);
+  });
+
+  test(
+    'track buttons and 22 use title presence rather than media flags',
+    () async {
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      container.read(dashButtonControllerProvider);
+      final stateSub = container.listen(dashEngineStateProvider, (_, _) {});
+      addTearDown(stateSub.close);
+      await pumpEventQueue();
+
+      platform.publish(mediaActive: true, mediaPlaying: null);
+      await pumpEventQueue();
+      platform.press(0x09);
+      platform.press(0x0A);
+      platform.press(0x22);
+      await pumpEventQueue();
+      platform.publish(title: 'Song', mediaActive: false, mediaPlaying: null);
+      await pumpEventQueue();
+      platform.press(0x09);
+      platform.press(0x0A);
+      platform.press(0x22);
+      await pumpEventQueue();
+
+      expect(platform.calls, [
+        'zoomIn',
+        'zoomOut',
+        'zoomIn',
+        'skipNext',
+        'skipPrevious',
+        'skipNext',
+      ]);
+    },
+  );
+
+  for (final mediaActive in [true, false]) {
+    test('call precedence is retained with mediaActive=$mediaActive', () async {
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      container.read(dashButtonControllerProvider);
+      final stateSub = container.listen(dashEngineStateProvider, (_, _) {});
+      addTearDown(stateSub.close);
+      await pumpEventQueue();
+
+      platform.publish(
+        title: 'Song',
+        mediaActive: mediaActive,
+        mediaPlaying: true,
+        incomingCaller: 'Caller',
+        hasActiveCall: true,
+      );
+      await pumpEventQueue();
+      platform.press(0x06);
+      platform.press(0x07);
+      await pumpEventQueue();
+
+      platform.publish(
+        title: 'Song',
+        mediaActive: mediaActive,
+        hasActiveCall: true,
+      );
+      await pumpEventQueue();
+      platform.press(0x07);
+      platform.press(0x06);
+      platform.press(0x05);
+      await pumpEventQueue();
+
+      platform.publish(
+        title: 'Song',
+        mediaActive: mediaActive,
+        incomingCaller: 'Caller',
+      );
+      await pumpEventQueue();
+      platform.press(0x06);
+      platform.press(0x07);
+      await pumpEventQueue();
+
+      expect(platform.calls, [
+        'answerCall',
+        'hangupCall',
+        'hangupCall',
+        if (mediaActive) ...['mediaVolumeUp', 'mediaPlayPause'],
+        'answerCall',
+        if (mediaActive) 'mediaVolumeDown',
+      ]);
+    });
+  }
 }
 
 const _zoomIn = 0x13;
@@ -73,10 +304,33 @@ const _zoomOut = 0x14;
 class _RecordingPlatform extends OpendashDashEnginePlatform
     with MockPlatformInterfaceMixin {
   final _buttons = StreamController<DashButtonEvent>.broadcast();
+  final _states = StreamController<DashEngineState>.broadcast();
   final calls = <String>[];
 
   void press(int code) => _buttons.add(DashButtonEvent(code: code));
-  void dispose() => _buttons.close();
+  void publish({
+    String? title,
+    required bool mediaActive,
+    bool? mediaPlaying,
+    String? incomingCaller,
+    bool hasActiveCall = false,
+  }) {
+    final state = idleDashState
+      ..nowPlayingTitle = title
+      ..mediaActive = mediaActive
+      ..mediaPlaying = mediaPlaying
+      ..incomingCaller = incomingCaller
+      ..hasActiveCall = hasActiveCall;
+    _states.add(state);
+  }
+
+  void dispose() {
+    unawaited(_buttons.close());
+    unawaited(_states.close());
+  }
+
+  @override
+  Stream<DashEngineState> get stateStream => _states.stream;
 
   @override
   Stream<DashButtonEvent> get buttonStream => _buttons.stream;
@@ -86,4 +340,40 @@ class _RecordingPlatform extends OpendashDashEnginePlatform
 
   @override
   Future<void> zoomOut() async => calls.add('zoomOut');
+
+  @override
+  Future<bool> skipNext() async {
+    calls.add('skipNext');
+    return true;
+  }
+
+  @override
+  Future<bool> skipPrevious() async {
+    calls.add('skipPrevious');
+    return true;
+  }
+
+  @override
+  Future<bool> answerCall() async {
+    calls.add('answerCall');
+    return true;
+  }
+
+  @override
+  Future<bool> hangupCall() async {
+    calls.add('hangupCall');
+    return true;
+  }
+
+  @override
+  Future<void> mediaPlayPause() async => calls.add('mediaPlayPause');
+
+  @override
+  Future<void> mediaVolumeUp() async => calls.add('mediaVolumeUp');
+
+  @override
+  Future<void> mediaVolumeDown() async => calls.add('mediaVolumeDown');
+
+  @override
+  Future<void> mediaMute() async => calls.add('mediaMute');
 }

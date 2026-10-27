@@ -1,8 +1,6 @@
 package com.opendash.opendash_dash_engine
 
 import android.content.Context
-import android.media.AudioManager
-import android.media.ToneGenerator
 import android.os.PowerManager
 import com.opendash.opendash_dash_engine.dash.DashConfig
 import com.opendash.opendash_dash_engine.dash.FrameStreamer
@@ -10,6 +8,7 @@ import com.opendash.opendash_dash_engine.dash.StreamThreads
 import com.opendash.opendash_dash_engine.dash.DashKeepAliveService
 import com.opendash.opendash_dash_engine.dash.DashSession
 import com.opendash.opendash_dash_engine.dash.DashState
+import com.opendash.opendash_dash_engine.dash.LiveHeartbeat
 import com.opendash.opendash_dash_engine.dash.DashWifiManager
 import com.opendash.opendash_dash_engine.dash.WifiConnStatus
 import com.opendash.opendash_dash_engine.dash.map.DashCameraState
@@ -40,7 +39,7 @@ import com.opendash.opendash_dash_engine.dash.Effect
 import com.opendash.opendash_dash_engine.dash.label
 import com.opendash.opendash_dash_engine.dash.DashSocket
 import com.opendash.opendash_dash_engine.dash.NavFigures
-import com.opendash.opendash_dash_engine.dash.NowPlaying
+import com.opendash.opendash_dash_engine.dash.MediaForwarding
 import com.opendash.opendash_dash_engine.dash.SessionEvent
 import com.opendash.opendash_dash_engine.dash.protocol.DashCommand
 import kotlinx.coroutines.CancellationException
@@ -48,6 +47,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
@@ -208,8 +208,8 @@ class DashEngineController(
 
     private val snapshots = MapSnapshotProvider(context)
     private val overlays = OverlayRenderer()
-    private var toneGenerator: ToneGenerator? = null
-    private val mediaInfo = MediaInfoProvider(context)
+    private val mediaInfo = MediaInfoProvider(context, scope)
+    private val liveHeartbeat = LiveHeartbeat(context)
     private val callController = CallController(context)
     private val powerManager = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
 
@@ -337,6 +337,16 @@ class DashEngineController(
      * ways, so it has a class of its own: [DashCameraState].
      */
     private val inputs = MutableStateFlow(DashInputs())
+    private val mediaForwarding = MediaForwarding(chrome, { current.value }) { media ->
+        inputs.update {
+            it.copy(
+                nowPlayingTitle = media.nowPlaying?.title,
+                mediaActive = media.mediaActive,
+                mediaPlaying = media.mediaPlaying,
+            )
+        }
+        publishState()
+    }
 
     /**
      * Where the map camera is pointing, and the joystick controls that move it.
@@ -762,6 +772,8 @@ class DashEngineController(
         }
     }
 
+    private fun currentHeartbeat(): DashCommand.Heartbeat = liveHeartbeat.currentHeartbeat()
+
     /**
      * Start a connection, replacing whatever was running.
      *
@@ -810,6 +822,7 @@ class DashEngineController(
             current.value = DashSession.open(
                 ssid = ssid,
                 chrome = chrome,
+                heartbeat = ::currentHeartbeat,
                 clock = ::monotonicMs,
                 parent = scope.coroutineContext.job,
                 // The plugin's handler, carried over deliberately: the session's
@@ -1041,24 +1054,21 @@ class DashEngineController(
     }
 
     /**
-     * Forwards the phone's now-playing/incoming-call state to the dash via
-     * `DashSession.updateNowPlaying`/`updateCall`, so it shows up in the
-     * dash's own media/call cards. Ported from `DashViewModel.startMediaForwarding`.
-     * No-ops silently if notification access hasn't been granted — see
-     * [isNotificationAccessGranted].
+     * Register the ordered event collector before provider start. The synchronous owner
+     * reduces each revision and partitions updates from the session's initial replay.
+     * Notification access is optional — see [isNotificationAccessGranted].
      */
     private fun startMediaForwarding() {
-        mediaInfo.start()
         mediaForwardJob?.cancel()
-        mediaForwardJob = scope.launch {
-            mediaInfo.nowPlaying.collect { np ->
-                updateNowPlaying(np?.title, np?.album.orEmpty(), np?.artist.orEmpty())
-                inputs.update { it.copy(nowPlayingTitle = np?.title) }
-                publishState()
-            }
+        val generation = mediaForwarding.begin()
+        mediaForwardJob = scope.launch(start = CoroutineStart.UNDISPATCHED) {
+            mediaInfo.collectWithSnapshot(
+                onSnapshot = { mediaForwarding.acceptSnapshot(generation, it) },
+                onEvent = { mediaForwarding.acceptEvent(generation, it) },
+            )
         }
         callForwardJob?.cancel()
-        callForwardJob = scope.launch {
+        callForwardJob = scope.launch(start = CoroutineStart.UNDISPATCHED) {
             CallInfoProvider.incomingCall.collect { call ->
                 // Filtered to ringing calls only, same as the line above — an
                 // active/outgoing call has nothing to "answer", so surfacing it
@@ -1071,9 +1081,13 @@ class DashEngineController(
                 publishState()
             }
         }
+        mediaInfo.start()
     }
 
     private fun stopMediaForwarding() {
+        // Invalidate callbacks and clear/publish local state before explicit inactive.
+        // Delivery through the live writer does not depend on the cancelled collector.
+        mediaForwarding.stop()
         mediaForwardJob?.cancel(); mediaForwardJob = null
         callForwardJob?.cancel(); callForwardJob = null
         mediaInfo.stop()
@@ -1230,8 +1244,7 @@ class DashEngineController(
     fun setWifiPassword(password: String) { dashConfig.password = password }
 
     fun updateNowPlaying(title: String?, album: String, artist: String) {
-        val playing = title?.takeIf { it.isNotBlank() }?.let { NowPlaying(it, album, artist) }
-        chrome.update { it.copy(nowPlaying = playing) }
+        mediaForwarding.updateNowPlaying(title, album, artist)
     }
 
     fun updateCall(caller: String?) {
@@ -1265,6 +1278,10 @@ class DashEngineController(
 
     fun skipNext(): Boolean = mediaInfo.skipNext()
     fun skipPrevious(): Boolean = mediaInfo.skipPrevious()
+    fun mediaPlayPause(): Unit = mediaInfo.playPause()
+    fun mediaVolumeUp(): Unit = mediaInfo.volumeUp()
+    fun mediaVolumeDown(): Unit = mediaInfo.volumeDown()
+    fun mediaMute(): Unit = mediaInfo.mute()
 
     /** Whether the phone has granted OpenDash notification-listener access
      *  (required for [mediaInfo]/[CallInfoProvider] to see anything). */
@@ -1272,15 +1289,6 @@ class DashEngineController(
 
     fun openNotificationAccessSettings() {
         context.startActivity(MediaInfoProvider.accessSettingsIntent())
-    }
-
-    /** Turn-guidance chime for [VoiceMode.CHIME] — `ToneGenerator` has no Dart/Flutter
-     *  equivalent, so this stays behind the plugin; ported from `VoiceManager.chime()`. */
-    fun playChime() {
-        runCatching {
-            val tone = toneGenerator ?: ToneGenerator(AudioManager.STREAM_MUSIC, 80).also { toneGenerator = it }
-            tone.startTone(ToneGenerator.TONE_PROP_BEEP, 180)
-        }.onFailure { DebugLog.w(TAG) { "chime failed: ${it.message}" } }
     }
 
     fun currentConfig(): DashConfigView = DashConfigView(
@@ -1319,7 +1327,6 @@ class DashEngineController(
             sessionFeedJob?.cancel(); sessionFeedJob = null
             teardown(viaFsm = false)
         }
-        runCatching { toneGenerator?.release() }
     }
 
     // ── Streaming / render loop ─────────────────────────────────────────
@@ -1428,7 +1435,7 @@ class DashEngineController(
             // Inside the launched job the same failure would be an uncaught exception in a
             // coroutine and the dash would sit in READY behind a stream that never started.
             streamer.prepareEncoder()
-            current.value?.startStreaming()
+            mediaForwarding.startStreaming()
         } catch (e: Throwable) {
             streamer?.releaseEncoder()
             threads?.close()
@@ -1572,6 +1579,8 @@ class DashEngineController(
                 nowPlayingTitle = inp.nowPlayingTitle,
                 incomingCaller = inp.incomingCaller,
                 hasActiveCall = inp.hasActiveCall,
+                mediaActive = inp.mediaActive,
+                mediaPlaying = inp.mediaPlaying,
             )
         )
     }

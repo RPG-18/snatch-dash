@@ -36,6 +36,10 @@ enum WifiStatus { idle, requesting, connected, error }
 /// the app routes them to `verbose` rather than to its own debug level.
 enum DashLogLevel { debug, info, warning, error }
 
+enum VoiceMusicPolicy { duck, pauseAndResume, unchanged }
+
+enum VoiceSpeechResult { completed, cancelled, focusDenied }
+
 /// One position on the route line sent to the dash.
 ///
 /// A class rather than the `List<List<double>>` this used to be: a pair of bare
@@ -78,6 +82,8 @@ class DashEngineState {
     this.nowPlayingTitle,
     this.incomingCaller,
     required this.hasActiveCall,
+    required this.mediaActive,
+    this.mediaPlaying,
   });
 
   final DashStage stage;
@@ -123,6 +129,12 @@ class DashEngineState {
   /// Any call at all — ringing, answered or outgoing — so the dash's reject
   /// button can end one that has already been answered.
   final bool hasActiveCall;
+
+  /// Whether a media session is active, independently of its title or playback.
+  final bool mediaActive;
+
+  /// Whether playback is playing or paused, or `null` when unknown or inactive.
+  final bool? mediaPlaying;
 }
 
 /// A press on the dash's own joystick.
@@ -237,13 +249,25 @@ abstract class DashEngineApi {
   void updateNowPlaying(String? title, String album, String artist);
   void updateCall(String? caller);
 
-  /// Turn-guidance chime. No Dart equivalent to `ToneGenerator`, so it lives here.
-  void playChime();
+  @async
+  VoiceSpeechResult speakVoice(
+    String text,
+    String languageTag,
+    double volume,
+    VoiceMusicPolicy policy,
+  );
+
+  @async
+  void stopVoice();
 
   bool answerCall();
   bool hangupCall();
   bool skipNext();
   bool skipPrevious();
+  void mediaPlayPause();
+  void mediaVolumeUp();
+  void mediaVolumeDown();
+  void mediaMute();
   bool isNotificationAccessGranted();
   void openNotificationAccessSettings();
 }

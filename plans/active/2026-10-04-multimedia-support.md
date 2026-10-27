@@ -2,8 +2,8 @@
 
 **Дата создания:** 04.10.2026
 
-**Статус:** предложение; реализация не начата. Исследование обновлено
-22.10.2026 по `re_app_new` — Royal Enfield 10.1.23(45), versionCode 193.
+**Статус:** этапы 1–6 реализованы и проверены 23.10.2026; 26.10.2026 пользователь подтвердил управление мультимедией на обоих телефонах, отображение обложек, PLAYING/PAUSED indicator и inactive. Расширенные гейты этапа 7 остаются открыты.
+Исследование обновлено 22.10.2026 по `re_app_new` — Royal Enfield 10.1.23(45), versionCode 193.
 План сохраняет независимые автоматические и полевые гейты.
 
 ## 0. Как читать этот план
@@ -43,7 +43,45 @@ wire формы проверяются отдельно. Unresolved hardware н�
 
 ## 0.1. Статус
 
-Где план сейчас (22.10.2026): реализация не начата. Исследование от
+**Полевое подтверждение, 26.10.2026.** Пользователь подтвердил управление
+мультимедией на Huawei HBN-LX9 и Xiaomi 2606FRN72Y, затем отдельно сообщил:
+«Обложки, PLAYING/PAUSED indicator, inactive работают». Базовые сценарии
+отображения обложек, индикатора и inactive приняты по наблюдению человека,
+не по одному наличию исходящих пакетов.
+На оба телефона в этой сессии установлен profile APK SHA-256
+`546491846cbc11ca3912856bef115d4d95b2ca48fe89ee6c1b47f59011d29019`.
+Это не подтверждение всех размеров art, прерывания A→B, no-art transitions,
+media/video interaction, расширенной матрицы кнопок или remaining official map.
+Версия firmware и привязка этих наблюдений к PCAP в данном подтверждении
+не зафиксированы; этап 7 целиком не закрыт.
+
+**Текущий статус кнопок, 23.10.2026 (после этапа 6).** Пользователь подтвердил
+физическое назначение вверх/вниз/центра: громкость музыки +/−/пауза.
+Принят узкий cutover `05/06/07`; действующий контракт —
+[`spec/multimedia.md`, §8](../../spec/multimedia.md#8-что-из-этого-есть-у-нас).
+После прежнего call precedence эти коды требуют только `mediaActive`, при
+inactive поглощаются без skip/zoom; `09/0A/22` сохраняют title gate, `13/14` zoom.
+Это отдельное уточнение прежнего запрета менять mapping, не принятие всей
+official map: `03/04` call-volume, `08` mute и новый gate `09/0A` не внедрены.
+Исторические записи этапов 5–6 ниже описывают состояние до этого cutover.
+
+Основание: стационарная проверка мультимедиа на Huawei HBN-LX9, сборка
+`93e3f9f3c+dirty`, `ride-20261023-180816.log` /
+`/tmp/snatch-media-20261023-180816.pcapng`. Старые `06/07` делали skip,
+`05` previous; все 64 кнопки получили ACK. Четыре пары `07→05` за 39–224 мс
+давали двойной previous, но одно это физическое нажатие или два, неизвестно:
+временной debounce не вводится. Это не заезд и не аппаратная перепроверка
+исправленной сборки. 24 декодируемых JPEG 75×75 не доказывают отображение.
+Подробности — Findings обеих hardware checklist; остальные гейты этапа 7 открыты.
+
+Проверки узкого cutover: root `flutter test` — **143 теста успешно**,
+`flutter analyze` — без замечаний. Отдельный executable smoke через Flutter
+engine проверил production Riverpod dispatcher и Dart façade: titleless active,
+повтор up, down, pause/resume, inactive без skip/zoom и call precedence.
+Плеер в smoke имитировался; Android controls и физический дэш этим запуском
+не проверялись. Временный скрипт и assets удалены, на телефон сборка не установлена.
+
+Состояние на 22.10.2026: реализация не начата. Исследование от
 04.10.2026 относилось к 10.1.22; его факты и источники остаются в
 [`spec/multimedia.md`](../../spec/multimedia.md). Повторная статическая сверка
 10.1.23(45) и границы доказательств записаны ниже. Это не проверка порта
@@ -63,11 +101,181 @@ initial dedup, lifecycle и владение Bitmap. Новые anchors — §1.
 отличия порта уточнены в §2 и этапах 2/4/7. ICU→ASCII, совместимая карточка,
 1 Hz и текущие кнопки не пересматриваются по одной декомпиляции.
 
+Уточнение по ревью 23.10.2026: определены замена незавершённой обложки при
+принятии новых metadata, unknown playback state и владелец inactive при stop.
+Отмена старой обложки и `mediaPlaying=null` для OTHER/null playback выбраны
+как политика порта, не как вывод из декомпиляции. Реализация не начата;
+правки уточняют контракт плана и критерии будущих проверок, но не добавляют
+автоматических или аппаратных подтверждений. Совместимость прерывания art
+остаётся открытым `[ride]` этапа 7.
+
+Состояние после этапа 1 (23.10.2026): wire-команды, scalar encoding,
+`AlbumArtFrames` и `VolumeLevel` реализованы; media callbacks, paced writer,
+live AudioManager и Pigeon ещё не подключены. Следующий этап — 2.
+Проверены полный `:opendash_dash_engine:testDebugUnitTest` (413 тестов,
+0 failures/errors/skipped), включая 20 новых тестов, и `lintDebug`
+(0 ошибок, 20 предупреждений вне изменённых файлов).
+Throwaway JVM smoke: JPEG 75×75, 3879 байт → 4 art packets → побайтно
+идентичный декодируемый JPEG; отдельно выведены media markers и heartbeat
+с независимыми уровнями громкости. Это не Android Bitmap/MediaSession smoke
+и не аппаратное подтверждение; все `[ride]` остаются открыты.
+Code review этапа 1: замечаний к production-коду и тестам не найдено.
+Отклонение окружения: установленный Android Studio содержит JBR 25.0.3,
+загрузка JBR 21 с redirector и прямого CDN завершилась таймаутами. Проверки
+выполнены на установленном Temurin 21.0.7 с локальными `JAVA_HOME` и
+`-Dorg.gradle.java.home`, без изменения настроек проекта или пользователя.
+
+Состояние после этапа 2 (23.10.2026): provider переведён на
+snapshot/events, controller — на snapshot до start; старый provider.nowPlaying
+удалён. Реализованы lifecycle/generation guards, callback parity/dedup,
+metadata tuples, nullable playback, native controls и безопасный JPEG encoder.
+`collectWithSnapshot` регистрирует event collector до чтения revision snapshot;
+одна scope-owned coroutine публикует события через `MutableSharedFlow`,
+неограниченный FIFO сохраняет их для медленных consumers без дропа.
+Provider.stop вызывается до отмены владеющего scope.
+`dispatchMediaMetadata` проверяет узкую card-only fallback-границу отдельно;
+её подключение к sender, как и paced art/playback/inactive packets, — этап 3.
+
+Проверки этапа 2: полный JVM suite — 446 тестов (33 новых), без failures/errors/skipped;
+Android API 36 — 16 успешных сценариев: 9 новых Bitmap/JPEG tests, 6 прежних
+ICU text tests и временный live MediaSession smoke. Smoke проверил ART fallback
+в JPEG 798 байт 75×75, initial snapshot, pause→null→OTHER→play, null playPause no-op,
+skip/volume, metadata parity, stop/late metadata и mute без controller.
+Для доступа к реальному MediaSession использованы shell permissions только
+в smoke; notification-access UI не проверялся. Временный smoke удалён.
+`lintDebug`: 0 ошибок, 20 прежних предупреждений вне изменений; новый WrongConstant
+устранён явной проверкой null до `when(state)`, без suppression.
+Два code review (state/revision и Android/Bitmap/controller) — без замечаний.
+Проверки, как и на этапе 1, выполнены на Temurin 21.0.7 без изменения конфигурации.
+Следующий этап — 3; Pigeon, live heartbeat и все `[ride]` ещё открыты.
+
+Состояние после этапа 3 (23.10.2026): media events и initial replay
+подключены к single writer. `MediaForwarding` сериализует chrome + enqueue
+и STREAMING capture, включая вложенные синхронные callbacks; `Active` различает
+bind reset и playback active. Session хранит art transfer/deadline отдельно
+от FIFO принятых control/card/marker events; metadata supersession отменяет
+неотправленный art, inactive/teardown — весь старый queued media.
+Periodic metadata коммитится вместе с invalidation, чтобы тик не отправил
+card B до отмены art A. Controller очищает локальное состояние и явно заказывает
+inactive до отмены collectors/provider.stop. Обязательный heartbeat supplier
+пока возвращает захваченные 25/13/19; live volume — следующий этап 4.
+
+Проверки этапа 3: полный JVM suite — 488 тестов, без failures/errors/skipped;
+42 новых packet-level теста (`DashSessionMediaTest` — 23,
+`MediaForwardingTest` — 19). Управляемое время подтверждает art spacing ≥10 мс,
+projection gap ≤250 мс и receipt→ACK ≤250 мс при 65535 байтах art, A→B/C,
+unknown/reconnect, stop/teardown и replay/reentrant races.
+Временный executable smoke на реальных localhost UDP-сокетах провёл handshake
+и production owner→session→writer: A(65535)→B(JPEG 727 байт) без chunks A после
+card B, JPEG B восстановлен побайтно; полный art 65535 дал 66 packets,
+минимальный наблюдавшийся интервал 10,390 мс, button→ACK 1,231 мс;
+после inactive нет старых card/art через следующий секундный tick.
+Это замер локального транспорта, не firmware/rendering и не полевая гарантия cadence.
+`lintDebug`: 0 ошибок, 20 прежних предупреждений вне изменений.
+Проверки выполнены на Temurin 21.0.7; временный smoke удалён.
+
+Code review writer — без замечаний. Ревью forwarding нашло stop с уже пустым
+chrome, но старой queued legacy card после title→null: до исправления новый
+packet regression отправлял card/marker вместо единственного inactive.
+Исправлено учётом media, заказанного после последнего inactive; повторный stop
+идемпотентен. Регрессия проходит, повторное ревью исправления — без замечаний.
+Pigeon/Dart media-флаги и direct controls остаются этапу 5; все `[ride]` открыты.
+
+Состояние после этапа 4 (23.10.2026): controller `currentHeartbeat`
+подключён к `LiveHeartbeat`, читающему current/min/max системного AudioManager.
+Music/call нормализуются через `VolumeLevel` независимо; invalid/null/exception
+переходит в captured fallback только своего stream (`13`/`19`).
+Supplier вызывается на каждом 1 Гц heartbeat, в том числе до STREAMING,
+без `INFOTAINMENT` gate; температура 25, 11 TLV и initial burst сохранены.
+
+Проверки этапа 4: полный JVM suite — 489 тестов, без failures/errors/skipped.
+Новый packet-level сценарий проверяет независимые live levels, ошибку music,
+null/ошибку call, оба fallback и восстановление на следующем tick, сравнивая
+полный heartbeat packet. Android API 36 — 16 успешных сценариев (15 прежних
+Bitmap/text и временный real-AudioManager smoke): music=0/call=max → `10/1A`,
+music=max/call=min(1) → `1A/11`, отсутствующий/throwing audio service → `13/19`;
+во всех случаях 73 байта и неизменные 11 TLV. Уровни громкости после smoke
+восстановлены; временный smoke удалён. Это не проверка отображения volume на дэше.
+`lintDebug`: 0 ошибок, 20 прежних предупреждений вне изменений.
+Проверки выполнены на Temurin 21.0.7. Следующий этап — 5; все `[ride]` открыты.
+Code review этапа 4 — без замечаний.
+
+Состояние после этапа 5 (23.10.2026): Pigeon schema расширена
+`required bool mediaActive` и `bool? mediaPlaying` в конце state и ровно четырьмя
+HostApi controls. Dart/Kotlin outputs перегенерированы штатным Pigeon 29.0.4,
+не редактировались руками. Controller публикует один input snapshot title/active/
+playing; plugin, façade, platform interface и method-channel делегируют controls
+в native provider. Idle/stop false/null и unknown true/null проходят без coercion.
+Все platform fakes мигрированы. Compatibility mapping не переключён на official:
+новые behavioral tests сохраняют paused/empty-title действия, title gate и call
+precedence; прежние duplicate-event/disposal проверки проходят. Stateful gate
+официальной карты остаётся частью gated fixture этапа 7, не выдаётся за текущий mapping.
+
+Проверки этапа 5: 134 root Flutter tests (3 новых behavioral), 5 package tests,
+489 JVM tests — успешно; root/package `flutter analyze` без замечаний;
+`lintDebug` — 0 ошибок, 20 прежних предупреждений вне изменений.
+Временный debug APK с отдельным applicationId на эмуляторе API 36 проверил
+public Dart `DashEngine` → generated Pigeon → настоящий MediaSession:
+play/pause, volume ±1, mute без controller; 15 typed state events, включая
+active с пустым title, PLAYING→OTHER=null, PAUSED→null=null и stop=false/null.
+Fixture запускал private media forwarding без Wi-Fi-соединения с приборкой,
+не подменяя plugin/provider/channel; notification-listener access выдан
+отдельному smoke-пакету. Это не проверка всей поездки или физических кнопок.
+Временные source/APK/пакет удалены; JVM/Gradle проверки на Temurin 21.0.7.
+Два code review (native/schema и Dart/callers) — без замечаний; отмеченное
+несвязанное форматирование тестов убрано. Новые media/call тесты держат реальную
+Riverpod-подписку на state, а не только read ленивого provider.
+Следующий этап — 6; все `[ride]` остаются открыты.
+
+Где план сейчас (23.10.2026, после этапа 6): автоматическая часть закрыта,
+план остаётся active до оценки `[ride]` этапа 7. Literal art/volume/goldens
+этапов 1–4 уже покрывают требуемые boundaries, поэтому повторные тесты не добавлялись:
+`AlbumArtFramesTest` проверяет каждый payload byte, literal headers/indices и
+отсутствие хвоста; `VolumeLevelTest`, `K1GMediaGoldenTest`, `K1GGoldenTest`
+и session live-volume test фиксируют независимые fallback и неизменные 11 TLV.
+Provider/event-stream/reducer tests уже проверяют parity/dedup, unknown/replay,
+rebind/generation и live/teardown/idempotent stop.
+
+Усилены реальные session paths: ACK проверяется внутри button consumer;
+periodic порядок включает call notify → однократный clear → отсутствие повтора;
+metadata B принимается внутри уже начатой отправки art packet A (с/без JPEG B);
+partial-enqueue fallback проходит настоящий dispatcher/outbox и следующий tick.
+Caller-before-writer assertions запрещают немедленную отправку media мимо outbox.
+Сценарии с fake card/marker/art-строками и «dedup» без callback удалены; смысл
+сохранён в packet-level/provider tests. Это не исполненное mutation testing.
+Dart button test проверяет playing → stop и возврат обоих track codes к zoom.
+Package mock-echo/default-instance/positional-arguments/identity-only tests удалены
+вместе с неиспользуемым fake; две consumer-проверки доказывают multicast state,
+независимую отмену подписчика и доставку повторных button events оставшемуся.
+
+Проверки этапа 6: focused JVM suite и полный suite — успешно; полный **487**
+tests, 0 failures/errors/skipped (снижение 489→487 — удаление слабых сценариев,
+не снятие wire acceptance). Root **135** Flutter tests, включая **7** button
+tests; package **2** поведенческих tests вместо 5 шаблонных — успешно.
+Root/package `flutter analyze` — без замечаний; `lintDebug` — 0 ошибок,
+20 прежних предупреждений. JVM/Gradle — Temurin 21.0.7 вместо обновлённого JBR.
+Временный отдельный debug APK на API 36 повторно проверил public Dart façade →
+Pigeon → настоящий MediaSession: все четыре controls, mute без controller,
+active/empty-title, PLAYING→OTHER=null, PAUSED→null=null, stop=false/null;
+получено 15 typed state events. Notification access выдан smoke-пакету;
+media forwarding запущен без Wi-Fi дэша, provider/channel не подменялись.
+Временные sources/APK/пакет и emulator удалены/остановлены.
+
+`spec/multimedia.md` §1–7 синхронизированы с уже выполненной статической сверкой
+§1.2 (не новая RE-проверка); §8/9 отделяют действующий порт и неизвестное железо.
+Обе hardware checklist и command references согласованы, новых `[x]`/findings нет.
+Code review исправил неточное «непустой title»: текущий gate — `title != null`,
+поэтому `''` не выключает media routing. Production mapping/aliases не менялись.
+Чужая незакоммиченная правка `MediaMetadataDispatch.kt` оставлена вне этапа.
+Следующий этап — 7: firmware 11.63, отдельные fixture/build/pcap/screen evidence;
+весь план без этих результатов не закрывается.
+
 Отложенные решения и отклонённые посылки:
 
-- порядок, ширина `05 0D`, удаление 1 Hz-повтора и mapping кнопок —
-  независимые решения после проверки прошивки 11.63; encoding baseline с
-  20.10.2026 — ICU-транслитерация, не прежний UTF-8;
+- порядок, ширина `05 0D`, удаление 1 Hz-повтора и оставшаяся official mapping —
+  независимые решения после проверки прошивки 11.63; узкий cutover `05/06/07`
+  принят отдельно 23.10.2026 (§0.1). Encoding baseline с 20.10.2026 —
+  ICU-транслитерация, не прежний UTF-8;
 - ❌ 04.10.2026 универсальный отдельный пустой `FF` после любого art:
   для singleton оригинал добавляет пустой `FF`, при ненулевом остатке финальный
   `FF` несёт данные. Уточнение 22.10.2026: при exact-multiple ≥2000 оригинал
@@ -247,23 +455,46 @@ SHA-256: `889b9c42f21ef426c114cadac788c9c6220a29dc686e8a5b0e3fbd07a0e4f404`.
    Не распространять эту ветку на ошибки getters/thumbnail: они вне catch
    оригинала. Safe art encoder result и legacy fallback проверяются отдельно.
 10. Единственный authoritative nullable playback — `DashChrome.mediaPlaying`;
-    NowPlaying не содержит второго playing. PLAYING/PAUSED → active + indicator;
-    OTHER/null callback → active без нового indicator. Initial known playback
+    NowPlaying не содержит второго playing. Переходы:
+
+    | Вход | mediaActive | mediaPlaying | Новая wire-последовательность playback |
+    |---|---|---|---|
+    | PLAYING | true | true | active + playing indicator |
+    | PAUSED | true | false | active + paused indicator |
+    | OTHER/null playback callback | true | null | active без `05 19` |
+    | Inactive / media stop | false | null | inactive по правилам остановки; без `05 19` |
+
+    Unknown callback очищает прежнее true/false, а не сохраняет последнее
+    известное значение; `mediaPlaying=null` для OTHER/null — политика порта,
+    не вывод из декомпиляции. Null playback callback не равен null metadata:
+    counter/очистка metadata заданы отдельно в §2.8. Initial known playback
     replay — требование порта, не доказанный initial replay оригинала.
+    Представление unknown не меняет control-контракт `playPause()` этапа 2:
+    любой другой nonnull Android playback state вызывает play, null
+    controller/playback даёт no-op.
 11. Один writer планирует следующий art chunk не ранее чем через 10 ms после
     предыдущего, но обслуживает pending projection/buttons/heartbeat между chunks;
     не держит весь transfer внутри delay-loop, не использует Thread.sleep.
     4 Hz и ACK latency проверяются по timestamps с max-size art, не по count.
     Это scheduling-контракт порта: оригинал задерживает producer после enqueue,
     а не гарантирует 10 ms между отправками отдельного sender.
-12. Call answer/reject precedence и текущие `_isLooseNextButton`/
-    `_isLoosePreviousButton` не меняются до hardware gate. Новые direct API
-    доступны независимо от текущего remap.
-    ACK-before-forward — намеренный существующий контракт порта, сохраняется,
-    хотя оригинал выполняет action-before-ACK. Будущий mapping использует
-    stateful `mediaActive` для `05/06/07/09/0A`, не непустой title; это политика
-    порта вместо original listener gate. Mute и call-volume этим media gate
-    не ограничиваются; mute не требует controller.
+    Новое metadata, прошедшее dedup (§2.9), заменяет предыдущую передачу art:
+    уже начатая запись одного packet A заканчивается, все ещё не отправленные
+    chunks A отменяются до card B, включая запланированный отложенный chunk.
+    После card B ни одного chunk A быть не должно. Для B с валидным JPEG:
+    card B → present marker → передача B с первого кадра; без валидного JPEG:
+    card B → absent marker, без art frames. Повторная смена B→C действует так же.
+    Подавленный dedup callback ничего не отменяет; поздняя обложка при прежней
+    паре id/title отдельно не принимается. Это политика порта, не вывод из
+    декомпиляции; отдельная очередь/поток для замены art не вводится.
+12. Call answer/reject precedence и ACK-before-forward сохраняются; оригинал
+    выполняет action-before-ACK. Уточнение 23.10.2026: после call precedence
+    `05/06/07` используют `mediaActive`, не title/playing; inactive поглощает
+    их без track/zoom. Старые aliases этих трёх кодов удалены.
+    `09/0A/22` сохраняют title-based track/zoom, `13/14` — zoom.
+    Direct API доступны независимо. Оставшаяся official map, включая
+    mute/call-volume и mediaActive gate для `09/0A`, остаётся кандидатом
+    hardware gate, не текущим контрактом.
 
 Механическая проверка: `K1GGoldenTest`, pure tests helpers, `DashSessionTest`,
 provider/reducer tests, Dart button tests, `flutter analyze`,
@@ -280,14 +511,14 @@ provider/reducer tests, Dart button tests, `flutter analyze`,
 
 Задачи:
 
-- [ ] `[auto]` Добавить `DashCommand.MediaActive(active: Boolean)`,
+- ✅ 23.10.2026 `[auto]` Добавить `DashCommand.MediaActive(active: Boolean)`,
   `MediaPlayback(playing: Boolean)`, `AlbumArtMarker(present: Boolean)`,
   логический `AlbumArt(jpeg: ByteArray)` и scalar `AlbumArtChunk(value: ByteArray)`;
   `Heartbeat(tempC: Int = 25, musicVolume: Int = 0x13, callVolume: Int = 0x19)`.
   **Что опровергнет посылку:** если wire capture или существующий golden
   показывает, что один из новых TLV имеет другую форму, не закреплять форму
   типом без отдельного разбора.
-- [ ] `[auto]` Scalar `K1GCodec.encode(cmd: DashCommand): ByteArray` кодирует
+- ✅ 23.10.2026 `[auto]` Scalar `K1GCodec.encode(cmd: DashCommand): ByteArray` кодирует
   MediaActive → `05 17 55/AA`, MediaPlayback → `05 19 55/AA`,
   AlbumArtMarker → `05 58 55/AA`, AlbumArtChunk → `05 40 value`.
   Логический AlbumArt раскрывается writer до scalar encoder; не выдавать
@@ -295,15 +526,15 @@ provider/reducer tests, Dart button tests, `flutter analyze`,
   порядок, ICU-транслитерацию с лимитом 20 ASCII-байт и отсутствие финального NUL.
   **Что опровергнет посылку:** если существующие `05 0D` goldens меняются без
   hardware gate, реализация нарушила compatibility branch.
-- [ ] `[auto]` `AlbumArtFrames.encode(jpeg: ByteArray): List<DashCommand.AlbumArtChunk>`
+- ✅ 23.10.2026 `[auto]` `AlbumArtFrames.encode(jpeg: ByteArray): List<DashCommand.AlbumArtChunk>`
   реализует контракт §2.6 без Android типов и без marker; marker заказывает caller.
   **Что опровергнет посылку:** independent capture/screen отвергает исправленный
   exact-multiple framing — фиксировать отдельную branch, не подгонять golden.
-- [ ] `[auto]` Реализовать nullable `VolumeLevel.encode` строго по §2.5,
+- ✅ 23.10.2026 `[auto]` Реализовать nullable `VolumeLevel.encode` строго по §2.5,
   отдельно от оригинальной Float-шкалы, проверить widened arithmetic.
   **Что опровергнет посылку:** hardware отвергает нормализованную шкалу —
   записать отклонение/evidence, не выдавать её за формулу оригинала.
-- [ ] `[auto]` Добавить literal goldens для media markers, art frame cases и
+- ✅ 23.10.2026 `[auto]` Добавить literal goldens для media markers, art frame cases и
   heartbeat с независимыми music/call levels; существующие `05 0D` goldens не
   переписывать.
   **Что опровергнет посылку:** если golden получается вызовом production
@@ -311,6 +542,10 @@ provider/reducer tests, Dart button tests, `flutter analyze`,
 
 **Готово:** protocol tests зелёные, старые goldens не изменились, новые helper
 boundary cases покрыты literal expected bytes.
+Проверено 23.10.2026: `K1GGoldenTest` без изменения старых ожиданий,
+`K1GMediaGoldenTest`, `AlbumArtFramesTest`, `VolumeLevelTest`; результаты
+полного JVM suite, lint и smoke — §0.1. Раскрытие логического `AlbumArt` и pacing
+в session writer остаются этапу 3; scalar codec уже отклоняет такой вход.
 
 ### Этап 2 — Native MediaSession state и controls [auto]
 
@@ -319,11 +554,11 @@ snapshot и безопасными Android adapters.
 
 Задачи:
 
-- [ ] `[auto]` В `MediaModels.kt` добавить `MediaPlayback`, metadata/media
+- ✅ 23.10.2026 `[auto]` В `MediaModels.kt` добавить `MediaPlayback`, metadata/media
   snapshots и `MediaEvent` (`Active`, `Inactive`, `Metadata`, `Playback`).
   **Что опровергнет посылку:** если reducer не может выразить разницу между
   отсутствием медиа и неизвестным playback state, модель недостаточна.
-- [ ] `[auto]` Provider публикует `SharedFlow<MediaEvent>` и
+- ✅ 23.10.2026 `[auto]` Provider публикует `SharedFlow<MediaEvent>` и
   `StateFlow<MediaSnapshot>` с atomic snapshot/subscription revision seam (§2.7).
   В этом же зелёном этапе мигрировать ВСЕ реальные `DashEngineController`
   callers с nowPlaying на snapshot: минимально forward metadata в нынешнюю
@@ -331,20 +566,22 @@ snapshot и безопасными Android adapters.
   Удалить старый nowPlaying API, не оставлять shim.
   **Что опровергнет посылку:** caller остался на удалённом API или snapshot
   невозможно получить без следующего callback — cutover не завершён.
-- [ ] `[auto]` Реализовать bind/rebind/destroy/stop transitions, выбор
+- ✅ 23.10.2026 `[auto]` Реализовать bind/rebind/destroy/stop transitions, выбор
   `sessions.firstOrNull()`, active + current metadata/playback публикацию и
   тихий no-op без notification access. Не переносить stale token/controller
   при пустом списке, двойной inactive холодного старта и отсутствие unregister
   при stop (§1.2); старый callback после switch/stop не меняет новый snapshot.
   **Что опровергнет посылку:** если старый callback способен публиковать после
   смены token, порядок unsubscribe/register считается сломанным.
-- [ ] `[auto]` Реализовать callback/caches/null-vs-blank и точные fallback tuples
+- ✅ 23.10.2026 `[auto]` Реализовать callback/caches/null-vs-blank и точные fallback tuples
   по §2.8–9; не смешивать `bluconnect.djf.A1` (старое имя `x9k.A1`)
   с service `REForeGroundService.A`. Metadata event: card→marker→art при наличии,
   без дополнительного active; bind/playback публикуют active отдельно.
+  Playback reducer следует §2.10: PLAYING→OTHER и PAUSED→null playback
+  очищают прежнее true/false до `mediaPlaying=null`, сохраняя `mediaActive=true`.
   **Что опровергнет посылку:** direct initial snapshot теряется из-за counter
   или null и empty имеют один результат — reducer не соответствует контракту.
-- [ ] `[auto]` `AlbumArtEncoder.encode(bitmap: Bitmap?): ByteArray?` через seam:
+- ✅ 23.10.2026 `[auto]` `AlbumArtEncoder.encode(bitmap: Bitmap?): ByteArray?` через seam:
   thumbnail/scaled75×75 с filter=true, JPEG quality50;
   null/failed-compress/empty/exception/>65535 → null, metadata сохраняется.
   Сохранить текущий fallback порта `ALBUM_ART → ART → DISPLAY_ICON`;
@@ -356,7 +593,7 @@ snapshot и безопасными Android adapters.
   **Что опровергнет посылку:** если Android framework не позволяет стабильно
   тестировать bitmap conversion на JVM, оставить framework call behind seam и
   тестировать reducer/result contract.
-- [ ] `[auto]` Provider `playPause(): Unit`, `volumeUp(): Unit`,
+- ✅ 23.10.2026 `[auto]` Provider `playPause(): Unit`, `volumeUp(): Unit`,
   `volumeDown(): Unit`, `mute(): Unit`: null controller/playback → playPause no-op;
   PLAYING → pause, любой другой nonnull → play; volume controller.adjustVolume
   ±1 с FLAG_SHOW_UI=1; mute через AudioManager STREAM_MUSIC, isStreamMute →
@@ -372,8 +609,15 @@ snapshot и безопасными Android adapters.
 empty/whitespace title, null/empty id, case-only id/title и late art/artist/album/ad
 при прежней паре id/title. Отдельно проверены границы fallback/ошибок encoder,
 PLAYING/PAUSED/OTHER, next/previous вне PLAYING и mute без controller.
+Переходы PLAYING→OTHER и PAUSED→null playback проверяются отдельно: active=true,
+playing=null, новый playback event без `05 19`; null metadata остаётся
+отдельным сценарием counter/очистки (§2.8).
 Android live `MediaSession` не нужен для JVM tests; bitmap alias/ownership
 проверяется Android smoke, а не mock-echo.
+Проверено 23.10.2026: `MediaInfoProviderTest`, `MediaEventStreamTest`,
+`MediaMetadataDispatchTest`, Android `AlbumArtEncoderTest` и временный live
+MediaSession smoke; полные результаты — §0.1. Native snapshots пока обновляют
+только прежнюю periodic card и nowPlayingTitle, не wire indicators/Pigeon media-флаги.
 
 ### Этап 3 — Single-writer session и media forwarding [auto]
 
@@ -382,38 +626,66 @@ semantics и 1 Hz fallback.
 
 Задачи:
 
-- [ ] `[auto]` В `DashChrome.NowPlaying` добавить `mediaId`, `artJpeg`;
+- ✅ 23.10.2026 `[auto]` В `DashChrome.NowPlaying` добавить `mediaId`, `artJpeg`;
   в chrome `mediaActive` и единственный nullable `mediaPlaying`, без дублирования
   playing в NowPlaying; сохранить `NowPlaying("Song")` совместимым.
   **Что опровергнет посылку:** две копии playback расходятся — модель неверна.
-- [ ] `[auto]` `DashSession.sendMedia(commands: List<DashCommand>): Unit`
+- ✅ 23.10.2026 `[auto]` `DashSession.sendMedia(commands: List<DashCommand>): Unit`
   принимает wire events только в STREAMING; controller всегда сначала обновляет
   current chrome даже до STREAMING. startStreaming атомарно получает revision
   snapshot и replay active→card→marker→art→known playback один раз; последующие
   revisions передаются ровно один раз, concurrent update не теряется/не дублируется.
+  Replay посылает `05 19` только при ненулевом текущем `mediaPlaying`;
+  после unknown callback старое known playback не восстанавливается.
   **Что опровергнет посылку:** before/during/after transition interleaving теряет
   update или повторяет initial replay — ordering seam недостаточен.
-- [ ] `[auto]` Writer раскрывает AlbumArt в scalar chunks и incrementally
+- ✅ 23.10.2026 `[auto]` Writer раскрывает AlbumArt в scalar chunks и incrementally
   назначает earliest-next-send +10 ms (§2.11). Между chunks выбирает pending
   projection/button ACK/heartbeat, один coroutine/socket writer, без Thread.sleep
-  и без блокировки всей очереди transfer-ом. Cancel pending art при inactive,
-  stop и session teardown; следующая сессия не получает хвост старого art.
+  и без блокировки всей очереди transfer-ом. Cancel pending art при принятом
+  после dedup metadata, inactive, stop и session teardown; следующая сессия
+  не получает хвост старого art. При замене A→B закончить уже начатый packet A,
+  отменить оставшиеся chunks A (включая отложенный) до card B; затем для B
+  card→present marker→art с первого кадра либо card→absent marker без art.
+  После card B chunks A запрещены; повторная смена B→C действует так же.
+  Dedup-suppressed callback не отменяет art (§2.11). Использовать существующий
+  writer без отдельной очереди/потока и вне frame/encoder loop.
   **Что опровергнет посылку:** timestamp tests max65535 показывают projection gap
   >250 ms или ACK ожидает весь transfer — scheduling не подходит.
   Scalar codec не принимает логический AlbumArt (precondition failure).
   Тестировать реальную последовательность packets и её отмену/порядок, а не
   копии аргументов или forwarding между helpers.
-- [ ] `[auto]` В `DashEngineController.startMediaForwarding()` сначала поднять
+- ✅ 23.10.2026 `[auto]` В `DashEngineController.startMediaForwarding()` сначала поднять
   collectors, затем вызвать `mediaInfo.start()`; обновлять chrome, inputs,
   publishState и queue event sequences по правилам плана.
   **Что опровергнет посылку:** если initial snapshot теряется при старте
   collector, порядок запуска доказанно неверен.
-- [ ] `[auto]` В `stopMediaForwarding()` отменять jobs, вызывать provider stop,
-  очищать chrome, `DashInputs` и Dart state. Периодическую `05 0D` до hardware
-  gate сохранить; `05 17 AA` прекращает новые карточки после остановки.
-  **Что опровергнет посылку:** если после teardown следующий session получает
-  старую карточку или playback state, cleanup неполон.
-- [ ] `[auto]` Обязательный `heartbeat: () -> DashCommand.Heartbeat` в
+- ✅ 23.10.2026 `[auto]` В `stopMediaForwarding()` владельцем остановки и отправки
+  inactive является controller:
+  1. Прекратить принимать callbacks остановленного media-поколения и очистить
+     current snapshot/chrome: metadata отсутствует, `mediaActive=false`,
+     `mediaPlaying=null`; очистить соответствующие `DashInputs` и публикуемый
+     Dart state. Поздний callback не восстанавливает состояние.
+  2. Для ещё живой STREAMING-сессии явно заказать `05 17 AA` через существующий
+     single writer. Доставка не зависит от обработки provider Inactive
+     отменённым collector.
+  3. Writer при обработке перехода отменяет pending art и старые periodic/event
+     cards: после inactive нет старых карточек и chunks. Уже начатый packet
+     может закончиться до inactive; очищенное текущее состояние не позволяет
+     последующим ticks снова породить старую карточку.
+  4. Отменить collector jobs, затем вызвать provider stop. Повторный stop не
+     порождает второй переход inactive для уже очищенного media-состояния.
+  5. После завершённого transport teardown финальная доставка inactive не
+     гарантируется; локальное состояние и pending art всё равно очищаются.
+     Старые packets/state не переносятся в следующую сессию. Не добавлять
+     reconnect или retry ради финального inactive.
+  Обычный reconnect активной поездки сохраняет snapshot по §2.7; media/active-ride
+  stop очищает его. Отключение сокета само по себе не означает media stop.
+  Периодическую `05 0D` до hardware gate сохранить для действующего media.
+  **Что опровергнет посылку:** inactive зависит от уже отменённого collector,
+  late callback восстанавливает состояние, повторный stop даёт второй inactive
+  или следующая сессия получает старую карточку/playback — cleanup неполон.
+- ✅ 23.10.2026 `[auto]` Обязательный `heartbeat: () -> DashCommand.Heartbeat` в
   `DashSession.open`: мигрировать все production/test factories в этом этапе.
   Supplier пока возвращает captured `Heartbeat(25,0x13,0x19)`; этап 4 заменяет
   его live provider. Initial burst остаётся captured.
@@ -424,6 +696,27 @@ semantics и 1 Hz fallback.
 updates, reconnect сохранение и active-ride teardown очистку, старую 1 Hz card,
 timestamp projection interval ≤250 ms и button receipt→ACK ≤250 ms при 65535 art
 на virtual clock/неблокирующем fake transport; art intervals ≥10 ms.
+Отдельные packet-level сценарии на управляемом времени: первый chunk A →
+принято B с JPEG и первый chunk A → принято B без JPEG. Проверять содержимое
+и порядок: начатый packet A завершается до card B; после card B только
+present marker и новая передача B с первого кадра либо absent marker без art,
+ни одного оставшегося/отложенного chunk A. Подавленный dedup callback не
+отменяет transfer A; повторная замена B→C соблюдает тот же порядок.
+Для PLAYING→OTHER→reconnect и PAUSED→null playback→reconnect проверить
+`mediaActive=true`, `mediaPlaying=null`: unknown callback даёт active без
+`05 19`, replay не повторяет прежний playing/paused indicator.
+Stop при ещё живой STREAMING-сессии: metadata очищены, active=false/playing=null
+в snapshot/chrome, inputs и публикуемом state; controller явно заказывает
+inactive независимо от отменённого collector. Начатый packet завершается до
+inactive, после него нет старых periodic/event cards и chunks, включая
+отложенные; последующие ticks не восстанавливают карточку. Повторный stop
+не даёт второго inactive, late callback не восстанавливает state.
+Stop после transport teardown: доставки в закрытый transport не требуется,
+pending art/state очищены, новая сессия не получает старых packets/state.
+Отдельный обычный reconnect без media stop сохраняет snapshot активной поездки.
+Проверено 23.10.2026: packet-level `DashSessionMediaTest` и `MediaForwardingTest`,
+полный JVM suite, `lintDebug`, executable UDP smoke и два code review;
+результаты и исправление по ревью — §0.1. Старые literal wire goldens не менялись.
 
 ### Этап 4 — Live volume heartbeat [auto]
 
@@ -432,7 +725,7 @@ timestamp projection interval ≤250 ms и button receipt→ACK ≤250 ms при
 
 Задачи:
 
-- [ ] `[auto]` Controller `currentHeartbeat(): DashCommand.Heartbeat` с
+- ✅ 23.10.2026 `[auto]` Controller `currentHeartbeat(): DashCommand.Heartbeat` с
   AudioManager: STREAM_MUSIC→05 4C, STREAM_VOICE_CALL→05 1B, temp25;
   nullable VolumeLevel/exception каждого stream независимо fallback13/19.
   Подключить live supplier вместо captured этапа3.
@@ -440,13 +733,15 @@ timestamp projection interval ≤250 ms и button receipt→ACK ≤250 ms при
   фиксированный состав heartbeat проверять также при ошибке одного stream.
   **Что опровергнет посылку:** если `AudioManager` отсутствует или getter
   бросает exception, tick loop не должен падать и должен отправить fallback.
-- [ ] `[auto]` Live supplier работает на каждом streaming heartbeat; не вводить
+- ✅ 23.10.2026 `[auto]` Live supplier работает на каждом streaming heartbeat; не вводить
   firmware INFOTAINMENT gate (снятая посылка §0.1).
   **Что опровергнет посылку:** доказанное ограничение протокола по реальному типу
   подключения требует отдельного решения, не guessed incoming mode.
 
 **Готово:** focused heartbeat/session tests видят независимые live levels,
 статические TLV не изменились, invalid AudioManager path не роняет tick loop.
+Проверено 23.10.2026: `DashSessionMediaTest`, старые heartbeat/burst goldens,
+полный JVM suite, Android AudioManager smoke и `lintDebug`; результаты — §0.1.
 
 ### Этап 5 — Pigeon boundary и Dart/native façade [auto]
 
@@ -455,23 +750,26 @@ timestamp projection interval ≤250 ms и button receipt→ACK ≤250 ms при
 
 Задачи:
 
-- [ ] `[auto]` Schema: добавить `required bool mediaActive`, `bool? mediaPlaying`
+- ✅ 23.10.2026 `[auto]` Schema: добавить `required bool mediaActive`, `bool? mediaPlaying`
   в конец state, idle false/null. Ровно четыре HostApi methods:
   `void mediaPlayPause(); void mediaVolumeUp(); void mediaVolumeDown(); void mediaMute();`
   Native overrides `fun mediaPlayPause(): Unit` и аналогично три остальных;
   public façade/platform/method-channel: `Future<void> mediaPlayPause()` и
   одноимённые `mediaVolumeUp()`, `mediaVolumeDown()`, `mediaMute()` без аргументов.
   **Что опровергнет посылку:** generated-first изменение запрещено; начать со schema.
-- [ ] `[auto]` Запустить `dart run pigeon --input pigeons/dash_engine.dart` из
+- ✅ 23.10.2026 `[auto]` Запустить `dart run pigeon --input pigeons/dash_engine.dart` из
   package directory; generated Dart/Kotlin outputs только регенерировать.
   **Что опровергнет посылку:** если генератор меняет несвязанные части, сначала
   проверить версию/конфигурацию Pigeon, а не править generated output вручную.
-- [ ] `[auto]` Обновить `DashInputs`, `publishState()`, plugin implementation,
+- ✅ 23.10.2026 `[auto]` Обновить `DashInputs`, `publishState()`, plugin implementation,
   public Dart façade, platform interface и method-channel implementation;
   state fields отражают chrome, methods делегируют provider.
+  OTHER/null playback callback передаёт через Pigeon/Dart именно
+  `mediaPlaying=null` при `mediaActive=true`, без подстановки false или
+  последнего известного значения (§2.10).
   **Что опровергнет посылку:** если один из generated method channels не имеет
   реализации на обеих сторонах, boundary считается незавершённой.
-- [ ] `[auto]` Мигрировать ВСЕ implements/extends-platform fakes, включая
+- ✅ 23.10.2026 `[auto]` Мигрировать ВСЕ implements/extends-platform fakes, включая
   `packages/opendash_dash_engine/test/opendash_dash_engine_test.dart`
   `MockOpendashDashEnginePlatform`, root button fake и error-reporting fake;
   direct API проверять throwaway smoke через публичный façade независимо от
@@ -485,6 +783,8 @@ timestamp projection interval ≤250 ms и button receipt→ACK ≤250 ms при
 **Готово:** schema/generated outputs компилируются, state/API доступны через
 public Dart façade, fake-platform tests зелёные; generated source text не
 закрепляется отдельными хрупкими тестами.
+Проверено 23.10.2026: штатная генерация, root/package tests+analyze, native
+tests/lint и реальный façade→Pigeon→MediaSession smoke; результаты — §0.1.
 
 ### Этап 6 — Полное автоматическое покрытие и документация [auto]
 
@@ -493,27 +793,27 @@ public Dart façade, fake-platform tests зелёные; generated source text �
 
 Задачи:
 
-- [ ] `[auto]` Literal art tests: 0, 1, 1000, 1001, 2000, 2001, 3000, 65535,
+- ✅ 23.10.2026 `[auto]` Literal art tests: 0, 1, 1000, 1001, 2000, 2001, 3000, 65535,
   65536 bytes, headers/indexes/full final chunks/no extra terminal. Volume:
   invalid/null fallback, silence, nonzero min, exact boundaries, clamp, Int limits.
   **Что опровергнет посылку:** если тест проверяет только размер/не-throw, он
   не доказывает wire invariant и должен быть переписан на bytes.
-- [ ] `[auto]` Добавить literal media/heartbeat goldens и `DashSessionTest`
+- ✅ 23.10.2026 `[auto]` Добавить literal media/heartbeat goldens и `DashSessionTest`
   assertions, сохранив button-ack-before-forward assertion.
   **Что опровергнет посылку:** если тесты проходят при обходе outbox или frame
   loop, они не проверяют single-writer invariant и не принимаются.
-- [ ] `[auto]` Добавить native provider/reducer tests и Dart button tests для
+- ✅ 23.10.2026 `[auto]` Добавить native provider/reducer tests и Dart button tests для
   call precedence, active/paused/no-media и пустого title; direct API проверить
   throwaway smoke. Проверки не зависят от live `MediaSession` или source text.
   **Что опровергнет посылку:** mock echo/wiring-only tests не считаются покрытием
   поведения и удаляются.
-- [ ] `[auto]` Обновить `spec/multimedia.md`: источники и уточнения оригинала
+- ✅ 23.10.2026 `[auto]` Обновить `spec/multimedia.md`: источники и уточнения оригинала
   в §1–7 по сверке §1.2 этого плана; §8/§9 — только фактами текущей реализации.
   Не выдавать 10.1.23-статику за проверку порта; hardware-dependent claims
   явно оставить открытыми.
   **Что опровергнет посылку:** если факт известен только из codec/unit test,
   его нельзя записывать как hardware support.
-- [ ] `[auto]` Обновить русскую и английскую копии hardware checklist только
+- ✅ 23.10.2026 `[auto]` Обновить русскую и английскую копии hardware checklist только
   инструкциями/ожиданиями, не отмечая пункты как подтверждённые.
   После ride обновить findings/evidence в обеих копиях (этап 7); сверить
   `docs/k1g_commands_RU.md`/`docs/k1g_commands.md` со spec.
@@ -523,6 +823,9 @@ public Dart façade, fake-platform tests зелёные; generated source text �
 **Готово:** focused tests, full native tests, Dart tests, analyze и lint
 проходят; spec/checklists различают автоматически доказанное и непроверенное на
 железе.
+Проверено 23.10.2026: существующее literal/provider покрытие дополнено реальными
+writer/fallback/button/stream transition checks; focused/full JVM, root/package
+Flutter tests и analyze, native lint и public-API emulator smoke прошли (§0.1).
 
 ### Этап 7 — Hardware gate на прошивке 11.63 [ride]
 
@@ -562,28 +865,40 @@ public Dart façade, fake-platform tests зелёные; generated source text �
   pause/resume и reconnect. Сравнить с periodic variant.
   **Что опровергнет посылку:** card исчезает/устаревает без repeat — оставить1 Hz.
   Обычный APK с 1 Hz не доказывает retention.
-- [ ] `[ride]` Отдельно проверить inactive `05 17 AA`, PLAYING/PAUSED indicator,
-  no-art→art→no-art, singleton/multichunk/exact2000 art и media/video interaction.
+- ✅ 26.10.2026 `[ride]` Базовое отображение обложек, PLAYING/PAUSED indicator
+  и inactive подтверждены пользователем; источник и границы — §0.1.
+- [ ] `[ride]` Расширенные сценарии: no-art→art→no-art,
+  singleton/multichunk/exact2000 art и media/video interaction.
   В последнем опыте фиксировать входящие `09 04/06`, продолжение media packets
   и фактическую картинку, не объявляя эти команды guessed media-mode boundary.
-  **Что опровергнет посылку:** marker/art игнорируется или ломает карту —
-  отклонить соответствующий path по screen+pcap, не менять соседние branches.
+  Для art отдельно сменить A→B после начала, но до завершения multichunk A:
+  B с art и B без art. После card B в pcap нет chunks A; приборка показывает
+  B без зависания/возврата A. Без железа опыт остаётся открытым.
+  **Что опровергнет посылку:** marker/art игнорируется или ломает карту,
+  либо приборка не переносит прерывание art — отклонить соответствующий path
+  по screen+pcap, не менять соседние branches и не подменять выбранную отмену
+  A политикой завершения старой обложки.
 - [ ] `[ride]` Независимые music/call volume min/max/silence, включая mute без
   controller; max65535 art совместно с projection и button ACK: сравнить с baseline
   без art, timestamp cadence 250 ms, receipt→ACK ≤250 ms плюс baseline jitter,
   heartbeat gap ≤1 s плюс тот же измеренный jitter, art spacing≥10 ms.
   **Что опровергнет посылку:** новая шкала/transfer даёт неправильный volume
   или gaps сверх baseline — отклонить конкретную ветвь, сохранить captured fallback.
-- [ ] `[ride]` Official buttons проверять ТОЛЬКО явно gated fixture mapping:
-  `03/04` call-volume, `05` play/pause, `06/07` music volume, `08` mute,
-  `09/0A` next/previous; active/no-media/ringing call и call precedence.
-  Проверять отдельно original code→phone action и портовые ACK-before-forward/
-  mediaActive-gate для `05/06/07/09/0A`: это не gate оригинального listener.
-  Пустой title не выключает mediaActive; mute/call-volume доступны без него.
-  Phone action и ACK проверить вместе с pcap; старый mapping APK не доказывает
-  новый mapping. Код `18` не считать play и не добавлять как alias.
-  **Что опровергнет посылку:** любое расхождение оставляет текущий mapping,
-  direct API доступны независимо; не принимать alias как доказательство.
+- [ ] `[ride]` Повторно проверить исправленные production `05/06/07`:
+  play/pause, music volume± при mediaActive после прежнего call precedence;
+  active/paused/OTHER/null playback, no-media, empty/null title, ringing/active
+  call, каждую кнопку дважды. Inactive не даёт skip/zoom; `09/0A/22` сохраняют
+  title gate, `13/14` zoom. Phone action и ACK записать вместе с pcap:
+  evidence старой сборки и подтверждение назначения не доказывают исправленную.
+  **Что опровергнет посылку:** несовпадение действия с подтверждённым назначением
+  оставляет перепроверку открытой, а не разрешает весь official mapping.
+- [ ] `[ride]` Оставшиеся official buttons проверять только в gated fixture:
+  `03/04` call-volume, `08` mute, candidate mediaActive-gate для `09/0A`.
+  Они не реализованы/не приняты в production. Отделять original code→phone
+  action от ACK-before-forward и mediaActive policy порта (не listener gate
+  оригинала). `18` не считать play и не добавлять как alias.
+  **Что опровергнет посылку:** любое расхождение сохраняет текущий контракт;
+  direct API доступны независимо, alias не доказывает official mapping.
 - [ ] `[ride]` Записать findings и обновить обе checklist copies, не объявляя
   codec behavior hardware verified.
   **Что опровергнет посылку:** недоступное железо оставляет все ride items
@@ -598,8 +913,9 @@ public Dart façade, fake-platform tests зелёные; generated source text �
 - retention без periodic подтверждён → удалить только repeat, иначе1 Hz;
 - каждый marker/playback/art path принят или отклонён отдельно по evidence;
   best-effort не означает hardware verified;
-- official buttons подтверждены → применить mapping/stateful gate; иначе
-  сохранить нынешний mapping; call precedence и ACK-before-forward неизменны;
+- оставшиеся official buttons подтверждены → применить только проверенную часть
+  mapping/stateful gate; иначе сохранить контракт после cutover `05/06/07`;
+  call precedence и ACK-before-forward неизменны;
 - live volumes и cadence принимаются отдельно; нет firmware-mode ветви.
 
 **Готово:** ВСЕ `[ride]` оценены: приняты либо явно отклонены с evidence,
@@ -614,8 +930,8 @@ public Dart façade, fake-platform tests зелёные; generated source text �
   без evidence.
 - Не переносить album-art chunking в frame/encoder loop и не использовать
   `Thread.sleep` в control writer.
-- Не менять текущие button aliases, call precedence или `05 0D` fallback до
-  hardware gate.
+- Не менять оставшиеся button aliases, call precedence или `05 0D` fallback
+  до hardware gate; узкое исключение `05/06/07` от 23.10.2026 описано в §0.1.
 - Сохранять KDoc с датами и объяснениями полевых находок; не заменять их
   пересказом очевидного кода.
 - Перед каждым commit запускать `/code-review` по diff; находки либо исправить,

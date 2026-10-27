@@ -78,7 +78,11 @@ internal sealed interface DashCommand {
 
     // ── Periodic ──
     /** 1 Hz status. On-wire temperature byte is `°C + 40`. */
-    data class Heartbeat(val tempC: Int = 25) : DashCommand
+    data class Heartbeat(
+        val tempC: Int = 25,
+        val musicVolume: Int = 0x13,
+        val callVolume: Int = 0x19,
+    ) : DashCommand
 
     /** The 0x007E route card: next-street title (destination fallback) plus live nav figures. */
     data class RouteCard(
@@ -103,6 +107,15 @@ internal sealed interface DashCommand {
 
     // ── Media and calls ──
     data class NowPlaying(val title: String, val album: String, val artist: String) : DashCommand
+    data class MediaActive(val active: Boolean) : DashCommand
+    data class MediaPlayback(val playing: Boolean) : DashCommand
+    data class AlbumArtMarker(val present: Boolean) : DashCommand
+
+    /** Logical transfer; must be expanded into paced chunks before scalar encoding. */
+    data class AlbumArt(val jpeg: ByteArray) : DashCommand
+
+    /** One `05 40` value, including the first/index/final prefix. */
+    data class AlbumArtChunk(val value: ByteArray) : DashCommand
     data class CallNotify(val callerName: String) : DashCommand
     data object CallClear : DashCommand
 

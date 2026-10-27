@@ -232,6 +232,13 @@ against isolated temp-file databases — no device/emulator needed.
   TTS engine with voice data for the device's language; missing data does not
   silently fall back to another language or a chime.
 
+## ☕ Support the project
+
+If you find snatch-dash useful, you can support its development on
+[Boosty](https://boosty.to/rpg18).
+
+Support is voluntary — the app remains open-source and free to use.
+
 ## 🤝 Contributing
 
 Issues and pull requests are welcome. Please remove personal data from logs

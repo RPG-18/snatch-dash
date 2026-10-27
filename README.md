@@ -1,5 +1,7 @@
 # snatch-dash
 
+[Русская версия](README_RU.md)
+
 **snatch-dash** is an open-source companion for a compatible bike dash:
 navigation, ride history, garage tracking, expenses, and media/call cards in
 one lightweight app.
@@ -12,6 +14,9 @@ This is a **Flutter port of [subtlesayak/open-dash](https://github.com/subtlesay
 navigation services** (Yandex MapKit) in place of Google Maps — so it works
 reliably **within the Russian Federation**, where Google's mapping/location
 services are unavailable or unreliable.
+
+**Android 10+ (API 29)**. The UI follows the device language: Russian or
+English; there is no in-app language switch.
 
 ## ✨ Features
 
@@ -29,8 +34,13 @@ services are unavailable or unreliable.
 - ⛽ Expenses across fuel, repairs, accessories, riding gear, food, stays,
   transport, and other categories, with monthly/all-time filtering and
   CSV/HTML export through the Android share sheet.
-- 🎵 Media and caller cards projected to the dash while streaming.
-- 🗣️ Turn-by-turn voice guidance (off / chime / spoken).
+- 🎵 Media/caller cards, album art, PLAYING/PAUSED indicators, and dash-button
+  playback, track and music-volume controls. Media integration needs Android
+  notification access; support depends on the player and dash firmware.
+- 🗣️ Spoken navigation cues at 300/150/60 m, arrival and dash-connection
+  announcements. More → Voice guidance provides on/off, speech volume
+  25/50/75%, and music policies: duck, pause/resume, or leave unchanged.
+  Settings persist across restarts; speech uses Android TTS and audio focus.
 - 🔔 Local maintenance-due reminders.
 - 🔒 Local-first storage (SQLite via `sqflite`); no cloud sync, no account.
 
@@ -39,16 +49,20 @@ services are unavailable or unreliable.
 Two halves, split at the Android-API boundary:
 
 - **Flutter/Dart app** (`lib/`) — all UI, state (Riverpod), local persistence
-  (`sqflite`), the in-app map (`yandex_mapkit`), and the pure navigation math
-  (`lib/nav/`: route progress, off-route detection, ETA).
+  (`sqflite`), the in-app map (`yandex_maps_mapkit`), navigation math and
+  lifecycle (`lib/nav/`: route progress, off-route detection, ETA and cues).
 - **Native Android plugin** (`packages/opendash_dash_engine`) — everything
   that has to stay native: the dash Wi-Fi pairing + K1G protocol session, the
   off-screen map → `Canvas` overlays → `MediaCodec` H.264 → RTP pipeline, GPS
-  tracking tuned for the ride, and the notification-listener/telecom
-  media-and-call bridge. Dart drives it over a `MethodChannel`/`EventChannel`
-  pair (`opendash_dash_engine`), pushing a compact "nav state" only when it
-  changes so the power-critical render loop stays entirely native and
-  jitter-free.
+  tracking tuned for the ride, MediaSession/notification-listener and telecom
+  integration, and Android TTS/audio focus. Dart sends navigation updates
+  without putting the frame loop on the Flutter UI thread.
+
+The plugin boundary is defined by
+[`pigeons/dash_engine.dart`](packages/opendash_dash_engine/pigeons/dash_engine.dart):
+Pigeon generates the typed Dart/Kotlin commands and state, button and debug-log
+streams. Change the schema and regenerate both sides, rather than editing
+generated files or maintaining string-keyed channel contracts.
 
 The off-screen renderer streamed to the physical dash does **not** use Yandex
 map tiles — Yandex MapKit has no public, redistributable raw-tile API for
@@ -61,9 +75,6 @@ multi-pack source model are specified in
 [`spec/drawing_from_local_tiles.md`](spec/drawing_from_local_tiles.md); the
 corpus format and download protocol in
 [`spec/remote_map_server.md`](spec/remote_map_server.md).
-
-This adds MapLibre Native to the APK — 7.5 MiB of `libmaplibre.so` on
-`armeabi-v7a`, 10.3 MiB on `arm64-v8a`.
 
 Map data is © OpenStreetMap contributors (ODbL); the styles and sprites come
 from OpenMapTiles (CC BY 4.0), the glyphs are Noto Sans (SIL OFL 1.1), and
@@ -98,17 +109,50 @@ overlay — at 526×300 under a round bezel it costs a visible share of the fram
   original keyed off distance to the next maneuver — so a long straight at
   speed still streams at the higher rate here. See
   [`spec/video.md`](spec/video.md).
+- Weather is not implemented: the dash currently receives fixed sunny weather
+  and +25 °C, not a live forecast.
+- Basic media controls, album art, PLAYING/PAUSED and inactive behavior were
+  confirmed by the rider on Huawei HBN-LX9 and Xiaomi 2606FRN72Y on 2026-10-26.
+  Art-transfer boundaries, media/video interaction, independent volumes and the
+  extended button matrix remain open hardware checks; see the
+  [multimedia plan](plans/active/2026-10-04-multimedia-support.md).
+- RuVoice navigation cues, their distance thresholds, music interaction and
+  screen-off announcements were confirmed by the rider on Huawei HBN-LX9
+  (Android 12) on 2026-10-27. This does not verify every music policy, speech
+  volume, arrival, English TTS or Android 15+ audio-focus behavior; see the
+  [voice settings plan](plans/active/2026-10-25-voice-settings.md).
+
+## Installation and updates
+
+Download an APK from [GitHub Releases](https://github.com/RPG-18/snatch-dash/releases)
+and approve installation from that source in Android when prompted.
+More → Updates supports stable (default) and nightly releases. The automatic
+update switch controls checks on startup; manual checks, download and the
+Android installer remain available when it is off.
 
 ## 🛠️ Build From Source
 
-Requires the Flutter SDK (this was built against Flutter 3.44 / Dart 3.12)
-and an Android SDK with `ANDROID_HOME`/`sdk.dir` set up.
+Requires Flutter (verified with **Flutter 3.44.6 / Dart 3.12.2**),
+an Android SDK with API 36 and `ANDROID_HOME`/`sdk.dir` configured, and
+**JDK 21** to run Gradle.
+
+Check the Java version rather than assuming Android Studio's bundled JBR is
+21: newer Studio installations may ship JBR 25. Use JBR 21 if available, or
+another installed JDK 21; the native tests and Android Lint were also verified
+with Homebrew `openjdk@21` 21.0.12.1. JDK 25/26 is not the supported build setup.
+Set `JAVA_HOME` to the JDK 21 home and point Flutter and Gradle at the same
+installation (`flutter config --jdk-dir="$JAVA_HOME"` and
+`org.gradle.java.home` in `~/.gradle/gradle.properties`).
 
 ```bash
-git clone <this-repo>
+git clone https://github.com/RPG-18/snatch-dash.git
 cd snatch-dash
 flutter pub get
+(cd packages/opendash_dash_engine && flutter pub get)
 ```
+
+The plugin needs its own `pub get`: the root resolve does not install the
+path package's dev dependencies, including Pigeon, on a fresh clone.
 
 ### Yandex API key (required for the map and destination search)
 
@@ -133,17 +177,23 @@ flutter build apk --debug --dart-define-from-file=android/dart_defines.local.pro
 flutter run --dart-define-from-file=android/dart_defines.local.properties  # install + run on a connected device/emulator
 ```
 
-### Tests
+### Analysis and tests
 
 ```bash
+flutter analyze
 flutter test                                        # app: unit + widget tests
 (cd packages/opendash_dash_engine && flutter test)  # plugin's Dart tests
-(cd android && ./gradlew :opendash_dash_engine:testDebugUnitTest)  # plugin's Kotlin tests
+(cd android && ./gradlew :opendash_dash_engine:testDebugUnitTest)
+(cd android && ./gradlew :opendash_dash_engine:lintDebug)
 ```
 
-The Kotlin tests need **JDK 21 — the JBR shipped with Android Studio**, not
-Homebrew's `openjdk` (that is 26, and AGP fails on it: `jlink` cannot transform
-`core-for-system-modules.jar`). See CLAUDE.md, «Сборка и тесты».
+Android Lint checks API-level compatibility that Dart analysis and the Kotlin
+compiler do not. Run it when changing native Kotlin, manifests or Gradle.
+For plugin API changes, regenerate the boundary from the plugin directory:
+
+```bash
+(cd packages/opendash_dash_engine && dart run pigeon --input pigeons/dash_engine.dart)
+```
 
 The `sqflite`-backed repository tests
 (`test/data/sqlite_garage_repository_test.dart`) use `sqflite_common_ffi`
@@ -157,7 +207,7 @@ against isolated temp-file databases — no device/emulator needed.
 | Vehicles | Add/edit vehicles and choose the active vehicle |
 | Expenses | Add, filter, review, and export expenses |
 | Garage | Odometer, mileage, spare parts, service logging |
-| More | Dash pairing, offline maps, map theme, currency, logs, updates |
+| More | Dash pairing, background access, offline maps, map theme, currency, voice guidance, notification access, logs, updates |
 
 ## 🔐 Privacy
 
@@ -177,6 +227,10 @@ against isolated temp-file databases — no device/emulator needed.
   The dash map does not: it renders from downloaded packs, which the rider
   picks explicitly in Settings → Offline maps.
 - Media/call behavior can vary by Android version, dialer, and media app.
+- For screen-off rides, review More → Background work and any additional
+  manufacturer battery restrictions. Voice guidance needs an installed Android
+  TTS engine with voice data for the device's language; missing data does not
+  silently fall back to another language or a chime.
 
 ## 🤝 Contributing
 

@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - '**'
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Keep aligned with nightly.yml/release.yml and pubspec.yaml's Dart constraint.
+  FLUTTER_VERSION: '3.44.6'
+
+jobs:
+  check:
+    name: Analyze, test and lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Validate the Gradle wrapper
+        uses: gradle/actions/wrapper-validation@v4
+
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('android/**/*.gradle*', 'android/gradle/wrapper/gradle-wrapper.properties', 'packages/opendash_dash_engine/android/**/*.gradle*') }}
+          restore-keys: gradle-${{ runner.os }}-
+
+      - name: Pub get (app and engine)
+        # Root pub get does not resolve the path plugin's Pigeon dev dependencies.
+        run: |
+          flutter pub get
+          (cd packages/opendash_dash_engine && flutter pub get)
+
+      - name: Analyze
+        run: flutter analyze
+
+      - name: Test app
+        run: flutter test
+
+      - name: Test Dart engine
+        working-directory: packages/opendash_dash_engine
+        run: flutter test
+
+      - name: Test native engine
+        working-directory: android
+        run: ./gradlew :opendash_dash_engine:testDebugUnitTest
+
+      - name: Lint native engine
+        working-directory: android
+        run: ./gradlew :opendash_dash_engine:lintDebug

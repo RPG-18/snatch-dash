@@ -75,7 +75,7 @@ void main() {
       await emit('button', DashButtonEvent(code: 0x09));
 
       expect(first, [0x09]);
-      expect(second, [0x09, 0x09]);
+      expect(second, [0x09, 0x09, 0x09]);
     },
   );
 }
